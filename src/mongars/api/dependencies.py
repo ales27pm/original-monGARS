@@ -53,7 +53,10 @@ async def require_principal(
     return await auth(credentials)
 
 
-SessionDependency = Annotated[AsyncSession, Depends(get_session)]
+# Finalize the transaction before Starlette sends the response. Request-scoped yield
+# cleanup runs after response delivery, which lets an immediate follow-up request observe
+# a just-created task as missing even though the create response already returned 202.
+SessionDependency = Annotated[AsyncSession, Depends(get_session, scope="function")]
 PrincipalDependency = Annotated[AuthenticatedPrincipal, Depends(require_principal)]
 SettingsDependency = Annotated[Settings, Depends(get_runtime_settings)]
 InferenceDependency = Annotated[InferenceBackend, Depends(get_inference)]

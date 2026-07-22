@@ -183,8 +183,22 @@ def run_smoke(
         _require(created.get("risk_level") == "local_mutation", "memory write was misclassified")
         _require(created.get("status") == "waiting_approval", "memory write bypassed approval")
 
+        review = _expect_status(
+            client.get(f"/v1/tasks/{task_id}"),
+            200,
+            operation="memory task review",
+        )
+        action_digest = review.get("action_digest")
+        _require(
+            isinstance(action_digest, str) and len(action_digest) == 64,
+            "memory task review returned an invalid action digest",
+        )
+
         approved = _expect_status(
-            client.post(f"/v1/tasks/{task_id}/approve"),
+            client.post(
+                f"/v1/tasks/{task_id}/approve",
+                json={"action_digest": action_digest},
+            ),
             200,
             operation="memory task approval",
         )

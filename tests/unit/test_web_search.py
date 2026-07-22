@@ -412,6 +412,10 @@ def test_aclose_does_not_close_an_injected_client() -> None:
         "Look this up online, please.",
         "Do a web search for current scores.",
         "Find the latest announcement on the web.",
+        "Look up the current version online.",
+        "Google this for me.",
+        "Peux-tu chercher ça sur le web?",
+        "Quelle est la météo? Vérifie sur Internet.",
     ],
 )
 def test_explicit_web_search_intent_is_detected(text: str) -> None:
@@ -439,6 +443,9 @@ def test_local_search_intent_does_not_enable_network_access(text: str) -> None:
         "Never browse the internet",
         '"search the web" is a phrase',
         "Explain why someone might say search the web",
+        "Ne cherche pas ça sur le web.",
+        "N'utilise jamais Internet pour cette réponse.",
+        "Explique pourquoi quelqu'un dirait « cherche ça sur le web ».",
     ],
 )
 def test_negated_quoted_or_incidental_search_language_does_not_enable_network_access(
@@ -455,7 +462,18 @@ def test_negated_quoted_or_incidental_search_language_does_not_enable_network_ac
             "the 2026 FIFA World Cup champions.",
         ),
         ("Could you please browse the internet for current results?", "current results?"),
+        ("Browse the internet and verify this.", "verify this."),
         ("Run a web search: official release notes", "official release notes"),
+        ("Look this up online, please.", "this"),
+        (
+            "Find the latest announcement on the web.",
+            "the latest announcement",
+        ),
+        ("Look up the current version online.", "the current version"),
+        ("Google this for me.", "this for me"),
+        ("Peux-tu chercher ça sur le web?", "ça"),
+        ("Quelle est la météo? Vérifie sur Internet.", "Quelle est la météo?"),
+        ("Vérifie sur Internet: résultats officiels", "résultats officiels"),
         (
             "Tell me about pgvector and search the web to verify it.",
             "Tell me about pgvector and search the web to verify it.",

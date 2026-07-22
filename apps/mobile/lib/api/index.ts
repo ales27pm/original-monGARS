@@ -5,6 +5,7 @@ export {
   assertSecureCredentialTransport,
   getApiTransportSecurity,
   getMongarsApiBaseUrl,
+  getMongarsApiOrigin,
   getMongarsClient,
   isAbortError,
   normalizeMongarsApiBaseUrl,
@@ -27,5 +28,7 @@ export type {
   MemorySearchResponse,
   ReadinessResponse,
   TaskDetailResponse,
+  TaskPayloadPageResponse,
+  TaskPayloadSummary,
   TaskResponse,
 } from '@/types/mongars-api';

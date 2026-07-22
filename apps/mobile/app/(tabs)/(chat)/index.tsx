@@ -10,6 +10,7 @@ import { radii } from '@/constants/theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { useChat } from '@/hooks/use-mongars-api';
 import { useMongars } from '@/providers/mongars-provider';
+import type { ChatRequest } from '@/types/mongars-api';
 
 const suggestions = ['Summarize my day', 'Search project memory', 'Show active tasks'];
 
@@ -19,6 +20,15 @@ type ChatDisplayMessage = {
   text: string;
   timestamp: string;
   sources?: { label: string; url?: string }[];
+};
+
+const webSearchModes = ['off', 'auto', 'required'] as const;
+type WebSearchMode = NonNullable<ChatRequest['web_search']>;
+
+const webSearchModeLabels: Record<WebSearchMode, string> = {
+  off: 'Off',
+  auto: 'Auto',
+  required: 'Required',
 };
 
 function normalizeWebSource(source: unknown): { label: string; url: string } | null {
@@ -65,6 +75,7 @@ function ConnectedChatScreen() {
   const [draft, setDraft] = useState('');
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatDisplayMessage[]>([]);
+  const [webSearchMode, setWebSearchMode] = useState<WebSearchMode>('auto');
 
   async function submitMessage() {
     const text = draft.trim();
@@ -82,6 +93,7 @@ function ConnectedChatScreen() {
         message: text,
         session_id: sessionId,
         require_local_only: true,
+        web_search: webSearchMode,
       });
       const responseSources = Array.isArray(response.sources)
         ? response.sources.map(normalizeWebSource).filter((source) => source !== null)
@@ -272,6 +284,53 @@ function ConnectedChatScreen() {
           boxShadow: '0 8px 24px rgba(27, 20, 49, 0.08)',
         }}
       >
+        <View style={{ gap: 6 }}>
+          <Text selectable style={{ color: theme.textSecondary, fontSize: 11, fontWeight: '700' }}>
+            WEB SEARCH
+          </Text>
+          <View accessibilityRole="radiogroup" style={{ flexDirection: 'row', gap: 6 }}>
+            {webSearchModes.map((mode) => {
+              const selected = webSearchMode === mode;
+              return (
+                <Pressable
+                  accessibilityLabel={`${webSearchModeLabels[mode]} web search`}
+                  accessibilityRole="radio"
+                  accessibilityState={{ checked: selected }}
+                  key={mode}
+                  onPress={() => setWebSearchMode(mode)}
+                  style={({ pressed }) => ({
+                    alignItems: 'center',
+                    backgroundColor: selected ? theme.primary : theme.surfaceMuted,
+                    borderColor: selected ? theme.primary : theme.border,
+                    borderRadius: 999,
+                    borderWidth: 1,
+                    flex: 1,
+                    opacity: pressed ? 0.75 : 1,
+                    paddingHorizontal: 8,
+                    paddingVertical: 7,
+                  })}
+                >
+                  <Text
+                    style={{
+                      color: selected ? theme.primaryContrast : theme.textSecondary,
+                      fontSize: 11,
+                      fontWeight: '700',
+                    }}
+                  >
+                    {webSearchModeLabels[mode]}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <Text selectable style={{ color: theme.textTertiary, fontSize: 10, lineHeight: 14 }}>
+            {webSearchMode === 'off'
+              ? 'Never send a web query.'
+              : webSearchMode === 'required'
+                ? 'Search the web for this message.'
+                : 'Search only when your message explicitly asks for it.'}
+          </Text>
+        </View>
         <TextInput
           accessibilityLabel="Message Cortex"
           maxLength={32_000}
@@ -294,7 +353,7 @@ function ConnectedChatScreen() {
         />
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
           <Text selectable style={{ color: theme.textTertiary, flex: 1, fontSize: 11 }}>
-            Local inference · web access only when explicitly requested
+            Local inference · web search {webSearchMode}
           </Text>
           <Pressable
             accessibilityRole="button"

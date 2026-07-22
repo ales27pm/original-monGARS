@@ -108,6 +108,14 @@
             <label class="sr-only" for="chat-message">Message Cortex</label>
             <textarea id="chat-message" name="message" rows="1" maxlength="32000" placeholder="Message Cortex…" required></textarea>
             <div class="composer-footer">
+              <label class="web-search-control" for="web-search-mode">
+                <span>Web search</span>
+                <select id="web-search-mode" name="web-search-mode">
+                  <option value="off">Off</option>
+                  <option value="auto" selected>Auto</option>
+                  <option value="required">Required</option>
+                </select>
+              </label>
               <label class="local-toggle" title="Prevent remote inference for this request">
                 <input id="local-only" type="checkbox" checked>
                 <span aria-hidden="true"></span>

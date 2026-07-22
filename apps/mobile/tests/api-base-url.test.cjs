@@ -40,8 +40,10 @@ function loadTypeScriptModule(relativePath, imports) {
 }
 
 function loadClient() {
+  const origin = loadTypeScriptModule('lib/api-origin.ts', {});
   return loadTypeScriptModule('lib/api/client.ts', {
     'expo/fetch': { fetch: () => Promise.reject(new Error('Unexpected network request.')) },
+    '@/lib/api-origin': origin,
     '@/lib/api-token': {
       apiTokenStore: {
         clear: async () => undefined,
@@ -70,10 +72,10 @@ function loadBaseUrlStore(initialValue = null) {
       values.set(key, value);
     },
   };
-  const client = loadClient();
+  const origin = loadTypeScriptModule('lib/api-origin.ts', {});
   const store = loadTypeScriptModule('lib/api-base-url.ts', {
     'expo-secure-store': secureStore,
-    '@/lib/api/client': client,
+    '@/lib/api-origin': origin,
   });
 
   return { store, values, writes };
@@ -96,6 +98,34 @@ test('an explicit runtime server URL works without a build-time URL', () => {
     normalizeMongarsApiBaseUrl('  https://control.example.test/api///  '),
     'https://control.example.test/api',
   );
+});
+
+test('a credential test is allowed only for the exact normalized active base URL', () => {
+  const { isActiveMongarsApiBaseUrlDraft } = loadTypeScriptModule('lib/api-origin.ts', {});
+
+  assert.equal(
+    isActiveMongarsApiBaseUrlDraft(
+      '  https://Control.Example.test:443/control///  ',
+      'https://control.example.test/control',
+    ),
+    true,
+  );
+  assert.equal(
+    isActiveMongarsApiBaseUrlDraft(
+      'https://control.example.test/other',
+      'https://control.example.test/control',
+    ),
+    false,
+  );
+  assert.equal(
+    isActiveMongarsApiBaseUrlDraft(
+      'https://other.example.test/control',
+      'https://control.example.test/control',
+    ),
+    false,
+  );
+  assert.equal(isActiveMongarsApiBaseUrlDraft('not a URL', 'https://control.example.test'), false);
+  assert.equal(isActiveMongarsApiBaseUrlDraft('https://control.example.test', null), false);
 });
 
 test('a native runtime URL is saved securely when the build-time URL is absent', async () => {
@@ -124,6 +154,41 @@ test('an empty native store resolves to an expected missing state', async () => 
   const { store } = loadBaseUrlStore();
 
   assert.equal(await store.readApiBaseUrl(), null);
+});
+
+test('a failed persisted URL read cannot activate the build-time fallback', () => {
+  const { store } = loadBaseUrlStore();
+
+  assert.equal(
+    store.resolveConfiguredApiBaseUrl({
+      persisted: null,
+      storageStatus: 'error',
+      buildTime: 'https://new-build.example.test',
+    }),
+    null,
+  );
+  assert.equal(
+    store.resolveConfiguredApiBaseUrl({
+      persisted: null,
+      storageStatus: 'loading',
+      buildTime: 'https://new-build.example.test',
+    }),
+    null,
+  );
+});
+
+test('an explicit test override remains distinct from an environment fallback', () => {
+  const { store } = loadBaseUrlStore();
+
+  assert.equal(
+    store.resolveConfiguredApiBaseUrl({
+      override: 'https://preview.example.test',
+      persisted: null,
+      storageStatus: 'error',
+      buildTime: 'https://new-build.example.test',
+    }),
+    'https://preview.example.test',
+  );
 });
 
 test('missing runtime and build-time URLs remains a configuration error', () => {

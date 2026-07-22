@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
@@ -8,6 +9,15 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from mongars.db.models import MemoryDocument, TaskQueue
 from mongars.memory.repository import MemoryHit
+from mongars.rm.payload_view import (
+    TaskPayloadPage as RenderedTaskPayloadPage,
+)
+from mongars.rm.payload_view import (
+    TaskPayloadSummary as RenderedTaskPayloadSummary,
+)
+from mongars.rm.payload_view import (
+    summarize_task_payload,
+)
 
 
 class ApiModel(BaseModel):
@@ -52,6 +62,10 @@ class TaskCreateRequest(ApiModel):
     dedupe_key: str | None = Field(default=None, min_length=1, max_length=255)
 
 
+class TaskApproveRequest(ApiModel):
+    action_digest: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+
+
 class TaskResponse(ApiModel):
     id: UUID
     kind: str
@@ -88,8 +102,51 @@ class TaskResponse(ApiModel):
         )
 
 
+class TaskPayloadSummary(ApiModel):
+    format: Literal["sorted-pretty-json-v1"] = "sorted-pretty-json-v1"
+    encoding: Literal["utf-8"] = "utf-8"
+    byte_length: int
+    character_count: int
+    page_count: int
+    page_size_characters: int
+    top_level_field_count: int
+    preview_head: str
+    preview_tail: str
+    preview_omitted_characters: int
+
+    @classmethod
+    def from_rendered(cls, summary: RenderedTaskPayloadSummary) -> TaskPayloadSummary:
+        return cls(**asdict(summary))
+
+
+class TaskPayloadPageResponse(ApiModel):
+    task_id: UUID
+    action_digest: str | None
+    format: Literal["sorted-pretty-json-v1"] = "sorted-pretty-json-v1"
+    encoding: Literal["utf-8"] = "utf-8"
+    page_index: int
+    page_count: int
+    page_size_characters: int
+    character_start: int
+    character_end: int
+    content: str
+
+    @classmethod
+    def from_rendered(
+        cls,
+        *,
+        task: TaskQueue,
+        page: RenderedTaskPayloadPage,
+    ) -> TaskPayloadPageResponse:
+        return cls(
+            task_id=task.id,
+            action_digest=task.action_digest,
+            **asdict(page),
+        )
+
+
 class TaskDetailResponse(TaskResponse):
-    payload: dict[str, Any]
+    payload_summary: TaskPayloadSummary
     action_digest: str | None
 
     @classmethod
@@ -109,7 +166,7 @@ class TaskDetailResponse(TaskResponse):
             approved_at=task.approved_at,
             created_at=task.created_at,
             updated_at=task.updated_at,
-            payload=task.payload,
+            payload_summary=TaskPayloadSummary.from_rendered(summarize_task_payload(task.payload)),
             action_digest=task.action_digest,
         )
 

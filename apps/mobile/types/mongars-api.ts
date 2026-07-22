@@ -98,7 +98,33 @@ export type TaskResponse = {
   updated_at: string;
 };
 
+export type TaskPayloadSummary = {
+  format: 'sorted-pretty-json-v1';
+  encoding: 'utf-8';
+  byte_length: number;
+  character_count: number;
+  page_count: number;
+  page_size_characters: number;
+  top_level_field_count: number;
+  preview_head: string;
+  preview_tail: string;
+  preview_omitted_characters: number;
+};
+
 export type TaskDetailResponse = TaskResponse & {
-  payload: Record<string, JsonValue>;
+  payload_summary: TaskPayloadSummary;
   action_digest: string | null;
+};
+
+export type TaskPayloadPageResponse = {
+  task_id: string;
+  action_digest: string | null;
+  format: 'sorted-pretty-json-v1';
+  encoding: 'utf-8';
+  page_index: number;
+  page_count: number;
+  page_size_characters: number;
+  character_start: number;
+  character_end: number;
+  content: string;
 };

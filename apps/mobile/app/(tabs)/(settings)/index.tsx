@@ -8,6 +8,7 @@ import { StatusPill } from '@/components/status-pill';
 import { SurfaceCard } from '@/components/surface-card';
 import { radii } from '@/constants/theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { isActiveMongarsApiBaseUrlDraft } from '@/lib/api-origin';
 import { useMongars } from '@/providers/mongars-provider';
 
 type ConnectionState = 'idle' | 'testing' | 'ready' | 'error';
@@ -35,8 +36,13 @@ export default function SettingsScreen() {
   const [connectionState, setConnectionState] = useState<ConnectionState>('idle');
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const credentialTransportAllowed = transportSecurity?.canSendCredentials === true;
+  const draftMatchesActiveBaseUrl = isActiveMongarsApiBaseUrlDraft(serverUrl, baseUrl);
   const canTest =
-    Boolean(client) && credentialTransportAllowed && (Boolean(token.trim()) || hasToken);
+    Boolean(client) &&
+    credentialTransportAllowed &&
+    draftMatchesActiveBaseUrl &&
+    !serverUrlSaving &&
+    (Boolean(token.trim()) || hasToken);
 
   useEffect(() => {
     if (baseUrl && !serverUrl) {
@@ -66,7 +72,19 @@ export default function SettingsScreen() {
   }
 
   async function saveAndTestConnection() {
-    if (!client || !credentialTransportAllowed || (!token.trim() && !hasToken)) return;
+    if (!draftMatchesActiveBaseUrl) {
+      setConnectionState('error');
+      setConnectionError('Save this server URL before entering or testing its API token.');
+      return;
+    }
+    if (
+      !client ||
+      !credentialTransportAllowed ||
+      serverUrlSaving ||
+      (!token.trim() && !hasToken)
+    ) {
+      return;
+    }
     setConnectionState('testing');
     setConnectionError(null);
     try {
@@ -140,6 +158,7 @@ export default function SettingsScreen() {
               setServerUrl(value);
               setServerUrlMessage(null);
               setConnectionError(null);
+              setConnectionState('idle');
             }}
             placeholder="https://mongars.example.com"
             placeholderTextColor={theme.textTertiary}
@@ -210,7 +229,7 @@ export default function SettingsScreen() {
             accessibilityLabel="monGARS API token"
             autoCapitalize="none"
             autoCorrect={false}
-            editable={credentialTransportAllowed}
+            editable={credentialTransportAllowed && draftMatchesActiveBaseUrl}
             onChangeText={setToken}
             placeholder={hasToken ? 'Enter a replacement token' : 'Paste bearer token'}
             placeholderTextColor={theme.textTertiary}
@@ -222,12 +241,17 @@ export default function SettingsScreen() {
               borderRadius: radii.medium,
               color: theme.text,
               fontSize: 14,
-              opacity: credentialTransportAllowed ? 1 : 0.55,
+              opacity: credentialTransportAllowed && draftMatchesActiveBaseUrl ? 1 : 0.55,
               paddingHorizontal: 13,
               paddingVertical: 12,
             }}
             value={token}
           />
+          {!draftMatchesActiveBaseUrl && serverUrl.trim() ? (
+            <Text selectable style={{ color: theme.warning, fontSize: 11, lineHeight: 16 }}>
+              Save this server URL before entering its API token.
+            </Text>
+          ) : null}
         </View>
 
         <Pressable

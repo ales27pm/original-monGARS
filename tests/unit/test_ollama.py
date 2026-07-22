@@ -73,6 +73,53 @@ def test_chat_uses_native_endpoint_and_normalizes_response() -> None:
     run(exercise())
 
 
+def test_owned_client_ignores_proxy_environment_and_redirects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    constructor_options: dict[str, object] = {}
+    requested_urls: list[str] = []
+
+    class _Client:
+        def __init__(self, **kwargs: object) -> None:
+            constructor_options.update(kwargs)
+
+        async def request(self, method: str, url: str, **_kwargs: object) -> httpx.Response:
+            assert method == "POST"
+            requested_urls.append(url)
+            return httpx.Response(
+                200,
+                json={
+                    "model": "chat",
+                    "message": {"role": "assistant", "content": "local answer"},
+                    "done": True,
+                    "done_reason": "stop",
+                },
+            )
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setenv("HTTP_PROXY", "http://attacker.invalid:8080")
+    monkeypatch.setenv("HTTPS_PROXY", "http://attacker.invalid:8080")
+    monkeypatch.setenv("NO_PROXY", "")
+    monkeypatch.setattr("mongars.inference.ollama.httpx.AsyncClient", _Client)
+
+    async def exercise() -> None:
+        backend = OllamaBackend(
+            base_url="http://ollama:11434",
+            chat_model="chat",
+            embedding_model="embed",
+        )
+        response = await backend.chat([ChatMessage(role="user", content="hello")])
+        await backend.aclose()
+        assert response.content == "local answer"
+
+    run(exercise())
+
+    assert constructor_options == {"trust_env": False, "follow_redirects": False}
+    assert requested_urls == ["http://ollama:11434/api/chat"]
+
+
 @pytest.mark.parametrize(
     ("content", "error"),
     [

@@ -1,6 +1,15 @@
 import { fetch as expoFetch, type FetchRequestInit } from 'expo/fetch';
 
 import { apiTokenStore, type ApiTokenStore } from '@/lib/api-token';
+import {
+  ApiConfigurationError,
+  type ApiTransportSecurity,
+  assertSecureCredentialTransport,
+  getApiTransportSecurity,
+  getMongarsApiBaseUrl,
+  getMongarsApiOrigin,
+  normalizeMongarsApiBaseUrl,
+} from '@/lib/api-origin';
 import type {
   ChatRequest,
   ChatResponse,
@@ -9,6 +18,7 @@ import type {
   MemorySearchResponse,
   ReadinessResponse,
   TaskDetailResponse,
+  TaskPayloadPageResponse,
   TaskResponse,
 } from '@/types/mongars-api';
 
@@ -20,12 +30,6 @@ export type FetchImplementation = (
   input: string,
   init?: FetchRequestInit,
 ) => Promise<Response>;
-
-export type ApiTransportSecurity = {
-  kind: 'https' | 'loopback-http' | 'insecure-http';
-  canSendCredentials: boolean;
-  message: string;
-};
 
 export type MongarsClientOptions = {
   baseUrl?: string;
@@ -40,12 +44,15 @@ type RequestOptions = ApiCallOptions & {
   acceptedStatuses?: readonly number[];
 };
 
-export class ApiConfigurationError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ApiConfigurationError';
-  }
-}
+export {
+  ApiConfigurationError,
+  type ApiTransportSecurity,
+  assertSecureCredentialTransport,
+  getApiTransportSecurity,
+  getMongarsApiBaseUrl,
+  getMongarsApiOrigin,
+  normalizeMongarsApiBaseUrl,
+} from '@/lib/api-origin';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -66,87 +73,6 @@ export class ApiError extends Error {
 
 export function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
-}
-
-export function normalizeMongarsApiBaseUrl(configured: string): string {
-  if (!configured.trim()) {
-    throw new ApiConfigurationError('Enter the monGARS server URL.');
-  }
-
-  let parsed: URL;
-  try {
-    parsed = new URL(configured.trim());
-  } catch (error) {
-    throw new ApiConfigurationError('The monGARS API URL must be a valid URL.');
-  }
-
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
-    throw new ApiConfigurationError('The monGARS API URL must use HTTP or HTTPS.');
-  }
-  if (parsed.username || parsed.password) {
-    throw new ApiConfigurationError('The monGARS API URL must not contain credentials.');
-  }
-  if (parsed.search || parsed.hash) {
-    throw new ApiConfigurationError('The monGARS API URL must not contain a query or fragment.');
-  }
-
-  return parsed.toString().replace(/\/+$/, '');
-}
-
-export function getMongarsApiBaseUrl(override?: string): string {
-  const configured = override ?? process.env.EXPO_PUBLIC_MONGARS_API_URL;
-  if (!configured?.trim()) {
-    throw new ApiConfigurationError(
-      'No monGARS server URL is configured. Open Settings and enter an HTTPS server URL.',
-    );
-  }
-
-  return normalizeMongarsApiBaseUrl(configured);
-}
-
-function isLoopbackHostname(hostname: string): boolean {
-  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, '');
-  if (normalized === 'localhost' || normalized.endsWith('.localhost') || normalized === '::1') {
-    return true;
-  }
-
-  const octets = normalized.split('.').map(Number);
-  return (
-    octets.length === 4 &&
-    octets.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255) &&
-    octets[0] === 127
-  );
-}
-
-/** Classify whether a server URL is safe for bearer credentials. */
-export function getApiTransportSecurity(baseUrl: string): ApiTransportSecurity {
-  const parsed = new URL(getMongarsApiBaseUrl(baseUrl));
-  if (parsed.protocol === 'https:') {
-    return {
-      kind: 'https',
-      canSendCredentials: true,
-      message: 'Bearer credentials are protected by HTTPS.',
-    };
-  }
-  if (isLoopbackHostname(parsed.hostname)) {
-    return {
-      kind: 'loopback-http',
-      canSendCredentials: true,
-      message: 'Loopback HTTP is acceptable for same-device development only.',
-    };
-  }
-  return {
-    kind: 'insecure-http',
-    canSendCredentials: false,
-    message: 'Use HTTPS before sending a bearer token to a non-loopback server.',
-  };
-}
-
-export function assertSecureCredentialTransport(baseUrl: string): void {
-  const security = getApiTransportSecurity(baseUrl);
-  if (!security.canSendCredentials) {
-    throw new ApiConfigurationError(security.message);
-  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -224,7 +150,7 @@ export class MongarsClient {
       // Never read a Keychain credential until the destination is known to protect it. This makes
       // the policy hold even when a caller bypasses the provider/UI and calls the client directly.
       assertSecureCredentialTransport(this.baseUrl);
-      const token = await this.tokenStore.read();
+      const token = await this.tokenStore.read(getMongarsApiOrigin(this.baseUrl));
       if (!token) {
         throw new ApiError('Enter the monGARS API token to continue.', {
           status: 401,
@@ -318,10 +244,27 @@ export class MongarsClient {
     return this.request(`/v1/tasks/${encodeURIComponent(taskId)}`, options);
   }
 
-  approveTask(taskId: string, options: ApiCallOptions = {}): Promise<TaskResponse> {
+  getTaskPayloadPage(
+    taskId: string,
+    page: number,
+    options: ApiCallOptions = {},
+  ): Promise<TaskPayloadPageResponse> {
+    const safePage = Math.max(0, Math.min(100_000, Math.trunc(page)));
+    return this.request(
+      `/v1/tasks/${encodeURIComponent(taskId)}/payload?page=${safePage}`,
+      options,
+    );
+  }
+
+  approveTask(
+    taskId: string,
+    actionDigest: string,
+    options: ApiCallOptions = {},
+  ): Promise<TaskResponse> {
     return this.request(`/v1/tasks/${encodeURIComponent(taskId)}/approve`, {
       ...options,
       method: 'POST',
+      body: { action_digest: actionDigest },
     });
   }
 

@@ -59,7 +59,10 @@ class OllamaBackend:
         self._timeout = _validate_timeout(timeout)
         self._health_timeout = _validate_timeout(health_timeout)
         self._owns_client = client is None
-        self._client = client or httpx.AsyncClient()
+        self._client = client or httpx.AsyncClient(
+            trust_env=False,
+            follow_redirects=False,
+        )
 
     async def __aenter__(self) -> OllamaBackend:
         return self

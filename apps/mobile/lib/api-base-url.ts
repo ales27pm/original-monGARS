@@ -4,7 +4,7 @@ import {
   ApiConfigurationError,
   getApiTransportSecurity,
   normalizeMongarsApiBaseUrl,
-} from '@/lib/api/client';
+} from '@/lib/api-origin';
 
 const BASE_URL_KEY = 'mongars.api-base-url.v1';
 const SECURE_STORE_OPTIONS: SecureStore.SecureStoreOptions = {
@@ -17,6 +17,20 @@ let cachedBaseUrl: string | null = null;
 let baseUrlLoaded = false;
 let loadPromise: Promise<string | null> | null = null;
 const listeners = new Set<BaseUrlListener>();
+
+export type ApiBaseUrlStorageStatus = 'loading' | 'missing' | 'ready' | 'error';
+
+/** Select a runtime endpoint without falling back across an unverified storage state. */
+export function resolveConfiguredApiBaseUrl(options: {
+  override?: string;
+  persisted: string | null;
+  storageStatus: ApiBaseUrlStorageStatus;
+  buildTime?: string;
+}): string | null {
+  if (options.override !== undefined) return options.override;
+  if (options.storageStatus === 'loading' || options.storageStatus === 'error') return null;
+  return options.persisted ?? options.buildTime ?? null;
+}
 
 async function secureStoreAvailable(): Promise<boolean> {
   if (process.env.EXPO_OS === 'web') {

@@ -5,9 +5,12 @@ defaults, permits only JSON search responses, disables the public-instance limit
 and image proxy, and bounds outbound requests.
 
 Mount the file read-only at `/etc/searxng/settings.yml`. Keep the service on the
-private application network and do not publish port `8080` to the host. Compose
+private application and proxy networks and do not publish port `8080` to the host. Compose
 reads a random value from `secrets/searxng_secret.txt` into `SEARXNG_SECRET`; the
 value committed in the settings file is an intentional fail-obvious placeholder.
+SearXNG has no external network attachment. All engine traffic is sent through
+the fixed `search-egress-proxy` origin, whose destination ACL is documented in
+`../egress-proxy/README.md`.
 
 The validated image is:
 
@@ -24,5 +27,9 @@ Run the isolated configuration check with:
 deploy/searxng/check.sh
 ```
 
-The check launches a disposable, loopback-only container, verifies a JSON search
-response, and verifies that the HTML search format is rejected.
+The check launches disposable SearXNG and Squid containers with the production
+network split, exercises SearXNG's configured network client through the proxy,
+verifies a JSON search response, verifies that
+the HTML search format is rejected, and proves SearXNG has no direct external
+network attachment. Run `../egress-proxy/check.sh` for focused destination-ACL
+regressions.

@@ -49,7 +49,11 @@ esac
     environment["PATH"] = f"{fake_bin}:{environment['PATH']}"
     environment["MONGARS_TEST_DOCKER_LOG"] = str(docker_log)
     completed = subprocess.run(  # noqa: S603 -- fixed repository script under a mocked PATH
-        ["/usr/bin/bash", str(root / "scripts" / "ci-local.sh")],
+        [
+            "/usr/bin/bash",
+            str(root / "scripts" / "ci-local.sh"),
+            "--database-probe-only",
+        ],
         cwd=root,
         env=environment,
         check=False,

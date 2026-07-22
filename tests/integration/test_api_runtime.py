@@ -24,6 +24,7 @@ from mongars.inference import (
     JsonValue,
 )
 from mongars.main import create_app
+from mongars.rm.repository import TaskRepository
 from mongars.rm.worker import Worker
 
 _RAW_DATABASE_URL = os.getenv("MONGARS_TEST_DATABASE_URL", "").strip()
@@ -132,8 +133,25 @@ async def test_api_approval_worker_memory_and_readiness_smoke() -> None:
     transport = httpx.ASGITransport(app=application)
     headers = {"Authorization": f"Bearer {token}"}
     marker = f"runtime-marker-{uuid4().hex}"
+    foreign_owner_id = f"api-runtime-foreign-{uuid4().hex}"
 
     try:
+        async with database.session_factory() as session, session.begin():
+            foreign_task = await TaskRepository(session).create(
+                owner_id=foreign_owner_id,
+                kind="memory.search",
+                risk_level="read_only",
+                # This row exists only to prove the review endpoints are owner-scoped.
+                # Keep it terminal so the worker smoke below claims the task created by
+                # this test instead of legitimately taking the older foreign fixture.
+                status="done",
+                trace_id=f"trc_{uuid4().hex}",
+                payload={"query": "foreign owner data", "top_k": 8},
+                action_digest=None,
+                approval_expires_at=None,
+            )
+            foreign_task_id = foreign_task.id
+
         async with httpx.AsyncClient(
             transport=transport,
             base_url="http://testserver",
@@ -149,6 +167,17 @@ async def test_api_approval_worker_memory_and_readiness_smoke() -> None:
                 headers={"Authorization": "Bearer invalid-runtime-token"},
             )
             assert invalid.status_code == 401
+
+            foreign_detail = await client.get(
+                f"/v1/tasks/{foreign_task_id}",
+                headers=headers,
+            )
+            foreign_payload = await client.get(
+                f"/v1/tasks/{foreign_task_id}/payload?page=0",
+                headers=headers,
+            )
+            assert foreign_detail.status_code == 404
+            assert foreign_payload.status_code == 404
 
             ready = await client.get("/v1/readyz")
             assert ready.status_code == 200
@@ -191,17 +220,39 @@ async def test_api_approval_worker_memory_and_readiness_smoke() -> None:
             review_response = await client.get(f"/v1/tasks/{task_id}", headers=headers)
             assert review_response.status_code == 200
             review = review_response.json()
-            assert review["payload"] == {
-                "text": f"The integration smoke marker is {marker}.",
-                "title": "ASGI runtime smoke",
-                "sensitivity": "private",
-                "retention_class": "ttl_30d",
-            }
+            assert "payload" not in review
+            assert review["payload_summary"]["top_level_field_count"] == 4
+            assert marker in review["payload_summary"]["preview_head"]
             assert len(review["action_digest"]) == 64
+
+            page_response = await client.get(
+                f"/v1/tasks/{task_id}/payload?page=0",
+                headers=headers,
+            )
+            assert page_response.status_code == 200
+            payload_page = page_response.json()
+            assert payload_page["task_id"] == str(task_id)
+            assert payload_page["action_digest"] == review["action_digest"]
+            assert payload_page["page_index"] == 0
+            assert marker in payload_page["content"]
+
+            old_client_approval = await client.post(
+                f"/v1/tasks/{task_id}/approve",
+                headers=headers,
+            )
+            assert old_client_approval.status_code == 422
+
+            stale_review_approval = await client.post(
+                f"/v1/tasks/{task_id}/approve",
+                headers=headers,
+                json={"action_digest": "0" * 64},
+            )
+            assert stale_review_approval.status_code == 409
 
             approve_response = await client.post(
                 f"/v1/tasks/{task_id}/approve",
                 headers=headers,
+                json={"action_digest": review["action_digest"]},
             )
             assert approve_response.status_code == 200
             assert approve_response.json()["status"] == "queued"
@@ -286,5 +337,6 @@ async def test_api_approval_worker_memory_and_readiness_smoke() -> None:
             }
     finally:
         await _clean_owner(database, owner_id)
+        await _clean_owner(database, foreign_owner_id)
         await inference.aclose()
         await database.close()

@@ -75,15 +75,18 @@ docker compose --profile gpu --profile web-search up -d --wait
 ```
 
 The `web-search` profile and `MONGARS_WEB_SEARCH_ENABLED=true` opt in to public-web egress; omit the
-profile and set the variable to `false` to disable it completely. SearXNG has no host port and is
-reachable only on a dedicated private network shared with the API. Cortex performs a
+profile and set the variable to `false` to disable it completely. SearXNG has no host port or direct
+external interface and is reachable only on dedicated internal networks. Its engine traffic uses a
+fixed Squid proxy that resolves and rejects private, loopback, link-local, Docker-host, and cloud
+metadata destinations before allowing ports 80 or 443. Cortex performs a
 network search only when the chat text explicitly asks to search or browse the public web, or when
 an API caller sends `"web_search":"required"`. Search queries and the configured engines'
 requests leave the workstation; inference, memory, and orchestration remain local. Send
 `"web_search":"off"` to prohibit search for a turn. Results are bounded, treated as untrusted
 data, and returned separately in the response's `sources` array.
 SearXNG container logging is disabled because upstream engine errors can include the complete
-private query URL; use the API readiness status and `deploy/searxng/check.sh` for diagnostics.
+private query URL; proxy logging is disabled for the same reason. Use the API readiness status,
+`deploy/egress-proxy/check.sh`, and `deploy/searxng/check.sh` for diagnostics.
 
 Caddy publishes the control plane on `127.0.0.1:8000` by default while the application container,
 PostgreSQL, and Ollama stay on internal Compose networks. The migration one-shot service must
@@ -146,6 +149,10 @@ public CA download and never proxies API requests.
 
 The local CA persists in the `caddy_data` volume. Do not run `docker compose down -v` unless every
 device can be re-enrolled with a newly generated root certificate.
+The supplied Caddy image removes the upstream binary's unnecessary low-port file capability and
+runs as UID/GID `65534` with an empty capability set. A networkless one-shot service changes
+ownership of an existing root-owned Caddy volume before startup, preserving previously enrolled
+local CAs during the non-root migration.
 
 Alternatively, Tailscale Serve can terminate HTTPS for a tailnet hostname and proxy to the
 loopback-only service:
@@ -218,11 +225,18 @@ TASK_ID="$(curl -fsS -H "Authorization: Bearer ${MONGARS_TOKEN}" \
   http://127.0.0.1:8000/v1/memory/documents \
   | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
 
-# Review the canonical payload and HMAC-bound action digest before approval.
+# Review the bounded summary and HMAC-bound action digest. Fetch exact JSON one
+# bounded page at a time; page is zero-based.
+REVIEW="$(curl -fsS -H "Authorization: Bearer ${MONGARS_TOKEN}" \
+  "http://127.0.0.1:8000/v1/tasks/${TASK_ID}")"
+ACTION_DIGEST="$(printf '%s' "${REVIEW}" \
+  | python -c 'import json,sys; print(json.load(sys.stdin)["action_digest"])')"
 curl -fsS -H "Authorization: Bearer ${MONGARS_TOKEN}" \
-  "http://127.0.0.1:8000/v1/tasks/${TASK_ID}"
+  "http://127.0.0.1:8000/v1/tasks/${TASK_ID}/payload?page=0"
 
 curl -fsS -X POST -H "Authorization: Bearer ${MONGARS_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d "{\"action_digest\":\"${ACTION_DIGEST}\"}" \
   "http://127.0.0.1:8000/v1/tasks/${TASK_ID}/approve"
 
 curl -fsS -H "Authorization: Bearer ${MONGARS_TOKEN}" \
@@ -260,9 +274,10 @@ make ci-local
 ```
 
 `ci-local` ignores caller-provided database URLs, provisions a pinned pgvector container on a
-Docker-assigned loopback port, runs migrations and every test/security/package gate, builds the
-production image, verifies its non-root user, and removes the disposable database on exit. The
-suite enforces 80% branch coverage; the current baseline is above that threshold. Direct
+Docker-assigned loopback port, runs migrations and every Python/mobile/deployment gate, builds the
+production image, verifies non-root runtimes and bounded search egress, and removes disposable
+resources on exit. The suite enforces 80% branch coverage; the current baseline is above that
+threshold. Direct
 integration-test invocations still require `MONGARS_TEST_DATABASE_URL` and skip when it is absent.
 
 On a representative retained corpus, capture both the planner's natural choice and an
@@ -300,8 +315,10 @@ docker compose --profile gpu --profile web-search up -d --wait
 ```
 
 The main CI workflow pins actions by commit SHA and runs Bandit, pip-audit, split unit/database
-tests, coverage, migration, Compose, and image gates. The separate supply-chain workflow adds
-Gitleaks, Trivy HIGH/CRITICAL image scanning, and an SPDX production-image SBOM.
+tests, coverage, migration, Compose, Caddy/SearXNG/egress checks, mobile npm lint/type/test/audit,
+and a disposable HTTPS + authentication + required-search deployment smoke. The separate
+supply-chain workflow adds Gitleaks plus Trivy HIGH/CRITICAL scanning and an SPDX SBOM for every
+deployed image: monGARS, Caddy, PostgreSQL/pgvector, Ollama, SearXNG, and the egress proxy.
 
 ## HTTP API
 
@@ -315,8 +332,9 @@ Gitleaks, Trivy HIGH/CRITICAL image scanning, and an SPDX production-image SBOM.
 | `GET /v1/memory/documents/{id}` | Read owner-scoped document metadata | Bearer |
 | `POST /v1/tasks` | Create a registered, schema-validated task | Bearer |
 | `GET /v1/tasks` | List owner-scoped task summaries | Bearer |
-| `GET /v1/tasks/{id}` | Review exact payload and action digest | Bearer |
-| `POST /v1/tasks/{id}/approve` | Approve the exact persisted action | Bearer |
+| `GET /v1/tasks/{id}` | Read a bounded payload summary and action digest | Bearer |
+| `GET /v1/tasks/{id}/payload?page={index}` | Read one bounded exact payload page | Bearer |
+| `POST /v1/tasks/{id}/approve` | Approve with the reviewed `action_digest` (never the payload) | Bearer |
 | `POST /v1/tasks/{id}/cancel` | Cancel a queued task | Bearer |
 
 OpenAPI documentation is available at `/docs` outside production mode.
@@ -327,13 +345,13 @@ Configuration uses the `MONGARS_` prefix and is validated at process startup. Pr
 rejects development secret sentinels. Remote inference is disabled by default; non-loopback
 backends require both an explicit opt-in and TLS. Do not publish Ollama directly.
 
-Important production controls in the supplied Compose stack include a non-root app user,
+Important production controls in the supplied Compose stack include non-root app and Caddy users,
 read-only root filesystems, dropped Linux capabilities, `no-new-privileges`, bounded tmpfs,
 loopback-only API publication, internal-only database/inference networks, and file-mounted
 secrets. Caddy is the only host-facing container; the API reaches SearXNG over a separate internal
-network, and only SearXNG joins the search-egress network. The supplied base, PostgreSQL, Ollama,
-SearXNG, and Caddy images are pinned by digest; update those digests deliberately as part of a
-reviewed release.
+network, SearXNG reaches only the internal proxy network, and only the ACL proxy joins the ordinary
+search-egress bridge. The supplied base, PostgreSQL, Ollama, SearXNG, Squid, and Caddy images are
+pinned by digest; update those digests deliberately as part of a reviewed release.
 
 Full-disk encryption and encrypted backups remain host responsibilities. Embeddings and
 plaintext memory chunks are sensitive data. TTL deletion removes the live document and its

@@ -40,30 +40,49 @@ _MAX_TITLE_CHARS = 300
 _MAX_SNIPPET_CHARS = 2_000
 _STREAM_CHUNK_BYTES = 64 * 1024
 
-_EXPLICIT_SEARCH_PATTERNS = tuple(
+_COMMAND_BOUNDARY = r"(?:^|(?<=[.!?])\s+)"
+_ENGLISH_POLITE = r"(?:(?:could|can|would|will)\s+you\s+)?(?:please\s+)?"
+_FRENCH_POLITE = (
+    r"(?:(?:peux-tu|pouvez-vous|pourrais-tu|pourriez-vous|"
+    r"est-ce\s+que\s+tu\s+peux|est-ce\s+que\s+vous\s+pouvez)\s+)?"
+    r"(?:s['’]il\s+(?:te|vous)\s+pla[iî]t\s+)?"  # noqa: RUF001
+)
+_SEARCH_COMMAND_PATTERNS = tuple(
     re.compile(pattern, flags=re.IGNORECASE)
     for pattern in (
-        r"^\s*(?:(?:could|can|would|will)\s+you\s+)?(?:please\s+)?"
-        r"search\s+(?:the\s+)?(?:web|internet|online)\b",
-        r"^\s*(?:(?:could|can|would|will)\s+you\s+)?(?:please\s+)?"
-        r"(?:browse|check)\s+(?:the\s+)?(?:web|internet)\b",
-        r"^\s*(?:(?:could|can|would|will)\s+you\s+)?(?:please\s+)?"
-        r"(?:look|check)\s+(?:this|that|it|them)\s+up\s+online\b",
-        r"^\s*(?:(?:could|can|would|will)\s+you\s+)?(?:please\s+)?"
-        r"look\s+up\b[^.?!\n]{0,200}\bonline\b",
-        r"^\s*(?:(?:could|can|would|will)\s+you\s+)?(?:please\s+)?"
-        r"find\b[^.?!\n]{0,200}\b(?:on\s+the\s+(?:web|internet)|online)\b",
-        r"^\s*(?:(?:could|can|would|will)\s+you\s+)?(?:please\s+)?"
-        r"(?:do|run)\s+(?:a\s+)?web\s+search\b",
-        r"^\s*(?:(?:could|can|would|will)\s+you\s+)?(?:please\s+)?"
-        r"google\s+(?:this|that|it|for\b)",
+        _COMMAND_BOUNDARY
+        + _ENGLISH_POLITE
+        + r"(?:(?:search|browse|check)\s+(?:the\s+)?(?:web|internet|online)|"
+        r"(?:do|run)\s+(?:a\s+)?web\s+search)\b\s*"
+        r"(?:(?:for|about|on)\s+)?(?:and\s+)?(?:[:,\-]\s*)?",
+        _COMMAND_BOUNDARY
+        + _ENGLISH_POLITE
+        + r"(?:look|check)\s+(?P<query>this|that|it|them)\s+up\s+online\b",
+        _COMMAND_BOUNDARY
+        + _ENGLISH_POLITE
+        + r"(?:look\s+up|check)\s+(?P<query>[^.?!\n]{1,200}?)\s+online\b",
+        _COMMAND_BOUNDARY + _ENGLISH_POLITE + r"find\s+(?P<query>[^.?!\n]{1,200}?)\s+"
+        r"(?:on\s+the\s+(?:web|internet)|online)\b",
+        _COMMAND_BOUNDARY + _ENGLISH_POLITE + r"google\s+(?P<query>[^.?!\n]{1,200})(?=$|[.?!])",
+        _COMMAND_BOUNDARY
+        + _FRENCH_POLITE
+        + r"(?:cherche|cherchez|chercher|recherche|recherchez|rechercher|"
+        r"v[ée]rifie|v[ée]rifiez|v[ée]rifier)\s+"
+        r"(?P<query>[^.?!\n]{1,200}?)\s+"
+        r"(?:sur\s+(?:le\s+)?(?:web|internet)|en\s+ligne)\b",
+        _COMMAND_BOUNDARY
+        + _FRENCH_POLITE
+        + r"(?:cherche|cherchez|chercher|recherche|recherchez|rechercher|"
+        r"v[ée]rifie|v[ée]rifiez|v[ée]rifier)\s+"
+        r"(?:sur\s+(?:le\s+)?(?:web|internet)|en\s+ligne)\b\s*"
+        r"(?:(?:pour|sur|au\s+sujet\s+de)\s+)?(?:[:,\-]\s*)?",
+        _COMMAND_BOUNDARY + _FRENCH_POLITE + r"(?:fais|faites|faire)\s+(?:une\s+)?recherche\s+"
+        r"(?:web|internet|en\s+ligne)\b\s*"
+        r"(?:(?:pour|sur|au\s+sujet\s+de)\s+)?(?:[:,\-]\s*)?",
     )
 )
-_LEADING_SEARCH_COMMAND = re.compile(
-    r"^\s*(?:(?:could|can|would|will)\s+you\s+)?(?:please\s+)?"
-    r"(?:(?:search|browse|check)\s+(?:the\s+)?(?:web|internet|online)|"
-    r"(?:do|run)\s+(?:a\s+)?web\s+search)\s*"
-    r"(?:(?:for|about|on)\s+)?(?:and\s+)?(?:[:,\-]\s*)?",
+_TRAILING_POLITENESS = re.compile(
+    r"^\s*,?\s*(?:please|s['’]il\s+(?:te|vous)\s+pla[iî]t)\s*[.!?]*\s*$",  # noqa: RUF001
     flags=re.IGNORECASE,
 )
 
@@ -334,27 +353,63 @@ class SearxNGSearchBackend:
 def explicit_web_search_requested(text: str) -> bool:
     """Return whether text explicitly requests public-web lookup.
 
-    Generic local searches, negations, quotations, and mentions later in a sentence do
-    not match. This helper deliberately favors false negatives over surprising egress.
+    Generic local searches, negations, quotations, and incidental prose do not match.
+    Imperative commands may begin the request or a new sentence. This helper deliberately
+    favors false negatives over surprising egress.
     """
 
     if not isinstance(text, str) or not text.strip():
         return False
-    return any(pattern.search(text) is not None for pattern in _EXPLICIT_SEARCH_PATTERNS)
+    return _find_search_command(text) is not None
 
 
 def search_query_from_request(text: str, *, max_chars: int) -> str:
-    """Remove a leading search command while retaining the user's factual query."""
+    """Remove the detected search command while retaining the user's factual query."""
 
     if isinstance(max_chars, bool) or not isinstance(max_chars, int) or max_chars < 1:
         raise ValueError("max_chars must be a positive integer")
     if not isinstance(text, str):
         raise TypeError("text must be a string")
     normalized = " ".join(text.split())
-    candidate = _LEADING_SEARCH_COMMAND.sub("", normalized, count=1).strip()
+    match = _find_search_command(normalized)
+    if match is None:
+        return normalized[:max_chars].rstrip()
+
+    before = normalized[: match.start()].strip()
+    after = _TRAILING_POLITENESS.sub("", normalized[match.end() :]).strip()
+    embedded = match.groupdict().get("query", "").strip()
+    if _has_query_text(before):
+        candidate = " ".join(part for part in (before, after) if _has_query_text(part))
+    else:
+        candidate = " ".join(part for part in (embedded, after) if _has_query_text(part))
     if not candidate:
         candidate = normalized
     return candidate[:max_chars].rstrip()
+
+
+def _find_search_command(text: str) -> re.Match[str] | None:
+    for pattern in _SEARCH_COMMAND_PATTERNS:
+        match = pattern.search(text)
+        if match is not None and not _match_is_quoted(text, match):
+            return match
+    return None
+
+
+def _match_is_quoted(text: str, match: re.Match[str]) -> bool:
+    command_start = match.start()
+    for opening, closing in (('"', '"'), ("`", "`"), ("“", "”"), ("«", "»")):
+        before = text[:command_start]
+        if opening == closing:
+            if before.count(opening) % 2:
+                return True
+            continue
+        if before.rfind(opening) > before.rfind(closing) and text.find(closing, match.end()) != -1:
+            return True
+    return False
+
+
+def _has_query_text(value: str) -> bool:
+    return bool(value.strip(" \t\r\n.,!?;:-"))
 
 
 def _validate_origin(value: str) -> str:

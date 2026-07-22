@@ -6,7 +6,7 @@ import os
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import psycopg
 import pytest
@@ -30,6 +30,7 @@ from mongars.db.models import (
     TaskQueue,
 )
 from mongars.db.session import Database
+from mongars.events.repository import ConversationMessage, EventRepository
 from mongars.inference.base import EmbeddingResponse
 from mongars.memory.chunking import TextChunk
 from mongars.memory.repository import MemoryGovernanceConflict, MemoryRepository
@@ -285,6 +286,102 @@ def test_migrated_schema_enforces_owner_isolation() -> None:
                 ) is document_b
         finally:
             await _clean_owner_data(engine, owners)
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_conversation_history_is_owner_and_session_isolated() -> None:
+    async def exercise() -> None:
+        engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        owner_a = _owner("history-a")
+        owner_b = _owner("history-b")
+        session_a = uuid4()
+        other_session = uuid4()
+        created_at = datetime.now(UTC)
+        event_index = 0
+
+        async def record_message(
+            repository: EventRepository,
+            *,
+            owner_id: str,
+            session_id: UUID,
+            actor: str,
+            content: str,
+        ) -> None:
+            nonlocal event_index
+            event = await repository.record(
+                owner_id=owner_id,
+                session_id=session_id,
+                trace_id=f"trace-{uuid4().hex}",
+                actor=actor,
+                event_type="message",
+                summary=content[:500],
+                payload={"content": content},
+            )
+            event.created_at = created_at + timedelta(microseconds=event_index)
+            event_index += 1
+
+        try:
+            async with sessions.begin() as session:
+                repository = EventRepository(session)
+                await record_message(
+                    repository,
+                    owner_id=owner_a,
+                    session_id=session_a,
+                    actor="user",
+                    content="My workshop is in Laval.",
+                )
+                await record_message(
+                    repository,
+                    owner_id=owner_a,
+                    session_id=session_a,
+                    actor="cortex",
+                    content="I noted Laval.",
+                )
+                await record_message(
+                    repository,
+                    owner_id=owner_a,
+                    session_id=other_session,
+                    actor="user",
+                    content="Other session content.",
+                )
+                await record_message(
+                    repository,
+                    owner_id=owner_b,
+                    session_id=session_a,
+                    actor="user",
+                    content="Other owner content.",
+                )
+                await record_message(
+                    repository,
+                    owner_id=owner_a,
+                    session_id=session_a,
+                    actor="user",
+                    content="Correction: it is in Longueuil.",
+                )
+
+            async with sessions() as session:
+                history = await EventRepository(session).recent_conversation(
+                    owner_id=owner_a,
+                    session_id=session_a,
+                    limit=12,
+                )
+                latest_two = await EventRepository(session).recent_conversation(
+                    owner_id=owner_a,
+                    session_id=session_a,
+                    limit=2,
+                )
+
+            assert history == (
+                ConversationMessage(role="user", content="My workshop is in Laval."),
+                ConversationMessage(role="assistant", content="I noted Laval."),
+                ConversationMessage(role="user", content="Correction: it is in Longueuil."),
+            )
+            assert latest_two == history[-2:]
+        finally:
+            await _clean_owner_data(engine, {owner_a, owner_b})
             await engine.dispose()
 
     asyncio.run(exercise())

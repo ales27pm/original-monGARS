@@ -9,7 +9,7 @@
     token: readSessionToken(),
     sessionId: null,
     tasks: [],
-    taskDetails: new Map(),
+    taskReviews: new Map(),
     taskFilter: "all",
     currentView: "chat",
     taskPoll: null,
@@ -59,6 +59,7 @@
     newChat: document.querySelector("#new-chat"),
     toastRegion: document.querySelector("#toast-region"),
     toggleToken: document.querySelector("#toggle-token"),
+    webSearchMode: document.querySelector("#web-search-mode"),
   };
 
   class ApiError extends Error {
@@ -260,7 +261,7 @@
     state.token = "";
     state.sessionId = null;
     state.tasks = [];
-    state.taskDetails.clear();
+    state.taskReviews.clear();
     writeSessionToken("");
     stopTaskPolling();
     renderTaskCount();
@@ -403,6 +404,7 @@
           session_id: state.sessionId,
           message,
           require_local_only: dom.localOnly.checked,
+          web_search: dom.webSearchMode.value,
         }),
       });
       state.sessionId = payload.session_id;
@@ -497,17 +499,156 @@
     }
   }
 
-  function renderTaskReview(card, detail) {
+  function taskPayloadPreview(summary) {
+    if (summary.preview_omitted_characters === 0) return summary.preview_head;
+    return `${summary.preview_head}\n\n… ${summary.preview_omitted_characters.toLocaleString()} characters omitted …\n\n${summary.preview_tail}`;
+  }
+
+  function createTaskReview(detail) {
+    const summary = detail.payload_summary;
+    if (
+      !summary
+      || summary.format !== "sorted-pretty-json-v1"
+      || summary.encoding !== "utf-8"
+      || !Number.isSafeInteger(summary.page_count)
+      || summary.page_count < 1
+      || !Number.isSafeInteger(summary.page_size_characters)
+      || summary.page_size_characters < 1
+      || summary.page_size_characters > 8_000
+      || typeof summary.preview_head !== "string"
+      || typeof summary.preview_tail !== "string"
+      || !Number.isSafeInteger(summary.preview_omitted_characters)
+      || summary.preview_omitted_characters < 0
+    ) {
+      throw new ApiError("The server returned an invalid protected payload summary.");
+    }
+    return {
+      actionDigest: typeof detail.action_digest === "string" ? detail.action_digest : "",
+      expanded: false,
+      integrityFailed: false,
+      page: null,
+      pageError: "",
+      pageIndex: 0,
+      pageLoading: false,
+      payloadSummary: summary,
+    };
+  }
+
+  function formatPayloadBytes(byteLength) {
+    if (byteLength < 1_024) return `${byteLength} B`;
+    if (byteLength < 1_048_576) return `${(byteLength / 1_024).toFixed(1)} KiB`;
+    return `${(byteLength / 1_048_576).toFixed(2)} MiB`;
+  }
+
+  function renderTaskReview(card, taskId, reviewState) {
+    const payloadSummary = reviewState.payloadSummary;
+    const pageCount = payloadSummary.page_count;
+    const pageIndex = Math.max(0, Math.min(reviewState.pageIndex, pageCount - 1));
+    reviewState.pageIndex = pageIndex;
+
     const review = element("section", "task-review");
     review.append(
-      element("strong", "", "Exact action payload"),
-      element("p", "", "Approve only if every field below matches the action you intend."),
-      element("pre", "task-result", taskResultText(detail.payload)),
+      element("strong", "", "Protected approval review"),
+      element(
+        "p",
+        "",
+        "The digest covers the complete canonical payload, including content outside this bounded view.",
+      ),
     );
-    if (detail.action_digest) {
-      review.append(element("div", "task-meta", `Integrity digest: ${detail.action_digest}`));
+
+    if (reviewState.actionDigest) {
+      const digest = element("div", "task-digest");
+      digest.append(
+        element("span", "", "Integrity digest"),
+        element("code", "", reviewState.actionDigest),
+      );
+      review.append(digest);
     }
+
+    const fieldLabel = `${payloadSummary.top_level_field_count} ${payloadSummary.top_level_field_count === 1 ? "field" : "fields"}`;
+    const pageLabel = `${pageCount} ${pageCount === 1 ? "page" : "pages"}`;
+    review.append(
+      element(
+        "div",
+        "task-payload-summary",
+        `${formatPayloadBytes(payloadSummary.byte_length)} · ${fieldLabel} · ${pageLabel}`,
+      ),
+    );
+
+    const displayedPayload = reviewState.expanded
+      ? reviewState.pageLoading
+        ? "Loading this exact payload page…"
+        : reviewState.page?.page_index === pageIndex
+          ? reviewState.page.content
+          : "This payload page is unavailable."
+      : taskPayloadPreview(payloadSummary);
+    const payload = element("pre", "task-result task-payload-page", displayedPayload);
+    payload.tabIndex = 0;
+    payload.setAttribute(
+      "aria-label",
+      reviewState.expanded
+        ? `Approval payload page ${pageIndex + 1} of ${pageCount}`
+        : "Bounded approval payload preview",
+    );
+    review.append(payload);
+
+    if (reviewState.pageError || reviewState.integrityFailed) {
+      review.append(
+        element(
+          "div",
+          "task-error",
+          reviewState.integrityFailed
+            ? "The payload digest changed. Close this review and load it again."
+            : reviewState.pageError,
+        ),
+      );
+    }
+
+    if (payloadSummary.preview_omitted_characters > 0 || pageCount > 1) {
+      const controls = element("div", "task-payload-controls");
+      if (reviewState.expanded) {
+        const previous = element("button", "", "Previous");
+        previous.type = "button";
+        previous.disabled = pageIndex === 0 || reviewState.pageLoading || reviewState.integrityFailed;
+        previous.dataset.taskReviewAction = "previous";
+        previous.dataset.taskId = taskId;
+
+        const pageStatus = element(
+          "span",
+          "task-payload-page-status",
+          `Page ${pageIndex + 1} of ${pageCount}`,
+        );
+        pageStatus.setAttribute("aria-live", "polite");
+
+        const next = element("button", "", "Next");
+        next.type = "button";
+        next.disabled = pageIndex === pageCount - 1 || reviewState.pageLoading || reviewState.integrityFailed;
+        next.dataset.taskReviewAction = "next";
+        next.dataset.taskId = taskId;
+        controls.append(previous, pageStatus, next);
+      }
+
+      const toggle = element(
+        "button",
+        "task-payload-toggle",
+        reviewState.expanded ? "Show bounded preview" : "Open exact payload pages",
+      );
+      toggle.type = "button";
+      toggle.disabled = reviewState.pageLoading || reviewState.integrityFailed;
+      toggle.dataset.taskReviewAction = reviewState.expanded ? "preview" : "full";
+      toggle.dataset.taskId = taskId;
+      controls.append(toggle);
+      review.append(controls);
+    }
+
     card.append(review);
+  }
+
+  function reconcileTaskReviews() {
+    const taskStatuses = new Map(state.tasks.map((task) => [task.id, task.status]));
+    for (const taskId of state.taskReviews.keys()) {
+      if (taskStatuses.get(taskId) !== "waiting_approval") state.taskReviews.delete(taskId);
+    }
   }
 
   function renderTasks() {
@@ -565,20 +706,25 @@
       if (task.result) card.append(element("pre", "task-result", taskResultText(task.result)));
       if (task.error_text) card.append(element("div", "task-error", task.error_text));
 
-      const detail = state.taskDetails.get(task.id);
-      if (task.status === "waiting_approval" && detail) renderTaskReview(card, detail);
+      const reviewState = state.taskReviews.get(task.id);
+      if (task.status === "waiting_approval" && reviewState) {
+        renderTaskReview(card, task.id, reviewState);
+      }
 
       if (["waiting_approval", "queued"].includes(task.status)) {
         const actions = element("div", "task-actions");
         if (task.status === "waiting_approval") {
           const approve = element(
             "button",
-            detail ? "approve-action" : "",
-            detail ? "Approve exact action" : "Review protected action",
+            reviewState ? "approve-action" : "",
+            reviewState ? "Approve exact action" : "Review protected action",
           );
           approve.type = "button";
-          approve.dataset.taskAction = detail ? "approve" : "review";
+          approve.dataset.taskAction = reviewState ? "approve" : "review";
           approve.dataset.taskId = task.id;
+          approve.disabled = Boolean(
+            reviewState && (!reviewState.actionDigest || reviewState.integrityFailed),
+          );
           actions.append(approve);
         }
         const cancel = element("button", "", "Cancel");
@@ -608,6 +754,7 @@
     if (!silent) renderTaskLoading();
     try {
       state.tasks = await apiFetch("/v1/tasks?limit=50");
+      reconcileTaskReviews();
       renderTaskCount();
       renderTasks();
     } catch (error) {
@@ -632,11 +779,21 @@
     try {
       if (action === "review") {
         const detail = await apiFetch(`/v1/tasks/${encodeURIComponent(taskId)}`);
-        state.taskDetails.set(taskId, detail);
+        state.taskReviews.set(taskId, createTaskReview(detail));
         renderTasks();
         return;
       }
-      await apiFetch(`/v1/tasks/${encodeURIComponent(taskId)}/${action}`, { method: "POST" });
+      const reviewState = state.taskReviews.get(taskId);
+      if (action === "approve" && (!reviewState?.actionDigest || reviewState.integrityFailed)) {
+        throw new ApiError("Reload and review this protected action before approving it.");
+      }
+      await apiFetch(`/v1/tasks/${encodeURIComponent(taskId)}/${action}`, {
+        method: "POST",
+        body: action === "approve"
+          ? JSON.stringify({ action_digest: reviewState.actionDigest })
+          : undefined,
+      });
+      state.taskReviews.delete(taskId);
       toast(action === "approve" ? "Protected action approved." : "Task cancelled.", "success");
       await refreshTasks({ silent: true });
       if (action === "approve") window.setTimeout(() => refreshTasks({ silent: true }), 1_500);
@@ -645,6 +802,69 @@
       button.disabled = false;
       button.textContent = original;
     }
+  }
+
+  async function loadTaskPayloadPage(taskId, reviewState, pageIndex) {
+    reviewState.pageLoading = true;
+    reviewState.pageError = "";
+    renderTasks();
+    try {
+      const page = await apiFetch(
+        `/v1/tasks/${encodeURIComponent(taskId)}/payload?page=${pageIndex}`,
+      );
+      if (
+        page.task_id !== taskId
+        || page.action_digest !== reviewState.actionDigest
+        || page.format !== "sorted-pretty-json-v1"
+        || page.encoding !== "utf-8"
+        || page.page_index !== pageIndex
+        || page.page_count !== reviewState.payloadSummary.page_count
+        || page.page_size_characters !== reviewState.payloadSummary.page_size_characters
+        || page.character_start !== pageIndex * page.page_size_characters
+        || !Number.isSafeInteger(page.character_end)
+        || page.character_end < page.character_start
+        || page.character_end - page.character_start > page.page_size_characters
+        || typeof page.content !== "string"
+        || page.content.length > page.page_size_characters * 2
+      ) {
+        reviewState.integrityFailed = true;
+        throw new ApiError("The payload page did not match the protected review digest.");
+      }
+      reviewState.page = page;
+      reviewState.pageIndex = pageIndex;
+    } catch (error) {
+      reviewState.pageError = error instanceof Error
+        ? error.message
+        : "Could not load this payload page.";
+    } finally {
+      reviewState.pageLoading = false;
+      if (state.taskReviews.get(taskId) === reviewState) renderTasks();
+    }
+  }
+
+  async function handleTaskReviewAction(button) {
+    const taskId = button.dataset.taskId;
+    const action = button.dataset.taskReviewAction;
+    const reviewState = taskId ? state.taskReviews.get(taskId) : null;
+    if (!reviewState || !action) return;
+
+    if (action === "preview") {
+      reviewState.expanded = false;
+      renderTasks();
+      return;
+    }
+    if (reviewState.pageLoading || reviewState.integrityFailed) return;
+
+    let targetPage = reviewState.pageIndex;
+    if (action === "full") {
+      reviewState.expanded = true;
+      targetPage = 0;
+    } else if (action === "previous") targetPage -= 1;
+    else if (action === "next") targetPage += 1;
+    else return;
+
+    if (targetPage < 0 || targetPage >= reviewState.payloadSummary.page_count) return;
+    await loadTaskPayloadPage(taskId, reviewState, targetPage);
   }
 
   function startTaskPolling() {
@@ -794,6 +1014,11 @@
     });
 
     dom.taskList.addEventListener("click", (event) => {
+      const reviewButton = event.target.closest("[data-task-review-action]");
+      if (reviewButton) {
+        void handleTaskReviewAction(reviewButton);
+        return;
+      }
       const button = event.target.closest("[data-task-action]");
       if (button) handleTaskAction(button);
     });

@@ -13,11 +13,23 @@ from mongars.api.dependencies import (
     SessionDependency,
     SettingsDependency,
 )
-from mongars.api.schemas import TaskCreateRequest, TaskDetailResponse, TaskResponse
+from mongars.api.schemas import (
+    TaskApproveRequest,
+    TaskCreateRequest,
+    TaskDetailResponse,
+    TaskPayloadPageResponse,
+    TaskResponse,
+)
 from mongars.events.repository import EventRepository
 from mongars.rm.contracts import UnsupportedTaskKind
+from mongars.rm.payload_view import task_payload_page
 from mongars.rm.repository import TaskRepository
-from mongars.rm.service import TaskIntegrityError, TaskService, TaskStateError
+from mongars.rm.service import (
+    TaskIntegrityError,
+    TaskReviewMismatchError,
+    TaskService,
+    TaskStateError,
+)
 
 router = APIRouter(prefix="/v1/tasks", tags=["tasks"])
 
@@ -86,9 +98,34 @@ async def get_task(
     return TaskDetailResponse.from_model(task)
 
 
+@router.get("/{task_id}/payload", response_model=TaskPayloadPageResponse)
+async def get_task_payload_page(
+    task_id: UUID,
+    principal: PrincipalDependency,
+    session: SessionDependency,
+    page: Annotated[int, Query(ge=0, le=100_000)] = 0,
+) -> TaskPayloadPageResponse:
+    task = await TaskRepository(session).get_for_owner(
+        task_id=task_id,
+        owner_id=principal.subject,
+    )
+    if task is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
+    await session.refresh(task)
+    try:
+        rendered_page = task_payload_page(task.payload, page_index=page)
+    except IndexError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+            detail="payload page is out of range",
+        ) from exc
+    return TaskPayloadPageResponse.from_rendered(task=task, page=rendered_page)
+
+
 @router.post("/{task_id}/approve", response_model=TaskResponse)
 async def approve_task(
     task_id: UUID,
+    request: TaskApproveRequest,
     principal: PrincipalDependency,
     session: SessionDependency,
     settings: SettingsDependency,
@@ -96,7 +133,13 @@ async def approve_task(
 ) -> TaskResponse:
     service = _service(settings=settings, session=session, policy=policy)
     try:
-        task = await service.approve(owner_id=principal.subject, task_id=task_id)
+        task = await service.approve(
+            owner_id=principal.subject,
+            task_id=task_id,
+            reviewed_action_digest=request.action_digest,
+        )
+    except TaskReviewMismatchError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     except (TaskStateError, TaskIntegrityError) as exc:
         # Expiry and digest failures intentionally transition the task to a terminal state.
         # Persist that audit-relevant state before the HTTP error causes dependency rollback.

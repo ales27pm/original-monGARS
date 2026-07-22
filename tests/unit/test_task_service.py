@@ -13,7 +13,12 @@ from mongars.config import Environment, Settings
 from mongars.db.models import TaskQueue
 from mongars.events.repository import EventRepository
 from mongars.rm.repository import TaskRepository
-from mongars.rm.service import TaskIntegrityError, TaskService, TaskStateError
+from mongars.rm.service import (
+    TaskIntegrityError,
+    TaskReviewMismatchError,
+    TaskService,
+    TaskStateError,
+)
 from mongars.security.policy import ActionClassification, ToolPolicy
 
 
@@ -139,7 +144,11 @@ async def test_expired_approval_is_rejected_and_task_is_cancelled(
     task.approval_expires_at = datetime.now(UTC) - timedelta(seconds=1)
 
     with pytest.raises(TaskStateError, match="approval has expired"):
-        await harness.service.approve(owner_id=task.owner_id, task_id=task.id)
+        await harness.service.approve(
+            owner_id=task.owner_id,
+            task_id=task.id,
+            reviewed_action_digest=_action_digest(task),
+        )
 
     assert task.status == "cancelled"
     assert task.error_text == "approval expired"
@@ -154,7 +163,11 @@ async def test_payload_tampering_before_approval_invalidates_digest(
     task.payload = {**task.payload, "text": "attacker changed this"}
 
     with pytest.raises(TaskIntegrityError, match="approval is no longer valid"):
-        await harness.service.approve(owner_id=task.owner_id, task_id=task.id)
+        await harness.service.approve(
+            owner_id=task.owner_id,
+            task_id=task.id,
+            reviewed_action_digest=_action_digest(task),
+        )
 
     assert task.status == "failed"
     assert task.error_text == "approval action digest mismatch"
@@ -165,7 +178,11 @@ async def test_payload_tampering_after_approval_fails_execution(
     harness: ServiceHarness,
 ) -> None:
     task = await _create_mutation(harness)
-    approved = await harness.service.approve(owner_id=task.owner_id, task_id=task.id)
+    approved = await harness.service.approve(
+        owner_id=task.owner_id,
+        task_id=task.id,
+        reviewed_action_digest=_action_digest(task),
+    )
     assert approved is task
     task.payload = {**task.payload, "title": "changed after approval"}
 
@@ -176,9 +193,30 @@ async def test_payload_tampering_after_approval_fails_execution(
 
 
 @pytest.mark.asyncio
+async def test_approval_requires_the_digest_that_the_client_reviewed(
+    harness: ServiceHarness,
+) -> None:
+    task = await _create_mutation(harness)
+
+    with pytest.raises(TaskReviewMismatchError, match="reviewed action digest"):
+        await harness.service.approve(
+            owner_id=task.owner_id,
+            task_id=task.id,
+            reviewed_action_digest="0" * 64,
+        )
+
+    assert task.status == "waiting_approval"
+    assert task.approved_at is None
+
+
+@pytest.mark.asyncio
 async def test_consumed_approval_cannot_be_replayed(harness: ServiceHarness) -> None:
     task = await _create_mutation(harness)
-    await harness.service.approve(owner_id=task.owner_id, task_id=task.id)
+    await harness.service.approve(
+        owner_id=task.owner_id,
+        task_id=task.id,
+        reviewed_action_digest=_action_digest(task),
+    )
 
     harness.service.verify_for_execution(task)
     consumed_at = task.consumed_at
@@ -193,10 +231,19 @@ async def test_consumed_approval_cannot_be_replayed(harness: ServiceHarness) -> 
 @pytest.mark.asyncio
 async def test_approval_request_cannot_be_replayed(harness: ServiceHarness) -> None:
     task = await _create_mutation(harness)
-    await harness.service.approve(owner_id=task.owner_id, task_id=task.id)
+    reviewed_digest = _action_digest(task)
+    await harness.service.approve(
+        owner_id=task.owner_id,
+        task_id=task.id,
+        reviewed_action_digest=reviewed_digest,
+    )
 
     with pytest.raises(TaskStateError, match="task is queued, not waiting_approval"):
-        await harness.service.approve(owner_id=task.owner_id, task_id=task.id)
+        await harness.service.approve(
+            owner_id=task.owner_id,
+            task_id=task.id,
+            reviewed_action_digest=reviewed_digest,
+        )
 
     approval_events = [
         record for record in harness.events.records if record["event_type"] == "task_approved"
@@ -209,7 +256,11 @@ async def test_approval_expiring_before_execution_is_rejected(
     harness: ServiceHarness,
 ) -> None:
     task = await _create_mutation(harness)
-    await harness.service.approve(owner_id=task.owner_id, task_id=task.id)
+    await harness.service.approve(
+        owner_id=task.owner_id,
+        task_id=task.id,
+        reviewed_action_digest=_action_digest(task),
+    )
     task.approval_expires_at = datetime.now(UTC) - timedelta(seconds=1)
 
     with pytest.raises(TaskIntegrityError, match="expired before execution"):
@@ -258,7 +309,11 @@ async def test_changing_read_only_kind_to_mutation_does_not_bypass_approval(
 async def test_approval_is_owner_scoped(harness: ServiceHarness) -> None:
     task = await _create_mutation(harness)
 
-    result = await harness.service.approve(owner_id="different-owner", task_id=task.id)
+    result = await harness.service.approve(
+        owner_id="different-owner",
+        task_id=task.id,
+        reviewed_action_digest=_action_digest(task),
+    )
 
     assert result is None
     assert task.status == "waiting_approval"
@@ -271,3 +326,8 @@ async def _create_mutation(harness: ServiceHarness) -> TaskQueue:
         kind="memory.note.create",
         payload={"text": "original text"},
     )
+
+
+def _action_digest(task: TaskQueue) -> str:
+    assert task.action_digest is not None
+    return task.action_digest

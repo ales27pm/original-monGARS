@@ -11,19 +11,22 @@ import {
 import {
   clearApiBaseUrl,
   readApiBaseUrl,
+  resolveConfiguredApiBaseUrl,
   saveApiBaseUrl,
   subscribeApiBaseUrl,
 } from '@/lib/api-base-url';
 import {
   clearApiToken,
-  readApiToken,
+  type StoredCredential,
+  readApiCredential,
   saveApiToken,
-  subscribeApiToken,
+  subscribeApiCredential,
 } from '@/lib/api-token';
 import {
   ApiConfigurationError,
   type ApiTransportSecurity,
   getApiTransportSecurity,
+  getMongarsApiOrigin,
   MongarsClient,
   normalizeMongarsApiBaseUrl,
 } from '@/lib/api';
@@ -61,17 +64,26 @@ export function MongarsProvider({ children, baseUrl: baseUrlOverride }: MongarsP
   const configuration = useMemo(() => {
     // Do not fall back to a build-time development URL until native storage has been checked. This
     // prevents a saved bearer token from racing onto a different origin during app startup.
-    if (!baseUrlOverride && baseUrlStatus === 'loading') {
+    if (!baseUrlOverride && (baseUrlStatus === 'loading' || baseUrlStatus === 'error')) {
       return {
         baseUrl: null,
         client: null,
         transportSecurity: null,
-        error: null,
+        error:
+          baseUrlStatus === 'error'
+            ? new ApiConfigurationError(
+                'The saved server URL could not be verified. Open Settings and save it again.',
+              )
+            : null,
       };
     }
 
-    const configuredBaseUrl =
-      baseUrlOverride ?? savedBaseUrl ?? process.env.EXPO_PUBLIC_MONGARS_API_URL;
+    const configuredBaseUrl = resolveConfiguredApiBaseUrl({
+      override: baseUrlOverride,
+      persisted: savedBaseUrl,
+      storageStatus: baseUrlStatus,
+      buildTime: process.env.EXPO_PUBLIC_MONGARS_API_URL,
+    });
     if (!configuredBaseUrl?.trim()) {
       return {
         baseUrl: null,
@@ -102,8 +114,9 @@ export function MongarsProvider({ children, baseUrl: baseUrlOverride }: MongarsP
       };
     }
   }, [baseUrlOverride, baseUrlStatus, savedBaseUrl]);
-  const [tokenStatus, setTokenStatus] = useState<ApiTokenStatus>('loading');
-  const [tokenStorageError, setTokenStorageError] = useState<Error | null>(null);
+  const [credential, setCredential] = useState<StoredCredential | null>(null);
+  const [credentialStatus, setCredentialStatus] = useState<ApiTokenStatus>('loading');
+  const [credentialStorageError, setCredentialStorageError] = useState<Error | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -132,17 +145,18 @@ export function MongarsProvider({ children, baseUrl: baseUrlOverride }: MongarsP
 
   useEffect(() => {
     let active = true;
-    const unsubscribe = subscribeApiToken((token) => {
+    const unsubscribe = subscribeApiCredential((nextCredential) => {
       if (active) {
-        setTokenStatus(token ? 'ready' : 'missing');
-        setTokenStorageError(null);
+        setCredential(nextCredential);
+        setCredentialStatus(nextCredential ? 'ready' : 'missing');
+        setCredentialStorageError(null);
       }
     });
 
-    readApiToken().catch((error: unknown) => {
+    readApiCredential().catch((error: unknown) => {
       if (active) {
-        setTokenStatus('error');
-        setTokenStorageError(
+        setCredentialStatus('error');
+        setCredentialStorageError(
           error instanceof Error ? error : new Error('Unable to read the API token.'),
         );
       }
@@ -154,11 +168,25 @@ export function MongarsProvider({ children, baseUrl: baseUrlOverride }: MongarsP
     };
   }, []);
 
+  const credentialOriginError = useMemo(() => {
+    if (!credential || !configuration.baseUrl) return null;
+    return credential.origin === getMongarsApiOrigin(configuration.baseUrl)
+      ? null
+      : new ApiConfigurationError(
+          'The saved token belongs to another monGARS server. Authenticate again.',
+        );
+  }, [configuration.baseUrl, credential]);
+  const tokenStatus: ApiTokenStatus = credentialOriginError ? 'error' : credentialStatus;
+  const tokenStorageError = credentialOriginError ?? credentialStorageError;
+
   const saveBaseUrl = useCallback(
     async (baseUrl: string) => {
       try {
         const normalized = normalizeMongarsApiBaseUrl(baseUrl);
-        const destinationChanged = configuration.baseUrl !== normalized;
+        const currentOrigin = configuration.baseUrl
+          ? getMongarsApiOrigin(configuration.baseUrl)
+          : null;
+        const destinationChanged = currentOrigin !== getMongarsApiOrigin(normalized);
         if (destinationChanged) {
           // Never carry a bearer credential across origins. The user must explicitly authenticate
           // again after selecting a different control plane.
@@ -201,16 +229,16 @@ export function MongarsProvider({ children, baseUrl: baseUrlOverride }: MongarsP
               'Configure a secure monGARS API URL before saving a token.',
           );
         }
-        await saveApiToken(token);
+        await saveApiToken(configuration.baseUrl, token);
       } catch (error) {
         const storageError =
           error instanceof Error ? error : new Error('Unable to store the API token.');
-        setTokenStatus('error');
-        setTokenStorageError(storageError);
+        setCredentialStatus('error');
+        setCredentialStorageError(storageError);
         throw storageError;
       }
     },
-    [configuration.transportSecurity],
+    [configuration.baseUrl, configuration.transportSecurity],
   );
 
   const clearToken = useCallback(async () => {
@@ -219,7 +247,7 @@ export function MongarsProvider({ children, baseUrl: baseUrlOverride }: MongarsP
     } catch (error) {
       const storageError =
         error instanceof Error ? error : new Error('Unable to clear the API token.');
-      setTokenStorageError(storageError);
+      setCredentialStorageError(storageError);
       throw storageError;
     }
   }, []);

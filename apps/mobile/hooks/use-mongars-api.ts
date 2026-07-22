@@ -10,6 +10,7 @@ import type {
   MemorySearchResponse,
   ReadinessResponse,
   TaskDetailResponse,
+  TaskPayloadPageResponse,
   TaskResponse,
 } from '@/types/mongars-api';
 
@@ -213,6 +214,50 @@ export function useTaskDetail(
   return useAbortableQuery(loader, options.auto ?? true);
 }
 
+export function useTaskPayloadPage(
+  taskId: string,
+  page: number,
+  actionDigest: string | null,
+  pageCount: number,
+  pageSizeCharacters: number,
+  options: QueryOptions = {},
+): QueryResult<TaskPayloadPageResponse> {
+  const { client, configurationError } = useMongars();
+  const loader = useCallback(async (signal: AbortSignal) => {
+    if (!actionDigest) throw new Error('The protected review has no action digest.');
+    const payloadPage = await requireClient(client, configurationError).getTaskPayloadPage(
+      taskId,
+      page,
+      { signal },
+    );
+    if (
+      payloadPage.task_id !== taskId ||
+      payloadPage.action_digest !== actionDigest ||
+      payloadPage.format !== 'sorted-pretty-json-v1' ||
+      payloadPage.encoding !== 'utf-8' ||
+      payloadPage.page_index !== page ||
+      payloadPage.page_count !== pageCount ||
+      payloadPage.page_size_characters !== pageSizeCharacters ||
+      payloadPage.character_start !== page * pageSizeCharacters ||
+      payloadPage.character_end < payloadPage.character_start ||
+      payloadPage.character_end - payloadPage.character_start > pageSizeCharacters ||
+      payloadPage.content.length > pageSizeCharacters * 2
+    ) {
+      throw new Error('The payload page did not match the protected review digest.');
+    }
+    return payloadPage;
+  }, [
+    actionDigest,
+    client,
+    configurationError,
+    page,
+    pageCount,
+    pageSizeCharacters,
+    taskId,
+  ]);
+  return useAbortableQuery(loader, options.auto ?? true);
+}
+
 export function useChat(): MutationResult<ChatRequest, ChatResponse> {
   const { client, configurationError } = useMongars();
   const executor = useCallback(
@@ -246,11 +291,18 @@ export function useCreateMemoryNote(): MutationResult<MemoryNoteCreateRequest, T
   return useAbortableMutation(executor);
 }
 
-export function useApproveTask(): MutationResult<string, TaskResponse> {
+export function useApproveTask(): MutationResult<
+  { taskId: string; actionDigest: string },
+  TaskResponse
+> {
   const { client, configurationError } = useMongars();
   const executor = useCallback(
-    (taskId: string, signal: AbortSignal) =>
-      requireClient(client, configurationError).approveTask(taskId, { signal }),
+    (input: { taskId: string; actionDigest: string }, signal: AbortSignal) =>
+      requireClient(client, configurationError).approveTask(
+        input.taskId,
+        input.actionDigest,
+        { signal },
+      ),
     [client, configurationError],
   );
   return useAbortableMutation(executor);

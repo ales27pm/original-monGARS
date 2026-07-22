@@ -45,6 +45,37 @@ async def test_checked_in_web_bundle_is_complete_and_served() -> None:
     assert "task-review" in stylesheet.text
 
 
+def test_web_approval_payload_review_is_bounded_paginated_and_stateful() -> None:
+    script = (WEB_STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    stylesheet = (WEB_STATIC_ROOT / "app.css").read_text(encoding="utf-8")
+    render_start = script.index("function renderTaskReview")
+    render_end = script.index("function reconcileTaskReviews", render_start)
+    render_source = script[render_start:render_end]
+
+    assert "state.taskReviews.set(taskId, createTaskReview(detail))" in script
+    assert "state.taskReviews.get(task.id)" in script
+    assert "state.taskReviews.delete(taskId)" in script
+    assert "const taskStatuses = new Map(state.tasks.map" in script
+    assert 'if (taskStatuses.get(taskId) !== "waiting_approval")' in script
+
+    assert "JSON.stringify" not in render_source
+    assert "taskResultText(detail.payload)" not in script
+    assert "reviewState.page.content" in render_source
+    assert "taskPayloadPreview(payloadSummary)" in render_source
+    assert 'element("code", "", reviewState.actionDigest)' in render_source
+    assert "Open exact payload pages" in render_source
+    assert "data-task-review-action" in script
+    assert "/payload?page=${pageIndex}" in script
+    assert "page.action_digest !== reviewState.actionDigest" in script
+    assert "JSON.stringify(detail.payload" not in script
+    assert "JSON.stringify({ action_digest: reviewState.actionDigest })" in script
+
+    assert ".task-payload-page" in stylesheet
+    assert ".task-payload-controls" in stylesheet
+    assert ".task-digest code" in stylesheet
+    assert "overflow-wrap: anywhere" in stylesheet
+
+
 @pytest.mark.asyncio
 async def test_web_index_has_strict_browser_policy_and_is_not_documented(
     static_root: Path,

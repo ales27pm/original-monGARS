@@ -23,7 +23,8 @@ EXPO_PUBLIC_MONGARS_API_URL=https://YOUR_MONGARS_HOSTNAME
 Scan the Metro QR code with Expo Go. Open Settings, save the server URL, and paste the API token when
 prompted. Native builds remember the selected URL, so production/TestFlight binaries do not require
 a build-time server address.
-The token is stored through `expo-secure-store` in the iOS Keychain; it must never be placed in an
+The token and its normalized server origin are stored together through `expo-secure-store` in the
+iOS Keychain; a credential is never sent to a different origin and must never be placed in an
 `EXPO_PUBLIC_` environment variable or committed to the repository. The browser preview keeps a
 token in memory only and loses it on refresh.
 
@@ -56,6 +57,7 @@ const chat = useChat();
 await chat.mutate({
   message: 'Summarize my latest memory.',
   require_local_only: true,
+  web_search: 'off',
 });
 ```
 
@@ -63,7 +65,8 @@ Available hooks:
 
 - `useReadiness({ auto? })`
 - `useTasks({ auto?, limit? })`
-- `useTaskDetail(taskId, { auto? })` for payload and action-digest review before approval
+- `useTaskDetail(taskId, { auto? })` for the bounded payload summary and action digest
+- `useTaskPayloadPage(taskId, page, digest, pageCount, pageSize, { auto? })` for one exact page
 - `useChat()`
 - `useMemorySearch()`
 - `useCreateMemoryNote()`
@@ -76,6 +79,11 @@ support are available through `MongarsClient` from `@/lib/api`.
 
 HTTP failures use the typed `ApiError` shape (`status`, `code`, and `detail`). A server `401`
 automatically clears the rejected token from the current session and SecureStore.
+
+Chat requests always include the selected web-search policy (`Off`, `Auto`, or `Required`). Task
+approval renders a server-bounded payload preview by default; exact content is downloaded through
+one fixed-size page request at a time. Approval sends only the reviewed action digest, while the
+server validates that digest against the complete canonical payload.
 
 ## Verification
 

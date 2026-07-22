@@ -24,6 +24,10 @@ class TaskIntegrityError(RuntimeError):
     pass
 
 
+class TaskReviewMismatchError(TaskIntegrityError):
+    pass
+
+
 class TaskService:
     POLICY_VERSION = "2026-07-22.1"
 
@@ -119,7 +123,13 @@ class TaskService:
         )
         return task
 
-    async def approve(self, *, owner_id: str, task_id: UUID) -> TaskQueue | None:
+    async def approve(
+        self,
+        *,
+        owner_id: str,
+        task_id: UUID,
+        reviewed_action_digest: str,
+    ) -> TaskQueue | None:
         task = await self._repository.get_for_owner(
             task_id=task_id, owner_id=owner_id, for_update=True
         )
@@ -143,6 +153,8 @@ class TaskService:
             task.status = "failed"
             task.error_text = "approval action digest mismatch"
             raise TaskIntegrityError("task approval is no longer valid")
+        if not hmac.compare_digest(reviewed_action_digest, expected):
+            raise TaskReviewMismatchError("reviewed action digest does not match this task")
         task.status = "queued"
         task.approved_at = now
         await self._events.record(
