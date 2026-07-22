@@ -31,3 +31,7 @@ def configure_logging(level: str) -> None:
     root.handlers.clear()
     root.addHandler(handler)
     root.setLevel(level)
+    # httpx logs full URLs, including SearXNG's private ``q`` query parameter, at INFO.
+    # Keep transport diagnostics without persisting user search text.
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)

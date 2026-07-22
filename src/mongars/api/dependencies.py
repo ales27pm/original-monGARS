@@ -12,6 +12,7 @@ from mongars.db.session import Database
 from mongars.inference.base import InferenceBackend
 from mongars.security.auth import AuthenticatedPrincipal, BearerTokenAuth, bearer_scheme
 from mongars.security.policy import ToolPolicy
+from mongars.web_search import SearxNGSearchBackend
 
 
 def get_runtime_settings(request: Request) -> Settings:
@@ -24,6 +25,10 @@ def get_inference(request: Request) -> InferenceBackend:
 
 def get_policy(request: Request) -> ToolPolicy:
     return cast(ToolPolicy, request.app.state.policy)
+
+
+def get_web_search(request: Request) -> SearxNGSearchBackend | None:
+    return cast(SearxNGSearchBackend | None, request.app.state.web_search)
 
 
 async def get_session(request: Request) -> AsyncIterator[AsyncSession]:
@@ -53,3 +58,4 @@ PrincipalDependency = Annotated[AuthenticatedPrincipal, Depends(require_principa
 SettingsDependency = Annotated[Settings, Depends(get_runtime_settings)]
 InferenceDependency = Annotated[InferenceBackend, Depends(get_inference)]
 PolicyDependency = Annotated[ToolPolicy, Depends(get_policy)]
+WebSearchDependency = Annotated[SearxNGSearchBackend | None, Depends(get_web_search)]

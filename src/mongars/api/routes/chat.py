@@ -7,8 +7,9 @@ from mongars.api.dependencies import (
     PrincipalDependency,
     SessionDependency,
     SettingsDependency,
+    WebSearchDependency,
 )
-from mongars.api.schemas import ChatRequest, ChatResponse
+from mongars.api.schemas import ChatRequest, ChatResponse, WebSource
 from mongars.inference.base import InferenceError
 from mongars.orchestrator.cortex import Cortex
 
@@ -22,14 +23,21 @@ async def chat(
     session: SessionDependency,
     settings: SettingsDependency,
     inference: InferenceDependency,
+    web_search: WebSearchDependency,
 ) -> ChatResponse:
-    cortex = Cortex(settings=settings, inference=inference, session=session)
+    cortex = Cortex(
+        settings=settings,
+        inference=inference,
+        session=session,
+        web_search=web_search,
+    )
     try:
         result = await cortex.chat(
             owner_id=principal.subject,
             message=request.message,
             session_id=request.session_id,
             require_local_only=request.require_local_only,
+            web_search_mode=request.web_search,
         )
     except (ValueError, PermissionError) as exc:
         raise HTTPException(
@@ -47,4 +55,6 @@ async def chat(
         answer=result.answer,
         model=result.model,
         memory_hits=result.memory_hits,
+        web_search_status=result.web_search_status,
+        sources=[WebSource(title=source.title, url=source.url) for source in result.sources],
     )

@@ -97,15 +97,15 @@ def test_completion_reservation_must_leave_room_for_cortex_envelope() -> None:
         ),
     ):
         Settings(
-            ollama_context_length=512,
-            ollama_num_predict=512 - CORTEX_MINIMUM_PROMPT_TOKENS + 1,
+            ollama_context_length=CORTEX_MINIMUM_PROMPT_TOKENS + 128,
+            ollama_num_predict=129,
         )
 
 
 def test_completion_reservation_accepts_exact_cortex_envelope_floor() -> None:
     settings = Settings(
-        ollama_context_length=512,
-        ollama_num_predict=512 - CORTEX_MINIMUM_PROMPT_TOKENS,
+        ollama_context_length=CORTEX_MINIMUM_PROMPT_TOKENS + 128,
+        ollama_num_predict=128,
     )
 
     assert settings.ollama_context_length - settings.ollama_num_predict == (

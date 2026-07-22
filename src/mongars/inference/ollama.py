@@ -108,8 +108,6 @@ class OllamaBackend:
         content = message.get("content")
         if not isinstance(content, str):
             raise _response_error("Chat response message has no string 'content'.", "chat")
-        if self._think is False:
-            content = _strip_thinking_trace(content)
 
         response_model = data.get("model", selected_model)
         if not isinstance(response_model, str) or not response_model.strip():
@@ -119,6 +117,15 @@ class OllamaBackend:
             raise _response_error("Chat response has an invalid 'done_reason'.", "chat")
         if data.get("done") is not True:
             raise _response_error("Chat response is not marked complete.", "chat")
+        if done_reason == "length":
+            raise _response_error("Chat response was truncated by the generation limit.", "chat")
+        if self._think is False:
+            content = _strip_thinking_trace(content)
+            folded_content = content.casefold()
+            if "<think>" in folded_content or "</think>" in folded_content:
+                raise _response_error("Chat response contains a residual thinking marker.", "chat")
+        if not content.strip():
+            raise _response_error("Chat response has empty content.", "chat")
 
         return ChatResponse(
             content=content,
@@ -324,10 +331,21 @@ def _validate_base_url(value: str) -> str:
 
 
 def _strip_thinking_trace(content: str) -> str:
-    """Handle models that leak a reasoning prefix despite Ollama ``think=false``."""
+    """Strip one well-formed leading trace leaked despite Ollama ``think=false``."""
 
-    _prefix, marker, final = content.rpartition("</think>")
-    return final.lstrip() if marker else content
+    leading_trimmed = content.lstrip()
+    folded = leading_trimmed.casefold()
+    opening = "<think>"
+    closing = "</think>"
+    if not folded.startswith(opening):
+        return content
+    closing_index = folded.find(closing, len(opening))
+    if closing_index == -1:
+        return content
+    trace = folded[len(opening) : closing_index]
+    if opening in trace or closing in trace:
+        return content
+    return leading_trimmed[closing_index + len(closing) :].lstrip()
 
 
 def _validate_model(value: str, *, field: str) -> str:

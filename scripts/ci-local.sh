@@ -97,6 +97,7 @@ export MONGARS_ENVIRONMENT="test"
 export MONGARS_DATABASE_URL="postgresql+psycopg://${ci_database_user}:${ci_database_password}@127.0.0.1:${ci_postgres_port}/${ci_database_name}"
 export MONGARS_TEST_DATABASE_URL="$MONGARS_DATABASE_URL"
 export MONGARS_OLLAMA_BASE_URL="http://127.0.0.1:11434"
+export MONGARS_WEB_SEARCH_ENABLED="false"
 
 echo "Running local CI against disposable PostgreSQL on 127.0.0.1:${ci_postgres_port}/${ci_database_name}"
 

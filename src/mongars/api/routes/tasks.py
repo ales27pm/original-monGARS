@@ -13,7 +13,7 @@ from mongars.api.dependencies import (
     SessionDependency,
     SettingsDependency,
 )
-from mongars.api.schemas import TaskCreateRequest, TaskResponse
+from mongars.api.schemas import TaskCreateRequest, TaskDetailResponse, TaskResponse
 from mongars.events.repository import EventRepository
 from mongars.rm.contracts import UnsupportedTaskKind
 from mongars.rm.repository import TaskRepository
@@ -73,17 +73,17 @@ async def list_tasks(
     return [TaskResponse.from_model(task) for task in tasks]
 
 
-@router.get("/{task_id}", response_model=TaskResponse)
+@router.get("/{task_id}", response_model=TaskDetailResponse)
 async def get_task(
     task_id: UUID,
     principal: PrincipalDependency,
     session: SessionDependency,
-) -> TaskResponse:
+) -> TaskDetailResponse:
     task = await TaskRepository(session).get_for_owner(task_id=task_id, owner_id=principal.subject)
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
     await session.refresh(task)
-    return TaskResponse.from_model(task)
+    return TaskDetailResponse.from_model(task)
 
 
 @router.post("/{task_id}/approve", response_model=TaskResponse)

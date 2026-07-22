@@ -15,6 +15,7 @@ from mongars.inference import (
     HealthStatus,
     JsonValue,
 )
+from mongars.web_search import SearxNGSearchBackend
 
 
 class HealthyDatabase:
@@ -64,7 +65,10 @@ async def test_readiness_requires_each_configured_model_but_liveness_does_not() 
         )
     )
     application = FastAPI()
-    application.state.settings = Settings(environment=Environment.TEST)
+    application.state.settings = Settings(
+        environment=Environment.TEST,
+        web_search_enabled=False,
+    )
     application.state.database = HealthyDatabase()
     application.state.inference = inference
     application.include_router(health.router)
@@ -88,3 +92,95 @@ async def test_readiness_requires_each_configured_model_but_liveness_does_not() 
         "latency_ms": 1.25,
         "error_code": "required_models_missing",
     }
+    assert readiness.json()["dependencies"]["web_search"] == {
+        "enabled": False,
+        "healthy": True,
+        "latency_ms": 0.0,
+        "error_code": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_readiness_requires_enabled_web_search_to_be_configured() -> None:
+    inference = ReadinessInference(
+        HealthStatus(
+            backend="ollama",
+            backend_reachable=True,
+            chat_model_ready=True,
+            embedding_model_ready=True,
+            latency_ms=1.0,
+        )
+    )
+    application = FastAPI()
+    application.state.settings = Settings(
+        environment=Environment.TEST,
+        web_search_enabled=True,
+    )
+    application.state.database = HealthyDatabase()
+    application.state.inference = inference
+    application.state.web_search = None
+    application.include_router(health.router)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application),
+        base_url="http://testserver",
+    ) as client:
+        readiness = await client.get("/v1/readyz")
+
+    assert readiness.status_code == 503
+    assert readiness.json()["status"] == "not_ready"
+    assert readiness.json()["dependencies"]["web_search"] == {
+        "enabled": True,
+        "healthy": False,
+        "latency_ms": 0.0,
+        "error_code": "not_configured",
+    }
+
+
+@pytest.mark.asyncio
+async def test_readiness_reports_healthy_non_query_web_probe() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/config"
+        assert "q" not in request.url.params
+        return httpx.Response(200, json={"instance_name": "monGARS Search"})
+
+    search_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    web_search = SearxNGSearchBackend(
+        base_url="https://search.example.com",
+        client=search_client,
+    )
+    inference = ReadinessInference(
+        HealthStatus(
+            backend="ollama",
+            backend_reachable=True,
+            chat_model_ready=True,
+            embedding_model_ready=True,
+            latency_ms=1.0,
+        )
+    )
+    application = FastAPI()
+    application.state.settings = Settings(
+        environment=Environment.TEST,
+        web_search_enabled=True,
+    )
+    application.state.database = HealthyDatabase()
+    application.state.inference = inference
+    application.state.web_search = web_search
+    application.include_router(health.router)
+
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=application),
+            base_url="http://testserver",
+        ) as client:
+            readiness = await client.get("/v1/readyz")
+    finally:
+        await search_client.aclose()
+
+    payload = readiness.json()
+    assert readiness.status_code == 200
+    assert payload["status"] == "ready"
+    assert payload["dependencies"]["web_search"]["enabled"] is True
+    assert payload["dependencies"]["web_search"]["healthy"] is True
+    assert payload["dependencies"]["web_search"]["latency_ms"] >= 0
+    assert payload["dependencies"]["web_search"]["error_code"] is None

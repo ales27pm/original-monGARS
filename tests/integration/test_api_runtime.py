@@ -122,6 +122,7 @@ async def test_api_approval_worker_memory_and_readiness_smoke() -> None:
         api_token=SecretStr(token),
         approval_hmac_key=SecretStr("integration-runtime-approval-key"),
         database_url=DATABASE_URL,
+        web_search_enabled=False,
         memory_chunk_tokens=64,
         memory_chunk_overlap_tokens=8,
     )
@@ -162,6 +163,12 @@ async def test_api_approval_worker_memory_and_readiness_smoke() -> None:
                     "latency_ms": 0.1,
                     "error_code": None,
                 },
+                "web_search": {
+                    "enabled": False,
+                    "healthy": True,
+                    "latency_ms": 0.0,
+                    "error_code": None,
+                },
             }
 
             create_response = await client.post(
@@ -180,6 +187,17 @@ async def test_api_approval_worker_memory_and_readiness_smoke() -> None:
             assert created["risk_level"] == "local_mutation"
             assert created["status"] == "waiting_approval"
             task_id = UUID(created["id"])
+
+            review_response = await client.get(f"/v1/tasks/{task_id}", headers=headers)
+            assert review_response.status_code == 200
+            review = review_response.json()
+            assert review["payload"] == {
+                "text": f"The integration smoke marker is {marker}.",
+                "title": "ASGI runtime smoke",
+                "sensitivity": "private",
+                "retention_class": "ttl_30d",
+            }
+            assert len(review["action_digest"]) == 64
 
             approve_response = await client.post(
                 f"/v1/tasks/{task_id}/approve",

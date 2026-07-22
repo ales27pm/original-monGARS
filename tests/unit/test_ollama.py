@@ -40,7 +40,8 @@ def test_chat_uses_native_endpoint_and_normalizes_response() -> None:
                     "model": "qwen-chat",
                     "message": {
                         "role": "assistant",
-                        "content": "private reasoning</think>\n\nHello.",
+                        "content": "<think>private reasoning</think>\n\nHello.",
+                        "thinking": "This separate field must not become user-visible.",
                     },
                     "done": True,
                     "done_reason": "stop",
@@ -68,6 +69,77 @@ def test_chat_uses_native_endpoint_and_normalizes_response() -> None:
         assert result.done_reason == "stop"
         assert result.prompt_tokens == 4
         assert result.completion_tokens == 2
+
+    run(exercise())
+
+
+@pytest.mark.parametrize(
+    ("content", "error"),
+    [
+        ("<think>unfinished reasoning", "residual thinking marker"),
+        ("Answer.</think>", "residual thinking marker"),
+        ("Answer <think>hidden trace</think>", "residual thinking marker"),
+        ("<think>first</think><think>second</think>Answer.", "residual thinking marker"),
+        ("<think>only reasoning</think>\n\t", "empty content"),
+        (" \n\t", "empty content"),
+    ],
+)
+def test_chat_rejects_thinking_markers_and_empty_content(
+    content: str,
+    error: str,
+) -> None:
+    async def exercise() -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "model": "qwen-chat",
+                    "message": {
+                        "role": "assistant",
+                        "content": content,
+                        "thinking": "Never use this field as response content.",
+                    },
+                    "done": True,
+                    "done_reason": "stop",
+                },
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            backend = OllamaBackend(
+                base_url="http://ollama:11434",
+                chat_model="qwen-chat",
+                embedding_model="nomic-embed",
+                think=False,
+                client=client,
+            )
+            with pytest.raises(InferenceResponseError, match=error):
+                await backend.chat([ChatMessage(role="user", content="hello")])
+
+    run(exercise())
+
+
+def test_chat_rejects_a_generation_truncated_by_length() -> None:
+    async def exercise() -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "model": "qwen-chat",
+                    "message": {"role": "assistant", "content": "A plausible partial answer"},
+                    "done": True,
+                    "done_reason": "length",
+                },
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            backend = OllamaBackend(
+                base_url="http://ollama:11434",
+                chat_model="qwen-chat",
+                embedding_model="nomic-embed",
+                client=client,
+            )
+            with pytest.raises(InferenceResponseError, match="truncated"):
+                await backend.chat([ChatMessage(role="user", content="hello")])
 
     run(exercise())
 

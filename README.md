@@ -54,6 +54,7 @@ install -m 0700 -d secrets
 openssl rand -hex 32 > secrets/postgres_password.txt
 openssl rand -hex 32 > secrets/api_token.txt
 openssl rand -hex 32 > secrets/approval_hmac_key.txt
+openssl rand -hex 32 > secrets/searxng_secret.txt
 chgrp "$(id -g)" secrets/*.txt
 chmod 0640 secrets/*.txt
 ```
@@ -68,25 +69,86 @@ models:
 ```bash
 docker compose --profile gpu build
 docker compose --profile gpu up -d postgres ollama
-docker compose exec ollama ollama pull qwen3:4b
+docker compose exec ollama ollama pull qwen3:4b-instruct
 docker compose exec ollama ollama pull nomic-embed-text
-docker compose --profile gpu up -d --wait
+docker compose --profile gpu --profile web-search up -d --wait
 ```
 
-The API binds to `127.0.0.1:8000` by default. PostgreSQL and Ollama stay on the internal
-Compose network. The migration one-shot service must complete successfully before the API or
-worker starts.
+The `web-search` profile and `MONGARS_WEB_SEARCH_ENABLED=true` opt in to public-web egress; omit the
+profile and set the variable to `false` to disable it completely. SearXNG has no host port and is
+reachable only on a dedicated private network shared with the API. Cortex performs a
+network search only when the chat text explicitly asks to search or browse the public web, or when
+an API caller sends `"web_search":"required"`. Search queries and the configured engines'
+requests leave the workstation; inference, memory, and orchestration remain local. Send
+`"web_search":"off"` to prohibit search for a turn. Results are bounded, treated as untrusted
+data, and returned separately in the response's `sources` array.
+SearXNG container logging is disabled because upstream engine errors can include the complete
+private query URL; use the API readiness status and `deploy/searxng/check.sh` for diagnostics.
+
+Caddy publishes the control plane on `127.0.0.1:8000` by default while the application container,
+PostgreSQL, and Ollama stay on internal Compose networks. The migration one-shot service must
+complete successfully before the API or worker starts.
 
 ```bash
 curl -fsS http://127.0.0.1:8000/v1/healthz
 curl -fsS http://127.0.0.1:8000/v1/readyz
 ```
 
+### Bundled web interface
+
+The API image includes a responsive, dependency-free control surface at `/`. It provides chat,
+memory search, protected note creation, exact task-payload review, approvals, cancellation, and
+live readiness status:
+
+```text
+http://127.0.0.1:8000/
+```
+
+The loopback URL is workstation-only. Use the HTTPS setup below before opening the interface from
+an iPhone; the API's plaintext port should not be published to the LAN.
+
 ### Secure iPhone and LAN access
 
 Keep `MONGARS_BIND_ADDRESS=127.0.0.1` and put an HTTPS reverse proxy in front of the API.
-The simplest private path is Tailscale Serve on the workstation, which terminates HTTPS for a
-tailnet hostname and proxies to the loopback-only service:
+The included Caddy service can terminate HTTPS directly on a reserved LAN address. Configure the
+address as both its bind address and certificate subject, and allow that host through FastAPI:
+
+```dotenv
+MONGARS_BIND_ADDRESS=127.0.0.1
+MONGARS_HTTPS_BIND_ADDRESS=10.0.0.154
+MONGARS_HTTPS_HOST=10.0.0.154
+MONGARS_TRUSTED_HOSTS=["10.0.0.154","localhost","127.0.0.1"]
+```
+
+Start the stack and verify the proxy from the workstation:
+
+```bash
+docker compose --profile gpu --profile web-search up -d --wait
+curl -fsS http://10.0.0.154/mongars-local-ca.crt \
+  --output /tmp/mongars-local-ca.crt
+openssl x509 -in /tmp/mongars-local-ca.crt \
+  -noout -subject -fingerprint -sha256
+curl --fail --silent --show-error \
+  --cacert /tmp/mongars-local-ca.crt \
+  https://10.0.0.154/v1/readyz
+```
+
+On the iPhone, open `http://10.0.0.154/mongars-local-ca.crt` in Safari and install the downloaded
+profile under **Settings > General > VPN & Device Management**. Then explicitly enable the root
+under **Settings > General > About > Certificate Trust Settings**. Only the public root certificate
+is downloadable; Caddy's CA private key remains inside its Docker volume. Compare the certificate's
+SHA-256 fingerprint with the value printed directly on the workstation before enabling trust.
+Reserve the workstation's LAN address so the certificate subject does not change.
+
+Open `https://10.0.0.154/v1/healthz` in Safari to confirm trust. The web interface and native app can
+then use `https://10.0.0.154` without weakening bearer-token transport. Plain HTTP serves only the
+public CA download and never proxies API requests.
+
+The local CA persists in the `caddy_data` volume. Do not run `docker compose down -v` unless every
+device can be re-enrolled with a newly generated root certificate.
+
+Alternatively, Tailscale Serve can terminate HTTPS for a tailnet hostname and proxy to the
+loopback-only service:
 
 ```bash
 sudo tailscale serve --bg http://127.0.0.1:8000
@@ -118,6 +180,23 @@ Set `MONGARS_CORS_ORIGINS` to the exact HTTPS web origin if a separate browser f
 the API. Never send the bearer token over plaintext LAN HTTP, publish Ollama, or expose
 PostgreSQL.
 
+### Expo Go iOS client
+
+The native Expo SDK 54 client lives in `apps/mobile`. Configure its public API origin, install the
+locked npm dependencies, and start Metro on the LAN:
+
+```bash
+cd apps/mobile
+cp .env.example .env.local
+npm ci
+npm run start:lan
+```
+
+Scan Metro's QR code with Expo Go. The client stores the bearer token in the iOS Keychain through
+`expo-secure-store` and refuses to save or transmit it to non-loopback plaintext HTTP. Set
+`EXPO_PUBLIC_MONGARS_API_URL` to the trusted HTTPS hostname described above for authenticated chat,
+memory, and task operations.
+
 Read the bearer token without printing it into shell history:
 
 ```bash
@@ -138,6 +217,10 @@ TASK_ID="$(curl -fsS -H "Authorization: Bearer ${MONGARS_TOKEN}" \
   -d '{"text":"The workstation is in Toronto.","title":"Location"}' \
   http://127.0.0.1:8000/v1/memory/documents \
   | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+
+# Review the canonical payload and HMAC-bound action digest before approval.
+curl -fsS -H "Authorization: Bearer ${MONGARS_TOKEN}" \
+  "http://127.0.0.1:8000/v1/tasks/${TASK_ID}"
 
 curl -fsS -X POST -H "Authorization: Bearer ${MONGARS_TOKEN}" \
   "http://127.0.0.1:8000/v1/tasks/${TASK_ID}/approve"
@@ -213,7 +296,7 @@ docker compose -f compose.yaml -f compose.inference-test.yaml --profile gpu up -
 MONGARS_RUN_INFERENCE_TESTS=1 \
 MONGARS_OLLAMA_BASE_URL=http://127.0.0.1:11434 \
   uv run pytest -q tests/inference
-docker compose --profile gpu up -d --wait
+docker compose --profile gpu --profile web-search up -d --wait
 ```
 
 The main CI workflow pins actions by commit SHA and runs Bandit, pip-audit, split unit/database
@@ -225,13 +308,14 @@ Gitleaks, Trivy HIGH/CRITICAL image scanning, and an SPDX production-image SBOM.
 | Endpoint | Purpose | Authentication |
 |---|---|---|
 | `GET /v1/healthz` | Process liveness | No |
-| `GET /v1/readyz` | PostgreSQL and inference readiness | No |
-| `POST /v1/chat` | Local chat with owner-scoped retrieval | Bearer |
+| `GET /v1/readyz` | PostgreSQL, inference-model, and configured web-search readiness | No |
+| `POST /v1/chat` | Local chat with owner-scoped retrieval and opt-in web search | Bearer |
 | `POST /v1/memory/search` | Semantic or hybrid memory search | Bearer |
 | `POST /v1/memory/documents` | Propose an approved text-note write | Bearer |
 | `GET /v1/memory/documents/{id}` | Read owner-scoped document metadata | Bearer |
 | `POST /v1/tasks` | Create a registered, schema-validated task | Bearer |
-| `GET /v1/tasks[/{id}]` | Inspect owner-scoped task state | Bearer |
+| `GET /v1/tasks` | List owner-scoped task summaries | Bearer |
+| `GET /v1/tasks/{id}` | Review exact payload and action digest | Bearer |
 | `POST /v1/tasks/{id}/approve` | Approve the exact persisted action | Bearer |
 | `POST /v1/tasks/{id}/cancel` | Cancel a queued task | Bearer |
 
@@ -246,8 +330,10 @@ backends require both an explicit opt-in and TLS. Do not publish Ollama directly
 Important production controls in the supplied Compose stack include a non-root app user,
 read-only root filesystems, dropped Linux capabilities, `no-new-privileges`, bounded tmpfs,
 loopback-only API publication, internal-only database/inference networks, and file-mounted
-secrets. The supplied base, PostgreSQL, and Ollama images are pinned by digest; update those
-digests deliberately as part of a reviewed release.
+secrets. Caddy is the only host-facing container; the API reaches SearXNG over a separate internal
+network, and only SearXNG joins the search-egress network. The supplied base, PostgreSQL, Ollama,
+SearXNG, and Caddy images are pinned by digest; update those digests deliberately as part of a
+reviewed release.
 
 Full-disk encryption and encrypted backups remain host responsibilities. Embeddings and
 plaintext memory chunks are sensitive data. TTL deletion removes the live document and its
@@ -269,7 +355,7 @@ appropriate for a disposable database.
 
 ## Current boundary and next slices
 
-This release is a production-capable control-plane foundation, not the entire long-term
-platform. The next bounded slices are native PDF/DOCX ingestion with parser isolation, an
-OpenTelemetry Collector/Prometheus profile, a thin mobile PWA, and additional registered tools
-only after their sandbox and approval contracts have dedicated adversarial tests.
+This release is a production-capable control-plane foundation, not the entire long-term platform.
+The next bounded slices are native PDF/DOCX ingestion with parser isolation, an OpenTelemetry
+Collector/Prometheus profile, and additional registered tools only after their sandbox and approval
+contracts have dedicated adversarial tests.

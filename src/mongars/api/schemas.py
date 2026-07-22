@@ -18,6 +18,12 @@ class ChatRequest(ApiModel):
     session_id: UUID | None = None
     message: str = Field(min_length=1)
     require_local_only: bool = True
+    web_search: Literal["off", "auto", "required"] = "auto"
+
+
+class WebSource(ApiModel):
+    title: str
+    url: str
 
 
 class ChatResponse(ApiModel):
@@ -27,6 +33,15 @@ class ChatResponse(ApiModel):
     answer: str
     model: str
     memory_hits: int
+    web_search_status: Literal[
+        "not_requested",
+        "ok",
+        "disabled",
+        "unavailable",
+        "no_results",
+        "context_limited",
+    ]
+    sources: list[WebSource]
 
 
 class TaskCreateRequest(ApiModel):
@@ -70,6 +85,32 @@ class TaskResponse(ApiModel):
             approved_at=task.approved_at,
             created_at=task.created_at,
             updated_at=task.updated_at,
+        )
+
+
+class TaskDetailResponse(TaskResponse):
+    payload: dict[str, Any]
+    action_digest: str | None
+
+    @classmethod
+    def from_model(cls, task: TaskQueue) -> TaskDetailResponse:
+        return cls(
+            id=task.id,
+            kind=task.kind,
+            risk_level=task.risk_level,
+            status=task.status,
+            trace_id=task.trace_id,
+            priority=task.priority,
+            attempt_count=task.attempt_count,
+            max_attempts=task.max_attempts,
+            result=task.result,
+            error_text=task.error_text,
+            approval_expires_at=task.approval_expires_at,
+            approved_at=task.approved_at,
+            created_at=task.created_at,
+            updated_at=task.updated_at,
+            payload=task.payload,
+            action_digest=task.action_digest,
         )
 
 

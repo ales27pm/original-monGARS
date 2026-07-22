@@ -48,7 +48,7 @@ class Settings(BaseSettings):
 
     inference_backend: str = "ollama"
     ollama_base_url: str = "http://127.0.0.1:11434"
-    ollama_chat_model: str = "qwen3:4b"
+    ollama_chat_model: str = "qwen3:4b-instruct"
     ollama_embedding_model: str = "nomic-embed-text"
     ollama_think: bool = False
     ollama_context_length: int = Field(default=4096, ge=512, le=1_048_576)
@@ -59,6 +59,17 @@ class Settings(BaseSettings):
     embedding_dimensions: int = Field(default=768, ge=1, le=4096)
     embedding_batch_size: int = Field(default=16, ge=1, le=128)
     allow_remote_inference: bool = False
+
+    web_search_enabled: bool = False
+    web_search_base_url: str = "http://127.0.0.1:8080"
+    web_search_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
+    web_search_max_query_chars: int = Field(default=500, ge=1, le=2_000)
+    web_search_max_results: int = Field(default=5, ge=1, le=50)
+    web_search_max_response_bytes: int = Field(
+        default=1_000_000,
+        ge=1_024,
+        le=10_000_000,
+    )
 
     max_chat_chars: int = Field(default=32_000, ge=256, le=1_000_000)
     max_document_chars: int = Field(default=2_000_000, ge=1_000, le=20_000_000)

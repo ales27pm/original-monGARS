@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import Response
 
-from mongars.api.routes import chat, health, memory, tasks
+from mongars.api.routes import chat, health, memory, tasks, web
 from mongars.config import Environment, Settings, get_settings
 from mongars.db.session import Database
 from mongars.http import RequestBodyLimitMiddleware
@@ -21,6 +21,7 @@ from mongars.inference.ollama import OllamaBackend
 from mongars.logging import configure_logging
 from mongars.security.auth import BearerTokenAuth
 from mongars.security.policy import ActionClassification, ToolPolicy
+from mongars.web_search import SearxNGSearchBackend
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ def create_app(
     settings: Settings | None = None,
     database: Database | None = None,
     inference: InferenceBackend | None = None,
+    web_search: SearxNGSearchBackend | None = None,
 ) -> FastAPI:
     runtime_settings = settings or get_settings()
     configure_logging(runtime_settings.log_level)
@@ -43,10 +45,22 @@ def create_app(
         timeout=runtime_settings.inference_timeout_seconds,
         health_timeout=runtime_settings.inference_health_timeout_seconds,
     )
+    owns_web_search = web_search is None and runtime_settings.web_search_enabled
+    runtime_web_search = web_search
+    if runtime_web_search is None and runtime_settings.web_search_enabled:
+        runtime_web_search = SearxNGSearchBackend(
+            base_url=runtime_settings.web_search_base_url,
+            timeout=runtime_settings.web_search_timeout_seconds,
+            max_query_chars=runtime_settings.web_search_max_query_chars,
+            max_results=runtime_settings.web_search_max_results,
+            max_response_bytes=runtime_settings.web_search_max_response_bytes,
+        )
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         yield
+        if owns_web_search and runtime_web_search is not None:
+            await runtime_web_search.aclose()
         await runtime_inference.aclose()
         await runtime_database.close()
 
@@ -61,6 +75,7 @@ def create_app(
     application.state.settings = runtime_settings
     application.state.database = runtime_database
     application.state.inference = runtime_inference
+    application.state.web_search = runtime_web_search
     application.state.auth = BearerTokenAuth(runtime_settings, subject=runtime_settings.owner_id)
     application.state.policy = ToolPolicy(
         {
@@ -113,6 +128,7 @@ def create_app(
     application.include_router(chat.router)
     application.include_router(tasks.router)
     application.include_router(memory.router)
+    application.include_router(web.router)
     return application
 
 

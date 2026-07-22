@@ -11,13 +11,19 @@ x-app-environment: &app-environment
   MONGARS_DATABASE_POOL_TIMEOUT_SECONDS: ${MONGARS_DATABASE_POOL_TIMEOUT_SECONDS:-10}
   MONGARS_INFERENCE_BACKEND: ${MONGARS_INFERENCE_BACKEND:-ollama}
   MONGARS_OLLAMA_BASE_URL: ${MONGARS_OLLAMA_BASE_URL:-http://ollama:11434}
-  MONGARS_OLLAMA_CHAT_MODEL: ${MONGARS_OLLAMA_CHAT_MODEL:-qwen3:4b}
+  MONGARS_OLLAMA_CHAT_MODEL: ${MONGARS_OLLAMA_CHAT_MODEL:-qwen3:4b-instruct}
   MONGARS_OLLAMA_EMBEDDING_MODEL: ${MONGARS_OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
   MONGARS_OLLAMA_THINK: ${MONGARS_OLLAMA_THINK:-false}
   MONGARS_OLLAMA_CONTEXT_LENGTH: ${MONGARS_OLLAMA_CONTEXT_LENGTH:-4096}
   MONGARS_OLLAMA_NUM_PREDICT: ${MONGARS_OLLAMA_NUM_PREDICT:-512}
   MONGARS_INFERENCE_TIMEOUT_SECONDS: ${MONGARS_INFERENCE_TIMEOUT_SECONDS:-90}
   MONGARS_INFERENCE_HEALTH_TIMEOUT_SECONDS: ${MONGARS_INFERENCE_HEALTH_TIMEOUT_SECONDS:-2}
+  MONGARS_WEB_SEARCH_ENABLED: ${MONGARS_WEB_SEARCH_ENABLED:-false}
+  MONGARS_WEB_SEARCH_BASE_URL: ${MONGARS_WEB_SEARCH_BASE_URL:-http://searxng:8080}
+  MONGARS_WEB_SEARCH_TIMEOUT_SECONDS: ${MONGARS_WEB_SEARCH_TIMEOUT_SECONDS:-10}
+  MONGARS_WEB_SEARCH_MAX_QUERY_CHARS: ${MONGARS_WEB_SEARCH_MAX_QUERY_CHARS:-500}
+  MONGARS_WEB_SEARCH_MAX_RESULTS: ${MONGARS_WEB_SEARCH_MAX_RESULTS:-5}
+  MONGARS_WEB_SEARCH_MAX_RESPONSE_BYTES: ${MONGARS_WEB_SEARCH_MAX_RESPONSE_BYTES:-1000000}
   MONGARS_EMBEDDING_DIMENSIONS: ${MONGARS_EMBEDDING_DIMENSIONS:-768}
   MONGARS_EMBEDDING_BATCH_SIZE: ${MONGARS_EMBEDDING_BATCH_SIZE:-16}
   MONGARS_ALLOW_REMOTE_INFERENCE: ${MONGARS_ALLOW_REMOTE_INFERENCE:-false}
@@ -119,8 +125,10 @@ services:
 
   api:
     <<: *app-base
-    ports:
-      - ${MONGARS_BIND_ADDRESS:-127.0.0.1}:${MONGARS_API_PORT:-8000}:8000
+    networks:
+      - backend
+      - edge
+      - search
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -148,6 +156,53 @@ services:
         export MONGARS_APPROVAL_HMAC_KEY="$$(cat /run/secrets/approval_hmac_key)"
         exec python -m mongars.rm.worker
     stop_grace_period: 30s
+
+  https:
+    image: ${MONGARS_CADDY_IMAGE:-caddy@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648}
+    init: true
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      MONGARS_HTTPS_HOST: ${MONGARS_HTTPS_HOST:-127.0.0.1}
+      MONGARS_MAX_REQUEST_BYTES: ${MONGARS_MAX_REQUEST_BYTES:-2100000}
+    ports:
+      - ${MONGARS_HTTPS_BIND_ADDRESS:-127.0.0.1}:80:8080/tcp
+      - ${MONGARS_HTTPS_BIND_ADDRESS:-127.0.0.1}:443:8443/tcp
+      # Caddy is the only host-facing boundary. It also preserves the loopback API
+      # endpoint without attaching the application container to an egress network.
+      - ${MONGARS_BIND_ADDRESS:-127.0.0.1}:${MONGARS_API_PORT:-8000}:8001/tcp
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    networks:
+      - edge
+      - ingress
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'curl --fail --silent --show-error --cacert /data/caddy/pki/authorities/local/root.crt --resolve "$${MONGARS_HTTPS_HOST}:8443:127.0.0.1" "https://$${MONGARS_HTTPS_HOST}:8443/v1/healthz" >/dev/null'
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
 
   ollama:
     image: ${MONGARS_OLLAMA_IMAGE:-ollama/ollama@sha256:6345fbc18bd73a1e16404be681dbc6fd291a027cab43ed541abe78c4c81051b0}
@@ -189,14 +244,73 @@ services:
         max-size: 10m
         max-file: "3"
 
+  searxng:
+    image: ${MONGARS_SEARXNG_IMAGE:-docker.io/searxng/searxng@sha256:b8ca38ba06eea544d7555e88321e212ddc0d5c3c7de055419cfb2e5c6bf30812}
+    init: true
+    profiles:
+      - web-search
+    restart: unless-stopped
+    user: "977:977"
+    group_add:
+      - ${MONGARS_SECRET_GID:-1000}
+    environment:
+      FORCE_OWNERSHIP: "false"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        searxng_secret_value="$$(cat /run/secrets/searxng_secret)"
+        test -n "$${searxng_secret_value}"
+        export SEARXNG_SECRET="$${searxng_secret_value}"
+        exec /usr/local/searxng/entrypoint.sh
+    secrets:
+      - searxng_secret
+    volumes:
+      - ./deploy/searxng:/etc/searxng:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+      - /var/cache/searxng:rw,noexec,nosuid,nodev,size=64m,uid=977,gid=977,mode=0700
+    networks:
+      - search
+      - search-egress
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O /dev/null http://127.0.0.1:8080/config
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    logging:
+      # Engine failure messages can contain the full search URL and query.
+      driver: none
+
 networks:
   backend:
+    driver: bridge
+    internal: true
+  edge:
+    driver: bridge
+    internal: true
+  search:
+    driver: bridge
+    internal: true
+  search-egress:
+    driver: bridge
+  ingress:
     driver: bridge
 
 volumes:
   postgres_data:
   mongars_data:
   ollama_data:
+  caddy_data:
+  caddy_config:
 
 secrets:
   postgres_password:
@@ -205,3 +319,5 @@ secrets:
     file: ${MONGARS_API_TOKEN_FILE:-./secrets/api_token.txt}
   approval_hmac_key:
     file: ${MONGARS_APPROVAL_HMAC_KEY_FILE:-./secrets/approval_hmac_key.txt}
+  searxng_secret:
+    file: ${MONGARS_SEARXNG_SECRET_FILE:-./secrets/searxng_secret.txt}

@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#0b0f0d">
+    <meta name="description" content="Private, local-first control surface for monGARS.">
+    <title>monGARS</title>
+    <link rel="stylesheet" href="/assets/app.css">
+    <script src="/assets/app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+
+    <div class="ambient ambient-one" aria-hidden="true"></div>
+    <div class="ambient ambient-two" aria-hidden="true"></div>
+
+    <div class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="#chat" aria-label="monGARS home" data-view-link="chat">
+          <span class="brand-mark" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </span>
+          <span class="brand-wordmark">mon<span>GARS</span></span>
+        </a>
+
+        <div class="topbar-actions">
+          <button class="connection-chip" id="status-button" type="button" aria-label="View system status">
+            <span class="status-dot" id="global-status-dot" aria-hidden="true"></span>
+            <span id="global-status-label">Checking</span>
+          </button>
+          <button class="avatar-button" id="auth-button" type="button" aria-label="Connect with API token">
+            <span aria-hidden="true">A</span>
+          </button>
+        </div>
+      </header>
+
+      <aside class="sidebar" aria-label="Primary navigation">
+        <nav class="primary-nav">
+          <button class="nav-item is-active" type="button" data-view-link="chat" aria-current="page">
+            <span class="nav-icon" aria-hidden="true">⌁</span>
+            <span>Chat</span>
+          </button>
+          <button class="nav-item" type="button" data-view-link="memory">
+            <span class="nav-icon" aria-hidden="true">◇</span>
+            <span>Memory</span>
+          </button>
+          <button class="nav-item" type="button" data-view-link="tasks">
+            <span class="nav-icon" aria-hidden="true">✓</span>
+            <span>Tasks</span>
+            <span class="nav-count" id="task-count" hidden>0</span>
+          </button>
+        </nav>
+
+        <section class="sidebar-status" aria-labelledby="sidebar-status-title">
+          <div class="eyebrow" id="sidebar-status-title">Control plane</div>
+          <div class="system-state">
+            <span class="status-dot" id="sidebar-status-dot" aria-hidden="true"></span>
+            <strong id="sidebar-status-label">Checking status</strong>
+          </div>
+          <dl class="mini-stats">
+            <div>
+              <dt>Database</dt>
+              <dd id="database-status">—</dd>
+            </div>
+            <div>
+              <dt>Cortex</dt>
+              <dd id="inference-status">—</dd>
+            </div>
+          </dl>
+          <button class="text-button" id="refresh-status" type="button">Refresh status</button>
+        </section>
+
+        <div class="sidebar-footer">
+          <span class="privacy-mark" aria-hidden="true">●</span>
+          <span>Local-first · single owner</span>
+        </div>
+      </aside>
+
+      <main class="main-content" id="main-content" tabindex="-1">
+        <section class="view chat-view is-active" id="chat-view" data-view="chat" aria-labelledby="chat-title">
+          <header class="view-header chat-header">
+            <div>
+              <div class="eyebrow">Cortex</div>
+              <h1 id="chat-title">Conversation</h1>
+            </div>
+            <button class="icon-button" id="new-chat" type="button" aria-label="Start a new conversation" title="New conversation">＋</button>
+          </header>
+
+          <div class="chat-thread" id="chat-thread" role="log" aria-live="polite" aria-relevant="additions">
+            <div class="empty-chat" id="empty-chat">
+              <div class="cortex-orbit" aria-hidden="true">
+                <span></span>
+              </div>
+              <p class="eyebrow">Private intelligence, on this machine</p>
+              <h2>What are we working on?</h2>
+              <p>Ask Cortex a question. Inference and memory stay local; a web query leaves the control plane only when you explicitly request a web search.</p>
+              <div class="suggestion-grid" aria-label="Suggested prompts">
+                <button type="button" data-prompt="Summarize what you remember about my active projects.">Summarize my active projects</button>
+                <button type="button" data-prompt="What should I focus on next? Use only relevant memories.">Help me choose what’s next</button>
+                <button type="button" data-prompt="Explain what monGARS can do in this release.">Show me your capabilities</button>
+              </div>
+            </div>
+          </div>
+
+          <form class="composer" id="chat-form">
+            <label class="sr-only" for="chat-message">Message Cortex</label>
+            <textarea id="chat-message" name="message" rows="1" maxlength="32000" placeholder="Message Cortex…" required></textarea>
+            <div class="composer-footer">
+              <label class="local-toggle" title="Prevent remote inference for this request">
+                <input id="local-only" type="checkbox" checked>
+                <span aria-hidden="true"></span>
+                Local inference only
+              </label>
+              <div class="composer-actions">
+                <span class="keyboard-hint" aria-hidden="true">Enter to send</span>
+                <button class="send-button" type="submit" aria-label="Send message">
+                  <span aria-hidden="true">↑</span>
+                </button>
+              </div>
+            </div>
+          </form>
+        </section>
+
+        <section class="view" id="memory-view" data-view="memory" aria-labelledby="memory-title" hidden>
+          <header class="view-header">
+            <div>
+              <div class="eyebrow">Hippocampus</div>
+              <h1 id="memory-title">Memory</h1>
+              <p>Search and curate the private knowledge available to Cortex.</p>
+            </div>
+            <button class="primary-button compact" id="open-note" type="button">＋ Add memory</button>
+          </header>
+
+          <form class="search-bar" id="memory-search-form" role="search">
+            <label class="sr-only" for="memory-query">Search memory</label>
+            <span class="search-symbol" aria-hidden="true">⌕</span>
+            <input id="memory-query" name="query" type="search" maxlength="32000" placeholder="Search your memory…" required>
+            <label class="sr-only" for="memory-mode">Search mode</label>
+            <select id="memory-mode" name="mode">
+              <option value="hybrid">Hybrid</option>
+              <option value="semantic">Semantic</option>
+            </select>
+            <button type="submit">Search</button>
+          </form>
+
+          <div class="section-toolbar">
+            <p id="memory-summary">Enter a query to search embedded notes and documents.</p>
+          </div>
+          <div class="memory-results" id="memory-results" aria-live="polite"></div>
+        </section>
+
+        <section class="view" id="tasks-view" data-view="tasks" aria-labelledby="tasks-title" hidden>
+          <header class="view-header">
+            <div>
+              <div class="eyebrow">Resource manager</div>
+              <h1 id="tasks-title">Tasks</h1>
+              <p>Review queued work, approve protected actions, and inspect outcomes.</p>
+            </div>
+            <button class="secondary-button compact" id="refresh-tasks" type="button">↻ Refresh</button>
+          </header>
+
+          <div class="task-filters" role="group" aria-label="Filter tasks">
+            <button class="filter-chip is-active" type="button" data-task-filter="all" aria-pressed="true">All</button>
+            <button class="filter-chip" type="button" data-task-filter="waiting_approval" aria-pressed="false">Needs approval</button>
+            <button class="filter-chip" type="button" data-task-filter="running" aria-pressed="false">Running</button>
+            <button class="filter-chip" type="button" data-task-filter="done" aria-pressed="false">Completed</button>
+          </div>
+
+          <div class="task-list" id="task-list" aria-live="polite"></div>
+        </section>
+      </main>
+
+      <nav class="mobile-nav" aria-label="Primary navigation">
+        <button class="mobile-nav-item is-active" type="button" data-view-link="chat" aria-current="page">
+          <span aria-hidden="true">⌁</span><span>Chat</span>
+        </button>
+        <button class="mobile-nav-item" type="button" data-view-link="memory">
+          <span aria-hidden="true">◇</span><span>Memory</span>
+        </button>
+        <button class="mobile-nav-item" type="button" data-view-link="tasks">
+          <span aria-hidden="true">✓</span><span>Tasks</span>
+          <span class="mobile-count" id="mobile-task-count" hidden>0</span>
+        </button>
+      </nav>
+    </div>
+
+    <dialog class="sheet-dialog auth-dialog" id="auth-dialog" aria-labelledby="auth-title">
+      <form method="dialog" class="dialog-card" id="auth-form">
+        <button class="dialog-close" id="auth-close" type="button" aria-label="Close connection dialog">×</button>
+        <div class="dialog-mark" aria-hidden="true"><span></span></div>
+        <p class="eyebrow">Secure connection</p>
+        <h2 id="auth-title">Connect to monGARS</h2>
+        <p class="dialog-intro">Enter the API token stored on this workstation. It is held only in this browser tab and clears when you close the tab or choose Forget token.</p>
+
+        <div class="security-warning" id="insecure-warning" hidden role="alert">
+          <strong>HTTPS required</strong>
+          <span>This address is not encrypted. Open monGARS through your HTTPS proxy before entering a token.</span>
+        </div>
+
+        <label class="field-label" for="api-token">Bearer token</label>
+        <div class="token-field">
+          <input id="api-token" name="api-token" type="password" autocomplete="off" autocapitalize="none" spellcheck="false" placeholder="Paste token" required>
+          <button id="toggle-token" type="button" aria-label="Show token" title="Show token">Show</button>
+        </div>
+        <p class="field-error" id="auth-error" role="alert" hidden></p>
+        <button class="primary-button full-width" id="connect-button" type="submit">Connect</button>
+        <button class="text-button centered" id="disconnect-button" type="button" hidden>Forget token</button>
+      </form>
+    </dialog>
+
+    <dialog class="sheet-dialog" id="note-dialog" aria-labelledby="note-title">
+      <form method="dialog" class="dialog-card wide" id="note-form">
+        <button class="dialog-close" id="note-close" type="button" aria-label="Close memory dialog">×</button>
+        <p class="eyebrow">New protected memory</p>
+        <h2 id="note-title">Add a note</h2>
+        <p class="dialog-intro">Saving creates a protected task. You will review and approve the exact note before the worker stores it.</p>
+
+        <label class="field-label" for="note-title-input">Title <span>Optional</span></label>
+        <input class="input" id="note-title-input" type="text" maxlength="500" placeholder="A useful label">
+
+        <label class="field-label" for="note-text">Content</label>
+        <textarea class="input note-textarea" id="note-text" maxlength="2000000" rows="7" placeholder="What should Cortex remember?" required></textarea>
+
+        <div class="field-grid">
+          <label class="field-label" for="note-sensitivity">Sensitivity
+            <select class="input" id="note-sensitivity">
+              <option value="private">Private</option>
+              <option value="restricted">Restricted</option>
+              <option value="shared">Shared</option>
+            </select>
+          </label>
+          <label class="field-label" for="note-retention">Retention
+            <select class="input" id="note-retention">
+              <option value="keep">Keep</option>
+              <option value="ttl_30d">30 days</option>
+              <option value="ttl_90d">90 days</option>
+              <option value="legal_hold">Legal hold</option>
+            </select>
+          </label>
+        </div>
+
+        <p class="field-error" id="note-error" role="alert" hidden></p>
+        <button class="primary-button full-width" type="submit">Create approval task</button>
+      </form>
+    </dialog>
+
+    <div class="toast-region" id="toast-region" aria-live="polite" aria-atomic="true"></div>
+  </body>
+</html>
