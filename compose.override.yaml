@@ -1,0 +1,14 @@
+services:
+  parser:
+    # A worker must not consume document tasks until the disposable parser
+    # subprocess has passed the same end-to-end self-test used by /v1/readyz.
+    healthcheck:
+      test: !override
+        - CMD
+        - python
+        - -c
+        - 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8091/readyz", timeout=2).read()'
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
