@@ -1,0 +1,218 @@
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any
+from uuid import UUID
+
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import (
+    ARRAY,
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    LargeBinary,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+from mongars.ids import uuid7
+
+
+class Base(DeclarativeBase):
+    pass
+
+
+class TimestampMixin:
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class MemoryDocument(TimestampMixin, Base):
+    __tablename__ = "memory_documents"
+    __table_args__ = (
+        UniqueConstraint("owner_id", "source_sha256", name="uq_memory_document_owner_sha"),
+        CheckConstraint(
+            "sensitivity IN ('private', 'shared', 'restricted')",
+            name="ck_memory_document_sensitivity",
+        ),
+        CheckConstraint(
+            "retention_class IN ('keep', 'ttl_30d', 'ttl_90d', 'legal_hold')",
+            name="ck_memory_document_retention",
+        ),
+        Index("ix_memory_documents_owner_created", "owner_id", text("created_at DESC")),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid7)
+    owner_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_uri: Mapped[str | None] = mapped_column(Text)
+    source_sha256: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False)
+    title: Mapped[str | None] = mapped_column(Text)
+    mime_type: Mapped[str | None] = mapped_column(String(255))
+    sensitivity: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'private'")
+    )
+    retention_class: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default=text("'keep'")
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+
+
+class MemoryChunk(Base):
+    __tablename__ = "memory_chunks"
+    __table_args__ = (
+        UniqueConstraint("document_id", "chunk_index", name="uq_memory_chunk_position"),
+        Index("ix_memory_chunks_document", "document_id"),
+        Index(
+            "ix_memory_chunks_embedding_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid7)
+    document_id: Mapped[UUID] = mapped_column(
+        ForeignKey("memory_documents.id", ondelete="CASCADE"), nullable=False
+    )
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    token_count: Mapped[int | None] = mapped_column(Integer)
+    char_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    section_path: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    plaintext: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(768), nullable=False)
+    embedding_model: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class EpisodicEvent(Base):
+    __tablename__ = "episodic_events"
+    __table_args__ = (
+        Index("ix_episodic_events_owner_created", "owner_id", text("created_at DESC")),
+        Index("ix_episodic_events_trace", "trace_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid7)
+    owner_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    session_id: Mapped[UUID | None] = mapped_column(index=True)
+    trace_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    actor: Mapped[str] = mapped_column(String(32), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class TaskQueue(TimestampMixin, Base):
+    __tablename__ = "task_queue"
+    __table_args__ = (
+        CheckConstraint(
+            "risk_level IN ('read_only', 'local_mutation', 'external_side_effect')",
+            name="ck_task_queue_risk_level",
+        ),
+        CheckConstraint(
+            "status IN ('queued', 'running', 'waiting_approval', 'done', 'failed', 'cancelled')",
+            name="ck_task_queue_status",
+        ),
+        CheckConstraint("attempt_count >= 0", name="ck_task_queue_attempt_nonnegative"),
+        CheckConstraint("max_attempts > 0", name="ck_task_queue_max_attempts_positive"),
+        CheckConstraint("attempt_count <= max_attempts", name="ck_task_queue_attempt_within_limit"),
+        CheckConstraint("priority BETWEEN 0 AND 1000", name="ck_task_queue_priority_range"),
+        CheckConstraint(
+            "(status = 'running') = (lease_expires_at IS NOT NULL)",
+            name="ck_task_queue_running_has_lease",
+        ),
+        CheckConstraint(
+            "risk_level = 'read_only' OR "
+            "(action_digest IS NOT NULL AND approval_expires_at IS NOT NULL)",
+            name="ck_task_queue_privileged_has_digest",
+        ),
+        CheckConstraint(
+            "risk_level = 'read_only' OR "
+            "status IN ('waiting_approval', 'cancelled', 'failed') OR approved_at IS NOT NULL",
+            name="ck_task_queue_privileged_execution_approved",
+        ),
+        CheckConstraint(
+            "consumed_at IS NULL OR approved_at IS NOT NULL",
+            name="ck_task_queue_consumption_requires_approval",
+        ),
+        Index(
+            "ix_task_queue_claim",
+            "status",
+            "run_after",
+            text("priority DESC"),
+            "created_at",
+        ),
+        Index("ix_task_queue_owner_created", "owner_id", text("created_at DESC")),
+        Index(
+            "uq_task_queue_dedupe",
+            "owner_id",
+            "dedupe_key",
+            unique=True,
+            postgresql_where=text("dedupe_key IS NOT NULL"),
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid7)
+    parent_task_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("task_queue.id", ondelete="SET NULL")
+    )
+    owner_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    kind: Mapped[str] = mapped_column(String(100), nullable=False)
+    risk_level: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default="queued")
+    priority: Mapped[int] = mapped_column(Integer, nullable=False, server_default="100")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    max_attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default="3")
+    run_after: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    dedupe_key: Mapped[str | None] = mapped_column(String(255))
+    trace_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)
+    result: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    error_text: Mapped[str | None] = mapped_column(Text)
+    action_digest: Mapped[str | None] = mapped_column(String(64))
+    approval_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class InferenceMetric(Base):
+    """Small durable roll-up for local operations without an external metrics dependency."""
+
+    __tablename__ = "inference_metrics"
+    __table_args__ = (Index("ix_inference_metrics_created", text("created_at DESC")),)
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid7)
+    backend: Mapped[str] = mapped_column(String(50), nullable=False)
+    model: Mapped[str] = mapped_column(String(255), nullable=False)
+    operation: Mapped[str] = mapped_column(String(30), nullable=False)
+    duration_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    success: Mapped[bool] = mapped_column(nullable=False)
+    trace_id: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

@@ -1,0 +1,73 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mongars"
+version = "0.1.0"
+description = "Local-first, policy-enforced personal agent control plane"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+license = { text = "Proprietary" }
+dependencies = [
+  "alembic>=1.16,<2",
+  "fastapi==0.139.2",
+  "httpx>=0.28.1,<1",
+  "pgvector>=0.4.1,<1",
+  "psycopg[binary,pool]>=3.2.9,<4",
+  "pydantic==2.13.4",
+  "pydantic-settings>=2.12,<3",
+  "python-multipart>=0.0.20,<1",
+  "sqlalchemy[asyncio]==2.0.51",
+  "uvicorn[standard]==0.51.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.18,<2",
+  "pytest>=8.4,<10",
+  "pytest-asyncio>=1.2,<2",
+  "pytest-cov>=7,<8",
+  "ruff>=0.14,<1",
+]
+documents = [
+  "pypdf>=6,<7",
+  "python-docx>=1.2,<2",
+]
+
+[project.scripts]
+mongars-api = "mongars.main:run"
+mongars-worker = "mongars.rm.worker:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mongars"]
+
+[tool.pytest.ini_options]
+addopts = "-ra --strict-config --strict-markers"
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+  "integration: requires a live PostgreSQL service",
+]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "S", "RUF"]
+ignore = ["S101"]
+
+[tool.ruff.lint.per-file-ignores]
+"migrations/versions/*.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+plugins = ["pydantic.mypy", "sqlalchemy.ext.mypy.plugin"]
+packages = ["mongars"]
+warn_unused_configs = true
+
+[tool.coverage.run]
+branch = true
+source = ["mongars"]

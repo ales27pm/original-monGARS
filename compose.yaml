@@ -1,0 +1,203 @@
+name: ${COMPOSE_PROJECT_NAME:-mongars}
+
+x-app-environment: &app-environment
+  MONGARS_ENVIRONMENT: ${MONGARS_ENVIRONMENT:-production}
+  MONGARS_LOG_LEVEL: ${MONGARS_LOG_LEVEL:-INFO}
+  MONGARS_OWNER_ID: ${MONGARS_OWNER_ID:-local-owner}
+  MONGARS_CORS_ORIGINS: ${MONGARS_CORS_ORIGINS:-[]}
+  MONGARS_DATABASE_POOL_SIZE: ${MONGARS_DATABASE_POOL_SIZE:-5}
+  MONGARS_DATABASE_POOL_TIMEOUT_SECONDS: ${MONGARS_DATABASE_POOL_TIMEOUT_SECONDS:-10}
+  MONGARS_INFERENCE_BACKEND: ${MONGARS_INFERENCE_BACKEND:-ollama}
+  MONGARS_OLLAMA_BASE_URL: ${MONGARS_OLLAMA_BASE_URL:-http://ollama:11434}
+  MONGARS_OLLAMA_CHAT_MODEL: ${MONGARS_OLLAMA_CHAT_MODEL:-qwen3:4b}
+  MONGARS_OLLAMA_EMBEDDING_MODEL: ${MONGARS_OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+  MONGARS_OLLAMA_THINK: ${MONGARS_OLLAMA_THINK:-false}
+  MONGARS_INFERENCE_TIMEOUT_SECONDS: ${MONGARS_INFERENCE_TIMEOUT_SECONDS:-90}
+  MONGARS_INFERENCE_HEALTH_TIMEOUT_SECONDS: ${MONGARS_INFERENCE_HEALTH_TIMEOUT_SECONDS:-2}
+  MONGARS_EMBEDDING_DIMENSIONS: ${MONGARS_EMBEDDING_DIMENSIONS:-768}
+  MONGARS_EMBEDDING_BATCH_SIZE: ${MONGARS_EMBEDDING_BATCH_SIZE:-16}
+  MONGARS_ALLOW_REMOTE_INFERENCE: ${MONGARS_ALLOW_REMOTE_INFERENCE:-false}
+  MONGARS_MAX_CHAT_CHARS: ${MONGARS_MAX_CHAT_CHARS:-32000}
+  MONGARS_MAX_DOCUMENT_CHARS: ${MONGARS_MAX_DOCUMENT_CHARS:-2000000}
+  MONGARS_MEMORY_CHUNK_TOKENS: ${MONGARS_MEMORY_CHUNK_TOKENS:-800}
+  MONGARS_MEMORY_CHUNK_OVERLAP_TOKENS: ${MONGARS_MEMORY_CHUNK_OVERLAP_TOKENS:-100}
+  MONGARS_MEMORY_TOP_K: ${MONGARS_MEMORY_TOP_K:-8}
+  MONGARS_WORKER_POLL_SECONDS: ${MONGARS_WORKER_POLL_SECONDS:-1}
+  MONGARS_WORKER_LEASE_SECONDS: ${MONGARS_WORKER_LEASE_SECONDS:-120}
+  MONGARS_RETENTION_SWEEP_SECONDS: ${MONGARS_RETENTION_SWEEP_SECONDS:-300}
+  MONGARS_APPROVAL_TTL_SECONDS: ${MONGARS_APPROVAL_TTL_SECONDS:-900}
+  POSTGRES_DB: ${POSTGRES_DB:-mongars}
+  POSTGRES_USER: ${POSTGRES_USER:-mongars}
+
+x-app-base: &app-base
+  image: ${MONGARS_IMAGE:-mongars:local}
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: runtime
+    args:
+      SECRET_GID: ${MONGARS_SECRET_GID:-1000}
+  init: true
+  restart: unless-stopped
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  pids_limit: 256
+  environment: *app-environment
+  secrets:
+    - postgres_password
+    - api_token
+    - approval_hmac_key
+  volumes:
+    - mongars_data:/var/lib/mongars
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,nodev,size=256m
+  networks:
+    - backend
+  logging:
+    driver: json-file
+    options:
+      max-size: 10m
+      max-file: "3"
+
+services:
+  postgres:
+    image: ${MONGARS_POSTGRES_IMAGE:-pgvector/pgvector@sha256:9d2e61c7352b9e9f4798df5fd9a498f043f4cda1cdacc707de3d198650f4321e}
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mongars}
+      POSTGRES_USER: ${POSTGRES_USER:-mongars}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      PGDATA: /var/lib/postgresql/18/docker
+    secrets:
+      - postgres_password
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    tmpfs:
+      - /run/postgresql:rw,nosuid,nodev,size=16m
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    stop_grace_period: 30s
+    shm_size: 256mb
+    pids_limit: 256
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  migrate:
+    <<: *app-base
+    restart: "no"
+    healthcheck:
+      disable: true
+    depends_on:
+      postgres:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        export MONGARS_DATABASE_URL="$$(python -c 'import os; from pathlib import Path; from urllib.parse import quote; user=quote(os.environ["POSTGRES_USER"], safe=""); password=quote(Path("/run/secrets/postgres_password").read_text().strip(), safe=""); database=quote(os.environ["POSTGRES_DB"], safe=""); print(f"postgresql+psycopg://{user}:{password}@postgres:5432/{database}")')"
+        export MONGARS_API_TOKEN="$$(cat /run/secrets/api_token)"
+        export MONGARS_APPROVAL_HMAC_KEY="$$(cat /run/secrets/approval_hmac_key)"
+        exec alembic upgrade head
+
+  api:
+    <<: *app-base
+    ports:
+      - ${MONGARS_BIND_ADDRESS:-127.0.0.1}:${MONGARS_API_PORT:-8000}:8000
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        export MONGARS_DATABASE_URL="$$(python -c 'import os; from pathlib import Path; from urllib.parse import quote; user=quote(os.environ["POSTGRES_USER"], safe=""); password=quote(Path("/run/secrets/postgres_password").read_text().strip(), safe=""); database=quote(os.environ["POSTGRES_DB"], safe=""); print(f"postgresql+psycopg://{user}:{password}@postgres:5432/{database}")')"
+        export MONGARS_API_TOKEN="$$(cat /run/secrets/api_token)"
+        export MONGARS_APPROVAL_HMAC_KEY="$$(cat /run/secrets/approval_hmac_key)"
+        exec uvicorn mongars.main:app --host 0.0.0.0 --port 8000 --workers ${MONGARS_API_WORKERS:-1}
+    stop_grace_period: 30s
+
+  worker:
+    <<: *app-base
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      disable: true
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        export MONGARS_DATABASE_URL="$$(python -c 'import os; from pathlib import Path; from urllib.parse import quote; user=quote(os.environ["POSTGRES_USER"], safe=""); password=quote(Path("/run/secrets/postgres_password").read_text().strip(), safe=""); database=quote(os.environ["POSTGRES_DB"], safe=""); print(f"postgresql+psycopg://{user}:{password}@postgres:5432/{database}")')"
+        export MONGARS_API_TOKEN="$$(cat /run/secrets/api_token)"
+        export MONGARS_APPROVAL_HMAC_KEY="$$(cat /run/secrets/approval_hmac_key)"
+        exec python -m mongars.rm.worker
+    stop_grace_period: 30s
+
+  ollama:
+    image: ${MONGARS_OLLAMA_IMAGE:-ollama/ollama@sha256:6345fbc18bd73a1e16404be681dbc6fd291a027cab43ed541abe78c4c81051b0}
+    profiles:
+      - gpu
+    restart: unless-stopped
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_CONTEXT_LENGTH: ${MONGARS_OLLAMA_CONTEXT_LENGTH:-4096}
+      OLLAMA_KEEP_ALIVE: ${MONGARS_OLLAMA_KEEP_ALIVE:-5m}
+    volumes:
+      - ollama_data:/root/.ollama
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=256m
+    networks:
+      - backend
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  backend:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  mongars_data:
+  ollama_data:
+
+secrets:
+  postgres_password:
+    file: ${MONGARS_POSTGRES_PASSWORD_FILE:-./secrets/postgres_password.txt}
+  api_token:
+    file: ${MONGARS_API_TOKEN_FILE:-./secrets/api_token.txt}
+  approval_hmac_key:
+    file: ${MONGARS_APPROVAL_HMAC_KEY_FILE:-./secrets/approval_hmac_key.txt}

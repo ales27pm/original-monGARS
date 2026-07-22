@@ -1,0 +1,92 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: pgvector/pgvector@sha256:9d2e61c7352b9e9f4798df5fd9a498f043f4cda1cdacc707de3d198650f4321e
+        env:
+          POSTGRES_DB: mongars
+          POSTGRES_USER: mongars
+          POSTGRES_PASSWORD: ci-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mongars -d mongars"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      MONGARS_ENVIRONMENT: test
+      MONGARS_DATABASE_URL: postgresql+psycopg://mongars:ci-only-password@127.0.0.1:5432/mongars
+      MONGARS_OLLAMA_BASE_URL: http://127.0.0.1:11434
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.30"
+          enable-cache: true
+
+      - name: Verify lockfile and install dependencies
+        run: |
+          uv lock --check
+          uv sync --frozen --extra dev
+
+      - name: Lint and type-check
+        run: |
+          uv run ruff format --check .
+          uv run ruff check .
+          uv run mypy src
+
+      - name: Exercise migrations
+        run: |
+          uv run alembic upgrade head
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+          uv run alembic check
+
+      - name: Run tests
+        run: uv run pytest -q
+
+      - name: Validate Compose model
+        run: |
+          install -m 0700 -d secrets
+          printf '%s\n' 'ci-only-password' > secrets/postgres_password.txt
+          printf '%s\n' 'ci-api-token' > secrets/api_token.txt
+          printf '%s\n' 'ci-approval-hmac-key' > secrets/approval_hmac_key.txt
+          chmod 0640 secrets/*.txt
+          docker compose config --quiet
+
+      - name: Build production image
+        run: docker build --tag mongars:ci .
+
+      - name: Verify production image runs as non-root
+        run: >-
+          docker run --rm --entrypoint python mongars:ci
+          -c 'import os, mongars; assert os.getuid() != 0'

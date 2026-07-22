@@ -1,0 +1,4 @@
+services:
+  postgres:
+    ports:
+      - 127.0.0.1:${MONGARS_POSTGRES_PORT:-5432}:5432
