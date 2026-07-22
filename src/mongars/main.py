@@ -53,9 +53,12 @@ def create_app(
             model=runtime_settings.ollama_embedding_model,
             dimension=runtime_settings.embedding_dimensions,
             timeout=runtime_settings.inference_timeout_seconds,
+            max_input_bytes=runtime_settings.embedding_max_input_bytes,
         ),
         expected_dimension=runtime_settings.embedding_dimensions,
         batch_size=runtime_settings.embedding_batch_size,
+        max_text_bytes=runtime_settings.embedding_max_input_bytes,
+        expected_model_digest=runtime_settings.ollama_embedding_model_digest,
     )
     owns_web_search = web_search is None and runtime_settings.web_search_enabled
     runtime_web_search = web_search
@@ -95,6 +98,7 @@ def create_app(
         {
             ("memory", "search"): ActionClassification.READ_ONLY,
             ("memory", "note.create"): ActionClassification.LOCAL_MUTATION,
+            ("memory", "reindex"): ActionClassification.LOCAL_MUTATION,
             ("document", "ingest"): ActionClassification.LOCAL_MUTATION,
         }
     )

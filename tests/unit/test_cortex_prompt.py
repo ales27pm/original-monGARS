@@ -11,7 +11,7 @@ import pytest
 from pydantic import SecretStr
 
 from mongars.config import Environment, Settings
-from mongars.embeddings.errors import EmbeddingTimeoutError
+from mongars.embeddings.errors import EmbeddingContextError, EmbeddingTimeoutError
 from mongars.embeddings.models import EmbeddingBatch
 from mongars.embeddings.service import EmbeddingService
 from mongars.events.repository import ConversationMessage
@@ -842,6 +842,46 @@ async def test_chat_api_maps_embedding_failure_to_bounded_503(
     assert response.status_code == 503
     assert response.json() == {"detail": {"code": "embedding_timeout", "retryable": True}}
     assert "private provider detail" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_chat_api_maps_embedding_input_failure_to_bounded_422(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_embedding(*_args: object, **_kwargs: object) -> None:
+        raise EmbeddingContextError(
+            "private oversized query detail",
+            provider="ollama",
+            maximum_input_bytes=8_192,
+            input_bytes=9_000,
+            input_index=0,
+        )
+
+    monkeypatch.setattr(Cortex, "chat", fail_embedding)
+    token = "embedding-input-test-token"  # noqa: S105 - test-only credential
+    application = create_app(
+        settings=Settings(
+            environment=Environment.TEST,
+            api_token=SecretStr(token),
+        ),
+        database=_FakeDatabase(),  # type: ignore[arg-type]
+        inference=_UnusedInference(),  # type: ignore[arg-type]
+        embeddings=_unused_embeddings(),
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.post(
+            "/v1/chat",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"message": "search memory"},
+        )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": {"code": "embedding_context_exceeded", "retryable": False}}
+    assert "private oversized query detail" not in response.text
 
 
 @pytest.mark.asyncio

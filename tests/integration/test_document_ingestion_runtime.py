@@ -35,7 +35,7 @@ from mongars.embeddings.models import EmbeddingBatch
 from mongars.embeddings.service import EmbeddingService
 from mongars.inference import ChatMessage, ChatResponse, HealthStatus, JsonValue
 from mongars.ingestion.errors import ParserTimeoutError
-from mongars.ingestion.isolation import DocumentParser
+from mongars.ingestion.isolation import DocumentParser, ParserHealth
 from mongars.ingestion.models import ExtractedContent, ValidatedUpload
 from mongars.ingestion.service import DocumentIngestionService
 from mongars.ingestion.staging import DocumentStagingRepository
@@ -114,6 +114,9 @@ class ProbedEmbeddingProvider:
         self.calls = 0
         self.probe = probe
 
+    async def resolve_model_digest(self) -> str:
+        return "0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f"
+
     async def embed(
         self,
         texts: Sequence[str],
@@ -127,6 +130,7 @@ class ProbedEmbeddingProvider:
         return EmbeddingBatch(
             embeddings=tuple(vector for _text in texts),
             model=self.model_name,
+            model_digest=await self.resolve_model_digest(),
             dimension=expected_dimension,
             latency_ms=0.0,
         )
@@ -151,6 +155,9 @@ class ProbedDocumentParser:
 
     async def aclose(self) -> None:
         return None
+
+    async def health(self) -> ParserHealth:
+        return ParserHealth(healthy=True, parser_version="integration-parser-v1")
 
 
 class FlakyDocumentParser(ProbedDocumentParser):
@@ -314,7 +321,9 @@ async def test_multipart_upload_approval_worker_persists_provenance_without_long
             transport=httpx.ASGITransport(app=application),
             base_url="http://testserver",
         ) as client:
+            request_started_at = datetime.now(UTC)
             created = await _upload_txt(client, headers=headers, content=content)
+            request_completed_at = datetime.now(UTC)
             assert set(created) == {
                 "id",
                 "kind",
@@ -331,6 +340,10 @@ async def test_multipart_upload_approval_worker_persists_provenance_without_long
             async with database.session_factory() as session:
                 task = await session.get(TaskQueue, task_id)
                 assert task is not None
+                received_at = datetime.fromisoformat(task.payload["received_at"])
+                assert request_started_at <= received_at <= request_completed_at
+                assert task.payload["source_time_basis"] == "user_supplied"
+                assert task.payload["source_timestamp"] == "2026-07-22T12:30:00Z"
                 staging_id = UUID(task.payload["staging_id"])
                 staged = await session.get(DocumentStaging, staging_id)
                 assert staged is not None
@@ -338,6 +351,14 @@ async def test_multipart_upload_approval_worker_persists_provenance_without_long
                 assert staged.task_id == task_id
                 assert staged.content == content
                 assert staged.source_sha256 == hashlib.sha256(content).digest()
+                assert staged.received_at == received_at
+                assert staged.source_timestamp == datetime(2026, 7, 22, 12, 30, tzinfo=UTC)
+                assert staged.expires_at > received_at + timedelta(
+                    seconds=settings.document_staging_ttl_seconds
+                )
+                assert staged.expires_at <= request_completed_at + timedelta(
+                    seconds=settings.document_staging_ttl_seconds
+                )
                 assert (
                     await DocumentStagingRepository(session).get_for_owner(
                         staging_id=staging_id,
@@ -403,6 +424,8 @@ async def test_multipart_upload_approval_worker_persists_provenance_without_long
                 "sensitivity": "restricted",
                 "retention_class": "ttl_30d",
                 "source_timestamp": "2026-07-22T12:30:00+00:00",
+                "received_at": received_at.isoformat(),
+                "source_time_basis": "user_supplied",
             }
             document_id = UUID(task_result["result"]["document_id"])
 
@@ -410,6 +433,7 @@ async def test_multipart_upload_approval_worker_persists_provenance_without_long
                 document = await session.get(MemoryDocument, document_id)
                 assert document is not None
                 assert document.owner_id == owner_id
+                assert document.source_sha256 == hashlib.sha256(content).digest()
                 assert document.sensitivity == "restricted"
                 assert document.retention_class == "ttl_30d"
                 assert document.mime_type == "text/plain"
@@ -585,8 +609,11 @@ async def test_supported_format_traverses_approved_durable_ingestion(
 
 
 @pytest.mark.asyncio
-async def test_staged_byte_tampering_terminally_fails_and_removes_stage() -> None:
-    owner_id = f"document-tamper-{uuid4().hex}"
+@pytest.mark.parametrize("tampered_field", ["content", "received_at"])
+async def test_staged_integrity_tampering_terminally_fails_and_removes_stage(
+    tampered_field: str,
+) -> None:
+    owner_id = f"document-{tampered_field}-tamper-{uuid4().hex}"
     token = uuid4().hex
     settings = _settings(owner_id, token)
     database = Database(settings)
@@ -622,12 +649,20 @@ async def test_staged_byte_tampering_terminally_fails_and_removes_stage() -> Non
             )
             assert approved.status_code == 200
 
-            tampered = bytes([content[0] ^ 1]) + content[1:]
             async with database.session_factory() as session, session.begin():
+                replacement: object
+                if tampered_field == "content":
+                    replacement = bytes([content[0] ^ 1]) + content[1:]
+                else:
+                    staged_received_at = await session.scalar(
+                        select(DocumentStaging.received_at).where(DocumentStaging.id == staging_id)
+                    )
+                    assert staged_received_at is not None
+                    replacement = staged_received_at + timedelta(seconds=1)
                 await session.execute(
                     update(DocumentStaging)
                     .where(DocumentStaging.id == staging_id)
-                    .values(content=tampered)
+                    .values({tampered_field: replacement})
                 )
 
             worker = Worker(
@@ -1031,6 +1066,8 @@ async def test_database_rejects_cross_owner_staging_task_binding() -> None:
                     "detected_mime_type": "text/plain",
                     "byte_size": len(b"owner scoped"),
                     "source_timestamp": "2026-07-22T12:30:00Z",
+                    "received_at": "2026-07-22T12:31:00Z",
+                    "source_time_basis": "user_supplied",
                     "title": None,
                     "sensitivity": "private",
                     "retention_class": "keep",
@@ -1053,6 +1090,7 @@ async def test_database_rejects_cross_owner_staging_task_binding() -> None:
                         byte_size=len(b"owner scoped"),
                         content=b"owner scoped",
                         source_timestamp=datetime(2026, 7, 22, 12, 30, tzinfo=UTC),
+                        received_at=datetime(2026, 7, 22, 12, 31, tzinfo=UTC),
                         expires_at=datetime.now(UTC) + timedelta(minutes=5),
                     )
                 )

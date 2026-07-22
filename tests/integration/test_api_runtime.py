@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
@@ -10,13 +11,21 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from pydantic import SecretStr
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.engine import make_url
 
 from mongars.config import Environment, Settings
-from mongars.db.models import EpisodicEvent, MemoryDocument, TaskQueue
+from mongars.db.models import (
+    EpisodicEvent,
+    MemoryChunk,
+    MemoryChunkEmbedding,
+    MemoryDocument,
+    MemoryDocumentProvenance,
+    RuntimeComponent,
+    TaskQueue,
+)
 from mongars.db.session import Database
-from mongars.embeddings.models import EmbeddingBatch
+from mongars.embeddings.models import EmbeddingBatch, EmbeddingProfile, EmbeddingSpace
 from mongars.embeddings.service import EmbeddingService
 from mongars.inference import (
     ChatMessage,
@@ -24,8 +33,12 @@ from mongars.inference import (
     HealthStatus,
     JsonValue,
 )
+from mongars.ingestion.isolation import IsolatedDocumentParser
 from mongars.main import create_app
+from mongars.memory.chunking import TextChunk
+from mongars.memory.repository import MemoryRepository
 from mongars.rm.repository import TaskRepository
+from mongars.rm.runtime_heartbeat import WorkerRuntimeHeartbeat
 from mongars.rm.worker import Worker
 
 _RAW_DATABASE_URL = os.getenv("MONGARS_TEST_DATABASE_URL", "").strip()
@@ -96,6 +109,9 @@ class DeterministicEmbeddingProvider:
     provider_name = "deterministic"
     model_name = "nomic-embed-text"
 
+    async def resolve_model_digest(self) -> str:
+        return "0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f"
+
     async def embed(
         self,
         texts: Sequence[str],
@@ -106,6 +122,7 @@ class DeterministicEmbeddingProvider:
         return EmbeddingBatch(
             embeddings=tuple(vector for _text in texts),
             model=self.model_name,
+            model_digest=await self.resolve_model_digest(),
             dimension=expected_dimension,
             latency_ms=0.1,
         )
@@ -142,6 +159,7 @@ async def test_api_approval_worker_memory_and_readiness_smoke() -> None:
         expected_dimension=settings.embedding_dimensions,
         batch_size=settings.embedding_batch_size,
     )
+    parser = IsolatedDocumentParser()
     application = create_app(
         settings=settings,
         database=database,
@@ -155,6 +173,9 @@ async def test_api_approval_worker_memory_and_readiness_smoke() -> None:
 
     try:
         async with database.session_factory() as session, session.begin():
+            await session.execute(
+                delete(RuntimeComponent).where(RuntimeComponent.component_id == "worker:primary")
+            )
             foreign_task = await TaskRepository(session).create(
                 owner_id=foreign_owner_id,
                 kind="memory.search",
@@ -178,6 +199,14 @@ async def test_api_approval_worker_memory_and_readiness_smoke() -> None:
             assert health.status_code == 200
             assert health.json() == {"status": "ok"}
 
+            anonymous_readiness = await client.get("/v1/readyz")
+            assert anonymous_readiness.status_code == 401
+            invalid_readiness = await client.get(
+                "/v1/readyz",
+                headers={"Authorization": "Bearer invalid-runtime-token"},
+            )
+            assert invalid_readiness.status_code == 401
+
             anonymous = await client.get("/v1/tasks")
             assert anonymous.status_code == 401
             invalid = await client.get(
@@ -197,26 +226,46 @@ async def test_api_approval_worker_memory_and_readiness_smoke() -> None:
             assert foreign_detail.status_code == 404
             assert foreign_payload.status_code == 404
 
-            ready = await client.get("/v1/readyz")
+            ready = await client.get("/v1/readyz", headers=headers)
+            assert ready.status_code == 503
+            assert ready.json()["dependencies"]["worker"]["error_code"] == "worker_missing"
+
+            heartbeat = WorkerRuntimeHeartbeat(
+                settings=settings,
+                database=database,
+                embeddings=embeddings,
+                document_parser=parser,
+            )
+            assert await heartbeat.publish_once() is True
+            ready = await client.get("/v1/readyz", headers=headers)
             assert ready.status_code == 200
-            assert ready.json()["dependencies"] == {
-                "database": {"healthy": True},
-                "inference": {
-                    "backend": "ollama",
-                    "healthy": True,
-                    "backend_reachable": True,
-                    "chat_model_ready": True,
-                    "embedding_model_ready": True,
-                    "latency_ms": 0.1,
-                    "error_code": None,
-                },
-                "web_search": {
-                    "enabled": False,
-                    "healthy": True,
-                    "latency_ms": 0.0,
-                    "error_code": None,
-                },
+            dependencies = ready.json()["dependencies"]
+            assert dependencies["database"] == {"healthy": True}
+            assert dependencies["inference"] == {
+                "backend": "ollama",
+                "healthy": True,
+                "backend_reachable": True,
+                "chat_model_ready": True,
+                "embedding_model_ready": True,
+                "latency_ms": 0.1,
+                "error_code": None,
             }
+            assert dependencies["web_search"] == {
+                "enabled": False,
+                "healthy": True,
+                "latency_ms": 0.0,
+                "error_code": None,
+            }
+            assert dependencies["worker"]["healthy"] is True
+            assert dependencies["worker"]["component_id"] == "worker:primary"
+            assert dependencies["parser"] == {
+                "healthy": True,
+                "version": "local-isolated-v1",
+                "error_code": None,
+            }
+            assert dependencies["embedding_space"]["healthy"] is True
+            assert dependencies["embedding_space"]["total_chunk_count"] == 0
+            assert dependencies["embedding_space"]["reindex_required"] is False
 
             create_response = await client.post(
                 "/v1/memory/documents",
@@ -281,6 +330,7 @@ async def test_api_approval_worker_memory_and_readiness_smoke() -> None:
                 database=database,
                 inference=inference,
                 embeddings=embeddings,
+                document_parser=parser,
             )
             assert await worker.run_once() is True
 
@@ -292,6 +342,168 @@ async def test_api_approval_worker_memory_and_readiness_smoke() -> None:
             assert task["result"]["created"] is True
             assert task["result"]["chunk_count"] == 1
             document_id = UUID(task["result"]["document_id"])
+
+            legacy_texts = (
+                f"Legacy reindex marker {uuid4().hex} " + ("界" * 3_000),
+                f"Second legacy marker {uuid4().hex} " + ("龍" * 3_000),
+            )
+            legacy_locators = (
+                {
+                    "kind": "pdf_page",
+                    "page": 7,
+                    "heading_path": ["Legacy", "Oversized"],
+                },
+                {
+                    "kind": "pdf_page",
+                    "page": 8,
+                    "heading_path": ["Legacy", "Oversized"],
+                },
+            )
+            legacy_space = EmbeddingSpace.from_profile(
+                provider="deterministic",
+                model_alias="legacy-nomic-tag",
+                model_digest="b" * 64,
+                dimension=settings.embedding_dimensions,
+                normalization_policy="none",
+                maximum_input_bytes=settings.embedding_max_input_bytes,
+                profile=EmbeddingProfile(),
+            )
+            async with database.session_factory() as session, session.begin():
+                legacy_document, legacy_created = await MemoryRepository(session).add_document(
+                    owner_id=owner_id,
+                    source_type="note",
+                    source_sha256=hashlib.sha256("\n".join(legacy_texts).encode()).digest(),
+                    title="Legacy embedding fixture",
+                    source_uri=None,
+                    mime_type="text/plain",
+                    sensitivity="private",
+                    retention_class="keep",
+                    expires_at=None,
+                    metadata={"fixture": "approved-reindex"},
+                    chunks=[
+                        TextChunk(
+                            text=legacy_texts[index],
+                            approximate_tokens=4,
+                            section_path=("Legacy", "Oversized"),
+                            locator=legacy_locators[index],
+                        )
+                        for index in range(2)
+                    ],
+                    embeddings=[
+                        [
+                            *([0.0] * index),
+                            1.0,
+                            *([0.0] * (settings.embedding_dimensions - index - 1)),
+                        ]
+                        for index in range(2)
+                    ],
+                    embedding_space=legacy_space,
+                )
+                assert legacy_created is True
+
+            reindex_required = await client.get("/v1/readyz", headers=headers)
+            assert reindex_required.status_code == 503
+            assert (
+                reindex_required.json()["dependencies"]["embedding_space"]["status"]
+                == "reindex_required"
+            )
+
+            reindex_created = await client.post(
+                "/v1/memory/reindex",
+                headers=headers,
+                json={"batch_size": 8},
+            )
+            assert reindex_created.status_code == 202
+            reindex_task_id = UUID(reindex_created.json()["id"])
+            reindex_review = await client.get(
+                f"/v1/tasks/{reindex_task_id}",
+                headers=headers,
+            )
+            assert reindex_review.status_code == 200
+            assert reindex_review.json()["status"] == "waiting_approval"
+            reindex_approved = await client.post(
+                f"/v1/tasks/{reindex_task_id}/approve",
+                headers=headers,
+                json={"action_digest": reindex_review.json()["action_digest"]},
+            )
+            assert reindex_approved.status_code == 200
+            assert await worker.run_once() is True
+            reindex_detail = await client.get(
+                f"/v1/tasks/{reindex_task_id}",
+                headers=headers,
+            )
+            assert reindex_detail.status_code == 200
+            reindex_result = reindex_detail.json()["result"]
+            assert reindex_detail.json()["status"] == "done"
+            assert reindex_result["reindexed_source_chunk_count"] == 2
+            assert reindex_result["reindexed_chunk_count"] > 2
+            assert reindex_result["compatible_chunk_count"] == (
+                1 + reindex_result["reindexed_chunk_count"]
+            )
+            assert reindex_result["legacy_chunk_count"] == 0
+            assert reindex_result["reindex_required"] is False
+
+            ready_after_reindex = await client.get("/v1/readyz", headers=headers)
+            assert ready_after_reindex.status_code == 200
+            assert (
+                ready_after_reindex.json()["dependencies"]["embedding_space"][
+                    "compatible_chunk_count"
+                ]
+                == reindex_result["compatible_chunk_count"]
+            )
+
+            async with database.session_factory() as session:
+                legacy_chunks = list(
+                    (
+                        await session.scalars(
+                            select(MemoryChunk)
+                            .where(MemoryChunk.document_id == legacy_document.id)
+                            .order_by(MemoryChunk.chunk_index)
+                        )
+                    ).all()
+                )
+                active_vectors = list(
+                    (
+                        await session.scalars(
+                            select(MemoryChunkEmbedding).where(
+                                MemoryChunkEmbedding.chunk_id.in_(
+                                    [chunk.id for chunk in legacy_chunks]
+                                ),
+                                MemoryChunkEmbedding.embedding_space_id
+                                == reindex_result["embedding_space_id"],
+                            )
+                        )
+                    ).all()
+                )
+                provenance_count = len(
+                    (
+                        await session.scalars(
+                            select(MemoryDocumentProvenance).where(
+                                MemoryDocumentProvenance.document_id == legacy_document.id
+                            )
+                        )
+                    ).all()
+                )
+            assert len(legacy_chunks) == reindex_result["reindexed_chunk_count"]
+            assert len(active_vectors) == len(legacy_chunks)
+            assert provenance_count == 1
+            assert {chunk.locator["page"] for chunk in legacy_chunks} == {7, 8}
+            assert all(chunk.locator in legacy_locators for chunk in legacy_chunks)
+            assert all(
+                tuple(chunk.section_path) == ("Legacy", "Oversized") for chunk in legacy_chunks
+            )
+            for text_value, locator in zip(legacy_texts, legacy_locators, strict=True):
+                located_text = "".join(
+                    chunk.plaintext.replace(" ", "")
+                    for chunk in legacy_chunks
+                    if chunk.locator == locator
+                )
+                assert located_text == text_value.replace(" ", "")
+            assert all(
+                len((embeddings.profile.document_instruction + chunk.plaintext).encode("utf-8"))
+                <= embeddings.max_text_bytes
+                for chunk in legacy_chunks
+            )
 
             document_response = await client.get(
                 f"/v1/memory/documents/{document_id}",
@@ -344,7 +556,7 @@ async def test_api_approval_worker_memory_and_readiness_smoke() -> None:
             assert cancelled_task.json()["status"] == "cancelled"
 
             inference.healthy = False
-            degraded = await client.get("/v1/readyz")
+            degraded = await client.get("/v1/readyz", headers=headers)
             assert degraded.status_code == 503
             degraded_body = degraded.json()
             assert degraded_body["status"] == "not_ready"
@@ -361,6 +573,11 @@ async def test_api_approval_worker_memory_and_readiness_smoke() -> None:
     finally:
         await _clean_owner(database, owner_id)
         await _clean_owner(database, foreign_owner_id)
+        async with database.session_factory() as session, session.begin():
+            await session.execute(
+                delete(RuntimeComponent).where(RuntimeComponent.component_id == "worker:primary")
+            )
+        await parser.aclose()
         await embeddings.aclose()
         await inference.aclose()
         await database.close()

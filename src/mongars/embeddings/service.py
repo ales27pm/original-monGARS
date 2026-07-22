@@ -11,18 +11,31 @@ from time import monotonic
 from .base import EmbeddingProvider
 from .errors import (
     EmbeddingConfigurationError,
+    EmbeddingContextError,
     EmbeddingDimensionError,
     EmbeddingError,
     EmbeddingInputError,
+    EmbeddingModelDigestMismatchError,
     EmbeddingModelMismatchError,
     EmbeddingResponseError,
 )
 from .limits import (
     MAX_EMBEDDING_INPUTS,
+    MAX_EMBEDDING_TEXT_BYTES,
     MAX_EMBEDDING_TEXT_CHARACTERS,
+    MAX_EMBEDDING_TOTAL_BYTES,
     MAX_EMBEDDING_TOTAL_CHARACTERS,
 )
-from .models import EmbeddingBatch, EmbeddingMetric
+from .models import (
+    EmbeddingBatch,
+    EmbeddingMetric,
+    EmbeddingProfile,
+    EmbeddingPurpose,
+    EmbeddingSpace,
+    NormalizationPolicy,
+    validate_embedding_purpose,
+    validate_model_digest,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +63,10 @@ class EmbeddingService:
         max_inputs: int = MAX_EMBEDDING_INPUTS,
         max_text_characters: int = MAX_EMBEDDING_TEXT_CHARACTERS,
         max_total_characters: int = MAX_EMBEDDING_TOTAL_CHARACTERS,
+        max_text_bytes: int = MAX_EMBEDDING_TEXT_BYTES,
+        max_total_bytes: int = MAX_EMBEDDING_TOTAL_BYTES,
+        profile: EmbeddingProfile | None = None,
+        expected_model_digest: str | None = None,
         metric_sink: MetricSink | None = None,
     ) -> None:
         self._provider = provider
@@ -87,8 +104,36 @@ class EmbeddingService:
                 "max_total_characters must be at least max_text_characters.",
                 provider=_SERVICE_PROVIDER,
             )
+        self._max_text_bytes = _bounded_positive_int(
+            max_text_bytes,
+            field="max_text_bytes",
+            maximum=MAX_EMBEDDING_TEXT_BYTES,
+        )
+        self._max_total_bytes = _bounded_positive_int(
+            max_total_bytes,
+            field="max_total_bytes",
+            maximum=MAX_EMBEDDING_TOTAL_BYTES,
+        )
+        if self._max_total_bytes < self._max_text_bytes:
+            raise EmbeddingConfigurationError(
+                "max_total_bytes must be at least max_text_bytes.",
+                provider=_SERVICE_PROVIDER,
+            )
         self._normalize_vectors = normalize_vectors
+        self._profile = profile or EmbeddingProfile()
+        try:
+            self._expected_model_digest = (
+                validate_model_digest(expected_model_digest)
+                if expected_model_digest is not None
+                else None
+            )
+        except ValueError as exc:
+            raise EmbeddingConfigurationError(
+                "expected_model_digest must be a SHA-256 artifact digest.",
+                provider=_SERVICE_PROVIDER,
+            ) from exc
         self._metric_sink = metric_sink
+        self._pinned_space: EmbeddingSpace | None = None
 
     @property
     def provider_name(self) -> str:
@@ -120,14 +165,88 @@ class EmbeddingService:
 
         return self._max_total_characters
 
+    @property
+    def max_text_bytes(self) -> int:
+        """Return the prepared per-input UTF-8 byte ceiling."""
+
+        return self._max_text_bytes
+
+    @property
+    def max_total_bytes(self) -> int:
+        """Return the prepared aggregate UTF-8 byte ceiling."""
+
+        return self._max_total_bytes
+
+    @property
+    def profile(self) -> EmbeddingProfile:
+        return self._profile
+
+    @property
+    def embedding_space(self) -> EmbeddingSpace | None:
+        """Return the pinned space after its artifact digest has been resolved."""
+
+        return self._pinned_space
+
     async def aclose(self) -> None:
         """Release resources owned by the configured provider."""
 
         await self._provider.aclose()
 
-    async def embed(self, texts: Sequence[str]) -> EmbeddingBatch:
+    async def resolve_space(self) -> EmbeddingSpace:
+        """Resolve the mutable model alias and pin one immutable vector space."""
+
+        self._verify_provider_identity()
+        try:
+            digest = validate_model_digest(await self._provider.resolve_model_digest())
+        except ValueError as exc:
+            raise EmbeddingConfigurationError(
+                "Embedding provider returned an invalid artifact digest.",
+                provider=self._provider_name,
+            ) from exc
+        candidate = EmbeddingSpace.from_profile(
+            provider=self._provider_name,
+            model_alias=self._model_name,
+            model_digest=digest,
+            dimension=self._expected_dimension,
+            normalization_policy=self.normalization_policy,
+            maximum_input_bytes=self._max_text_bytes,
+            profile=self._profile,
+        )
+        if (
+            self._expected_model_digest is not None
+            and candidate.model_digest != self._expected_model_digest
+        ):
+            raise EmbeddingModelDigestMismatchError(
+                provider=self._provider_name,
+                expected=self._expected_model_digest,
+                actual=candidate.model_digest,
+            )
+        if self._pinned_space is None:
+            self._pinned_space = candidate
+        elif self._pinned_space != candidate:
+            raise EmbeddingModelDigestMismatchError(
+                provider=self._provider_name,
+                expected=self._pinned_space.model_digest,
+                actual=candidate.model_digest,
+            )
+        return self._pinned_space
+
+    @property
+    def normalization_policy(self) -> NormalizationPolicy:
+        return "l2" if self._normalize_vectors else "none"
+
+    async def embed(
+        self,
+        texts: Sequence[str],
+        *,
+        purpose: EmbeddingPurpose,
+    ) -> EmbeddingBatch:
         """Normalize, bound, split, and validate one logical embedding request."""
 
+        try:
+            validated_purpose = validate_embedding_purpose(purpose)
+        except ValueError as exc:
+            raise EmbeddingInputError(str(exc), provider=self._provider_name) from exc
         normalized = _normalize_texts(
             texts,
             provider=self._provider_name,
@@ -135,13 +254,27 @@ class EmbeddingService:
             max_text_characters=self._max_text_characters,
             max_total_characters=self._max_total_characters,
         )
+        prepared, input_bytes = _prepare_texts(
+            normalized,
+            purpose=validated_purpose,
+            profile=self._profile,
+            provider=self._provider_name,
+            max_text_bytes=self._max_text_bytes,
+            max_total_bytes=self._max_total_bytes,
+        )
         started = monotonic()
         provider_calls = 0
+        space: EmbeddingSpace | None = None
         try:
-            self._verify_provider_identity()
+            space = await self.resolve_space()
+            if space is None:
+                raise EmbeddingConfigurationError(
+                    "Embedding-space resolution returned no identity.",
+                    provider=self._provider_name,
+                )
             vectors: list[tuple[float, ...]] = []
-            for offset in range(0, len(normalized), self._batch_size):
-                batch_texts = normalized[offset : offset + self._batch_size]
+            for offset in range(0, len(prepared), self._batch_size):
+                batch_texts = prepared[offset : offset + self._batch_size]
                 response = await self._provider.embed(
                     batch_texts,
                     expected_dimension=self._expected_dimension,
@@ -153,6 +286,7 @@ class EmbeddingService:
                         response,
                         provider=self._provider_name,
                         expected_model=self._model_name,
+                        expected_model_digest=space.model_digest,
                         expected_dimension=self._expected_dimension,
                         expected_count=len(batch_texts),
                         index_offset=offset,
@@ -174,6 +308,9 @@ class EmbeddingService:
                     error_code=(
                         exc.code if isinstance(exc, EmbeddingError) else "unexpected_error"
                     ),
+                    purpose=validated_purpose,
+                    embedding_space_id=space.space_id if space is not None else None,
+                    input_bytes=input_bytes,
                 )
             )
             raise
@@ -186,6 +323,9 @@ class EmbeddingService:
             latency_ms=elapsed_ms,
             provider_calls=provider_calls,
             normalized=self._normalize_vectors,
+            model_digest=space.model_digest,
+            embedding_space_id=space.space_id,
+            purpose=validated_purpose,
         )
         self._emit_metric(
             EmbeddingMetric(
@@ -197,6 +337,9 @@ class EmbeddingService:
                 latency_ms=elapsed_ms,
                 normalized=self._normalize_vectors,
                 outcome="ok",
+                purpose=validated_purpose,
+                embedding_space_id=space.space_id,
+                input_bytes=input_bytes,
             )
         )
         return result
@@ -221,7 +364,17 @@ class EmbeddingService:
 
     def _emit_metric(self, metric: EmbeddingMetric) -> None:
         if self._metric_sink is not None:
-            self._metric_sink(metric)
+            try:
+                self._metric_sink(metric)
+            except Exception:
+                logger.warning(
+                    "embedding_metric_sink_failed",
+                    extra={
+                        "embedding_provider": metric.provider,
+                        "embedding_model": metric.model,
+                        "embedding_outcome": metric.outcome,
+                    },
+                )
         level = logging.INFO if metric.outcome == "ok" else logging.WARNING
         logger.log(
             level,
@@ -237,6 +390,9 @@ class EmbeddingService:
                 "embedding_normalized": metric.normalized,
                 "embedding_outcome": metric.outcome,
                 "embedding_error_code": metric.error_code,
+                "embedding_purpose": metric.purpose,
+                "embedding_space_id": metric.embedding_space_id,
+                "embedding_input_bytes": metric.input_bytes,
             },
         )
 
@@ -297,11 +453,48 @@ def _normalize_texts(
     return tuple(normalized)
 
 
+def _prepare_texts(
+    texts: tuple[str, ...],
+    *,
+    purpose: EmbeddingPurpose,
+    profile: EmbeddingProfile,
+    provider: str,
+    max_text_bytes: int,
+    max_total_bytes: int,
+) -> tuple[tuple[str, ...], int]:
+    prefix = profile.instruction_for(purpose)
+    prepared: list[str] = []
+    total_bytes = 0
+    for index, text in enumerate(texts):
+        value = f"{prefix}{text}"
+        byte_count = len(value.encode("utf-8"))
+        if byte_count > max_text_bytes:
+            raise EmbeddingContextError(
+                (
+                    f"Prepared embedding input {index} exceeds the reviewed "
+                    f"{max_text_bytes}-byte context ceiling."
+                ),
+                provider=provider,
+                maximum_input_bytes=max_text_bytes,
+                input_bytes=byte_count,
+                input_index=index,
+            )
+        total_bytes += byte_count
+        if total_bytes > max_total_bytes:
+            raise EmbeddingInputError(
+                f"Prepared embedding input exceeds the {max_total_bytes}-byte aggregate limit.",
+                provider=provider,
+            )
+        prepared.append(value)
+    return tuple(prepared), total_bytes
+
+
 def _validate_provider_batch(
     response: EmbeddingBatch,
     *,
     provider: str,
     expected_model: str,
+    expected_model_digest: str,
     expected_dimension: int,
     expected_count: int,
     index_offset: int,
@@ -317,6 +510,24 @@ def _validate_provider_batch(
             provider=provider,
             expected=expected_model,
             actual=response.model,
+        )
+    if response.model_digest is None:
+        raise EmbeddingResponseError(
+            "Embedding provider response has no artifact digest.",
+            provider=provider,
+        )
+    try:
+        response_digest = validate_model_digest(response.model_digest)
+    except ValueError as exc:
+        raise EmbeddingResponseError(
+            "Embedding provider response has an invalid artifact digest.",
+            provider=provider,
+        ) from exc
+    if response_digest != expected_model_digest:
+        raise EmbeddingModelDigestMismatchError(
+            provider=provider,
+            expected=expected_model_digest,
+            actual=response_digest,
         )
     if response.dimension != expected_dimension:
         raise EmbeddingDimensionError(
@@ -361,13 +572,21 @@ def _validate_provider_batch(
                     provider=provider,
                 )
             vector.append(float(component))
+        magnitude = math.hypot(*vector)
+        if not math.isfinite(magnitude):
+            raise EmbeddingResponseError(
+                f"Embedding {absolute_index} has a non-finite magnitude.",
+                provider=provider,
+            )
+        if magnitude == 0:
+            raise EmbeddingResponseError(
+                (
+                    f"Embedding {absolute_index} has zero magnitude; it cannot be "
+                    "L2-normalized or used for cosine retrieval."
+                ),
+                provider=provider,
+            )
         if normalize_vectors:
-            magnitude = math.sqrt(sum(component * component for component in vector))
-            if not math.isfinite(magnitude) or magnitude == 0:
-                raise EmbeddingResponseError(
-                    f"Embedding {absolute_index} cannot be L2-normalized.",
-                    provider=provider,
-                )
             vector = [component / magnitude for component in vector]
         vectors.append(tuple(vector))
     return tuple(vectors)

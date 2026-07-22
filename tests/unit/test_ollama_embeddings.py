@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Coroutine
+from collections.abc import Callable, Coroutine
 from typing import Any
 
 import httpx
@@ -11,17 +11,46 @@ import pytest
 from mongars.embeddings import (
     EmbeddingConfigurationError,
     EmbeddingConnectionError,
+    EmbeddingContextError,
     EmbeddingDimensionError,
     EmbeddingHTTPError,
+    EmbeddingModelDigestMismatchError,
     EmbeddingModelMismatchError,
     EmbeddingResponseError,
     EmbeddingTimeoutError,
     OllamaEmbeddingProvider,
 )
 
+_MODEL_DIGEST = "a" * 64
+
 
 def run[T](coroutine: Coroutine[Any, Any, T]) -> T:
     return asyncio.run(coroutine)
+
+
+def ollama_transport(
+    embed_handler: Callable[[httpx.Request], httpx.Response],
+    *,
+    model: str = "nomic-embed-text",
+    digest: str = _MODEL_DIGEST,
+) -> httpx.MockTransport:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/tags":
+            return httpx.Response(
+                200,
+                json={
+                    "models": [
+                        {
+                            "name": f"{model}:latest" if ":" not in model else model,
+                            "model": f"{model}:latest" if ":" not in model else model,
+                            "digest": digest,
+                        }
+                    ]
+                },
+            )
+        return embed_handler(request)
+
+    return httpx.MockTransport(handler)
 
 
 def test_ollama_provider_uses_fixed_model_and_native_embed_endpoint() -> None:
@@ -32,6 +61,7 @@ def test_ollama_provider_uses_fixed_model_and_native_embed_endpoint() -> None:
             assert json.loads(request.content) == {
                 "model": "nomic-embed-text",
                 "input": ["alpha", "beta"],
+                "truncate": False,
             }
             return httpx.Response(
                 200,
@@ -41,7 +71,7 @@ def test_ollama_provider_uses_fixed_model_and_native_embed_endpoint() -> None:
                 },
             )
 
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        async with httpx.AsyncClient(transport=ollama_transport(handler)) as client:
             provider = OllamaEmbeddingProvider(
                 base_url="http://ollama:11434/",
                 model="nomic-embed-text",
@@ -52,6 +82,7 @@ def test_ollama_provider_uses_fixed_model_and_native_embed_endpoint() -> None:
 
         assert result.embeddings == ((1.0, 0.0, 0.0), (0.25, 0.5, 0.75))
         assert result.model == "nomic-embed-text"
+        assert result.model_digest == _MODEL_DIGEST
         assert result.dimension == 3
         assert result.count == 2
         assert result.latency_ms >= 0
@@ -91,7 +122,7 @@ def test_rejects_oversized_content_length_before_reading_body() -> None:
 
     async def exercise() -> None:
         async with httpx.AsyncClient(
-            transport=httpx.MockTransport(
+            transport=ollama_transport(
                 lambda _request: httpx.Response(
                     200,
                     headers={"content-length": "1025"},
@@ -119,9 +150,7 @@ def test_rejects_oversized_chunked_body_before_json_decode() -> None:
 
     async def exercise() -> None:
         async with httpx.AsyncClient(
-            transport=httpx.MockTransport(
-                lambda _request: httpx.Response(200, stream=ChunkedStream())
-            )
+            transport=ollama_transport(lambda _request: httpx.Response(200, stream=ChunkedStream()))
         ) as client:
             provider = OllamaEmbeddingProvider(
                 base_url="http://ollama:11434",
@@ -154,7 +183,10 @@ def test_rejects_untrusted_provider_responses(
 ) -> None:
     async def exercise() -> None:
         async with httpx.AsyncClient(
-            transport=httpx.MockTransport(lambda _request: httpx.Response(200, json=payload))
+            transport=ollama_transport(
+                lambda _request: httpx.Response(200, json=payload),
+                model="nomic",
+            )
         ) as client:
             provider = OllamaEmbeddingProvider(
                 base_url="http://ollama:11434",
@@ -171,12 +203,13 @@ def test_rejects_untrusted_provider_responses(
 def test_rejects_non_finite_component_from_provider_json() -> None:
     async def exercise() -> None:
         async with httpx.AsyncClient(
-            transport=httpx.MockTransport(
+            transport=ollama_transport(
                 lambda _request: httpx.Response(
                     200,
                     content=b'{"model":"nomic","embeddings":[[1.0,NaN]]}',
                     headers={"content-type": "application/json"},
-                )
+                ),
+                model="nomic",
             )
         ) as client:
             provider = OllamaEmbeddingProvider(
@@ -223,7 +256,7 @@ def test_maps_http_errors_without_reflecting_response_body(
 ) -> None:
     async def exercise() -> None:
         async with httpx.AsyncClient(
-            transport=httpx.MockTransport(
+            transport=ollama_transport(
                 lambda _request: httpx.Response(status_code, text="secret provider body")
             )
         ) as client:
@@ -266,6 +299,132 @@ def test_maps_transport_failures(
                 await provider.embed(["alpha"], expected_dimension=2)
 
     run(exercise())
+
+
+def test_rejects_input_over_conservative_utf8_byte_limit_before_network() -> None:
+    requests = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(500)
+
+    async def exercise() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            provider = OllamaEmbeddingProvider(
+                base_url="http://ollama:11434",
+                dimension=2,
+                max_input_bytes=256,
+                client=client,
+            )
+            with pytest.raises(EmbeddingContextError) as caught:
+                await provider.embed(["é" * 129], expected_dimension=2)
+            assert caught.value.input_bytes == 258
+
+    run(exercise())
+    assert requests == 0
+
+
+def test_maps_explicit_ollama_context_rejection_without_enabling_truncation() -> None:
+    async def exercise() -> None:
+        async with httpx.AsyncClient(
+            transport=ollama_transport(
+                lambda _request: httpx.Response(
+                    400,
+                    json={"error": "input length exceeds the context length"},
+                )
+            )
+        ) as client:
+            provider = OllamaEmbeddingProvider(
+                base_url="http://ollama:11434",
+                dimension=2,
+                client=client,
+            )
+            with pytest.raises(EmbeddingContextError, match="exceeds its context"):
+                await provider.embed(["alpha"], expected_dimension=2)
+
+    run(exercise())
+
+
+def test_model_alias_is_pinned_to_immutable_digest() -> None:
+    tag_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal tag_calls
+        assert request.url.path == "/api/tags"
+        tag_calls += 1
+        digest = _MODEL_DIGEST if tag_calls == 1 else "b" * 64
+        return httpx.Response(
+            200,
+            json={
+                "models": [
+                    {
+                        "name": "nomic-embed-text:latest",
+                        "digest": digest,
+                    }
+                ]
+            },
+        )
+
+    async def exercise() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            provider = OllamaEmbeddingProvider(
+                base_url="http://ollama:11434",
+                client=client,
+            )
+            assert await provider.resolve_model_digest() == _MODEL_DIGEST
+            with pytest.raises(EmbeddingModelDigestMismatchError) as caught:
+                await provider.resolve_model_digest()
+            assert caught.value.expected == _MODEL_DIGEST
+            assert caught.value.actual == "b" * 64
+
+    run(exercise())
+
+
+def test_rejects_model_alias_drift_during_embedding_request() -> None:
+    requests: list[str] = []
+    tag_calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal tag_calls
+        requests.append(request.url.path)
+        if request.url.path == "/api/embed":
+            return httpx.Response(
+                200,
+                json={
+                    "model": "nomic-embed-text",
+                    "embeddings": [[1.0, 0.0]],
+                },
+            )
+        assert request.url.path == "/api/tags"
+        tag_calls += 1
+        digest = _MODEL_DIGEST if tag_calls == 1 else "b" * 64
+        return httpx.Response(
+            200,
+            json={
+                "models": [
+                    {
+                        "name": "nomic-embed-text:latest",
+                        "digest": digest,
+                    }
+                ]
+            },
+        )
+
+    async def exercise() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            provider = OllamaEmbeddingProvider(
+                base_url="http://ollama:11434",
+                dimension=2,
+                client=client,
+            )
+            with pytest.raises(EmbeddingModelDigestMismatchError) as caught:
+                await provider.embed(["alpha"], expected_dimension=2)
+            assert caught.value.expected == _MODEL_DIGEST
+            assert caught.value.actual == "b" * 64
+
+    run(exercise())
+    assert requests == ["/api/tags", "/api/embed", "/api/tags"]
 
 
 @pytest.mark.parametrize(

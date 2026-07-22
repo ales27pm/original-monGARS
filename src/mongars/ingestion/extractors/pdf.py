@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 from io import BytesIO
@@ -16,7 +17,15 @@ from mongars.ingestion.errors import (
     MalformedDocumentError,
 )
 from mongars.ingestion.extractors.text import normalize_text
-from mongars.ingestion.models import DocumentLimits, DocumentMediaType, ExtractedContent
+from mongars.ingestion.models import (
+    DocumentLimits,
+    DocumentLocator,
+    DocumentMediaType,
+    ExtractedContent,
+    ExtractedSegment,
+)
+
+_BLOCK_BREAK = re.compile(r"\n\s*\n+")
 
 
 def _package_version() -> str:
@@ -48,31 +57,52 @@ class PdfExtractor:
         if page_count > limits.max_pages:
             raise DocumentStructureLimitError("PDF exceeds the configured page limit")
 
-        extracted_pages: list[str] = []
+        segments: list[ExtractedSegment] = []
         extracted_characters = 0
         try:
-            for page in reader.pages:
+            for page_number, page in enumerate(reader.pages, 1):
                 page_text = page.extract_text() or ""
                 extracted_characters += len(page_text)
                 if extracted_characters > limits.max_extracted_chars:
                     raise ExtractedTextTooLargeError(
                         "extracted text exceeds the configured character limit"
                     )
-                if normalized := page_text.strip():
-                    extracted_pages.append(normalized)
+                if page_text.strip():
+                    normalized_page = normalize_text(
+                        page_text,
+                        max_chars=limits.max_extracted_chars,
+                    )
+                    for block_index, block in enumerate(_BLOCK_BREAK.split(normalized_page)):
+                        if not block.strip():
+                            continue
+                        segments.append(
+                            ExtractedSegment(
+                                text=block.strip(),
+                                locator=DocumentLocator(
+                                    media_type=self.media_type.value,
+                                    page_number=page_number,
+                                    block_index=block_index,
+                                ),
+                            )
+                        )
+                        if len(segments) > limits.max_sections:
+                            raise DocumentStructureLimitError(
+                                "PDF exceeds the configured section limit"
+                            )
         except ExtractedTextTooLargeError:
             raise
         except (PdfReadError, OSError, TypeError, ValueError, KeyError) as exc:
             raise MalformedDocumentError("PDF text content is malformed") from exc
 
         text = normalize_text(
-            "\n\n".join(extracted_pages),
+            "\n\n".join(segment.text for segment in segments),
             max_chars=limits.max_extracted_chars,
         )
         return ExtractedContent(
             text=text,
+            segments=tuple(segments),
             page_count=page_count,
-            section_count=len(extracted_pages),
+            section_count=len(segments),
             parser_name=self.parser_name,
             parser_version=self.parser_version,
         )

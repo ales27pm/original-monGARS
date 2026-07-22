@@ -115,6 +115,66 @@ curl --fail --silent --show-error \
   --cacert "$ca_certificate" \
   "https://localhost:$https_port/v1/healthz" >/dev/null
 
+# Detailed dependency state is protected even though minimal process liveness is public.
+unauthenticated_readiness_status="$(
+  curl --silent --output /dev/null --write-out '%{http_code}' \
+    --cacert "$ca_certificate" \
+    "https://localhost:$https_port/v1/readyz"
+)"
+if [[ "$unauthenticated_readiness_status" != "401" ]]; then
+  echo "unauthenticated readiness returned HTTP $unauthenticated_readiness_status, expected 401" >&2
+  exit 1
+fi
+api_token="$(tr -d '\n' < "$temporary_directory/secrets/api_token.txt")"
+
+# Readiness must include the worker-owned parser and exact embedding-space
+# heartbeat; process liveness alone cannot prove the document pipeline works.
+readiness_response="$temporary_directory/readiness-response.json"
+readiness_status=""
+for _readiness_attempt in {1..45}; do
+  readiness_status="$(
+    curl --silent --show-error --output "$readiness_response" --write-out '%{http_code}' \
+      --cacert "$ca_certificate" \
+      --header "Authorization: Bearer $api_token" \
+      "https://localhost:$https_port/v1/readyz"
+  )"
+  if [[ "$readiness_status" == "200" ]]; then
+    break
+  fi
+  sleep 1
+done
+if [[ "$readiness_status" != "200" ]]; then
+  echo "durable runtime readiness returned HTTP $readiness_status, expected 200" >&2
+  cat "$readiness_response" >&2
+  exit 1
+fi
+python3 - "$readiness_response" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+dependencies = payload["dependencies"]
+assert payload["status"] == "ready"
+assert dependencies["database"]["healthy"] is True
+assert dependencies["inference"]["healthy"] is True
+assert dependencies["web_search"]["healthy"] is True
+assert dependencies["worker"]["healthy"] is True
+assert dependencies["worker"]["component_id"] == "worker:primary"
+assert dependencies["parser"]["healthy"] is True
+embedding = dependencies["embedding_space"]
+assert embedding["healthy"] is True
+assert embedding["model_alias"] == "nomic-embed-text"
+assert embedding["model_digest"] == (
+    "0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f"
+)
+assert embedding["dimension"] == 768
+assert embedding["total_chunk_count"] == 0
+assert embedding["compatible_chunk_count"] == 0
+assert embedding["legacy_chunk_count"] == 0
+assert embedding["reindex_required"] is False
+PY
+
 unauthorized_status="$(
   curl --silent --output /dev/null --write-out '%{http_code}' \
     --cacert "$ca_certificate" \
@@ -126,7 +186,6 @@ if [[ "$unauthorized_status" != "401" ]]; then
   exit 1
 fi
 
-api_token="$(tr -d '\n' < "$temporary_directory/secrets/api_token.txt")"
 chat_response="$temporary_directory/chat-response.json"
 curl --fail --silent --show-error \
   --cacert "$ca_certificate" \
@@ -286,6 +345,11 @@ assert provenance["validated_mime_type"] == "text/plain"
 assert provenance["original_filename"] == "smoke-document.txt"
 assert provenance["parser_name"] == "utf8-text"
 assert provenance["extracted_character_count"] > 0
+assert provenance["source_timestamp"] == "2026-01-02T03:04:05+00:00"
+assert provenance["source_time_basis"] == "user_supplied"
+assert isinstance(provenance["received_at"], str) and provenance["received_at"].endswith(
+    "+00:00"
+)
 print(result["document_id"])
 PY
 )"

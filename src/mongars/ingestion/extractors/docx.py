@@ -24,8 +24,15 @@ from mongars.ingestion.errors import (
     MalformedDocumentError,
     UnsafeDocumentError,
 )
+from mongars.ingestion.extractors.structure import HeadingPathTracker, cell_reference
 from mongars.ingestion.extractors.text import normalize_text
-from mongars.ingestion.models import DocumentLimits, DocumentMediaType, ExtractedContent
+from mongars.ingestion.models import (
+    DocumentLimits,
+    DocumentLocator,
+    DocumentMediaType,
+    ExtractedContent,
+    ExtractedSegment,
+)
 
 _CONTENT_TYPES_PART = "[Content_Types].xml"
 _DOCUMENT_PART = "word/document.xml"
@@ -34,6 +41,7 @@ _DOCX_CONTENT_TYPE = (
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"
 )
 _DRIVE_PATH = re.compile(r"^[a-zA-Z]:")
+_HEADING_STYLE = re.compile(r"^Heading\s*([1-9])$", re.I)
 
 
 def _package_version() -> str:
@@ -144,11 +152,28 @@ def inspect_docx_archive(content: bytes, *, limits: DocumentLimits) -> None:
 
 def _table_text(table: Table) -> str:
     rows: list[str] = []
+    seen_cells: set[int] = set()
     for row in table.rows:
-        cells = [cell.text.strip() for cell in row.cells]
+        cells: list[str] = []
+        for cell in row.cells:
+            cell_identity = id(cell._tc)
+            if cell_identity in seen_cells:
+                continue
+            seen_cells.add(cell_identity)
+            cells.append(cell.text.strip())
         if any(cells):
             rows.append("\t".join(cells))
     return "\n".join(rows)
+
+
+def _heading_level(paragraph: Paragraph) -> int | None:
+    style = paragraph.style
+    if style is None:
+        return None
+    for candidate in (style.name, style.style_id):
+        if match := _HEADING_STYLE.match(candidate or ""):
+            return int(match.group(1))
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -165,12 +190,60 @@ class DocxExtractor:
             raise MalformedDocumentError("DOCX package cannot be opened") from exc
 
         blocks: list[str] = []
+        segments: list[ExtractedSegment] = []
+        tracker = HeadingPathTracker()
+        table_index = 0
         try:
-            for block in document.iter_inner_content():
+            for block_index, block in enumerate(document.iter_inner_content()):
                 if isinstance(block, Paragraph):
                     value = block.text.strip()
+                    if value:
+                        heading_path = tracker.current
+                        if (level := _heading_level(block)) is not None:
+                            heading_path = tracker.update(level, value)
+                        segments.append(
+                            ExtractedSegment(
+                                text=normalize_text(
+                                    value,
+                                    max_chars=limits.max_extracted_chars,
+                                ),
+                                locator=DocumentLocator(
+                                    media_type=self.media_type.value,
+                                    block_index=block_index,
+                                    heading_path=heading_path,
+                                ),
+                            )
+                        )
                 elif isinstance(block, Table):
                     value = _table_text(block)
+                    seen_cells: set[int] = set()
+                    for row_index, row in enumerate(block.rows):
+                        for column_index, cell in enumerate(row.cells):
+                            cell_identity = id(cell._tc)
+                            if cell_identity in seen_cells:
+                                continue
+                            seen_cells.add(cell_identity)
+                            cell_text = cell.text.strip()
+                            if cell_text:
+                                segments.append(
+                                    ExtractedSegment(
+                                        text=normalize_text(
+                                            cell_text,
+                                            max_chars=limits.max_extracted_chars,
+                                        ),
+                                        locator=DocumentLocator(
+                                            media_type=self.media_type.value,
+                                            block_index=block_index,
+                                            heading_path=tracker.current,
+                                            table_index=table_index,
+                                            cell_reference=cell_reference(
+                                                row_index,
+                                                column_index,
+                                            ),
+                                        ),
+                                    )
+                                )
+                    table_index += 1
                 else:  # pragma: no cover - protects against future python-docx block types
                     continue
                 if value:
@@ -179,14 +252,21 @@ class DocxExtractor:
                         raise DocumentStructureLimitError(
                             "DOCX exceeds the configured section limit"
                         )
+                if len(segments) > limits.max_sections:
+                    raise DocumentStructureLimitError("DOCX exceeds the configured section limit")
         except DocumentStructureLimitError:
             raise
         except (KeyError, OSError, TypeError, ValueError) as exc:
             raise MalformedDocumentError("DOCX body content is malformed") from exc
 
-        text = normalize_text("\n\n".join(blocks), max_chars=limits.max_extracted_chars)
+        normalize_text("\n\n".join(blocks), max_chars=limits.max_extracted_chars)
+        text = normalize_text(
+            "\n\n".join(segment.text for segment in segments),
+            max_chars=limits.max_extracted_chars,
+        )
         return ExtractedContent(
             text=text,
+            segments=tuple(segments),
             page_count=None,
             section_count=len(blocks),
             parser_name=self.parser_name,

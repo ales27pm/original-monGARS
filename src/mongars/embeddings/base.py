@@ -20,6 +20,9 @@ class EmbeddingProvider(Protocol):
     def model_name(self) -> str:
         """Return the exact configured model; implementations must not auto-route."""
 
+    async def resolve_model_digest(self) -> str:
+        """Resolve and pin the configured alias to one immutable artifact digest."""
+
     async def embed(
         self,
         texts: Sequence[str],

@@ -7,10 +7,22 @@ from dataclasses import dataclass
 from importlib.metadata import PackageNotFoundError, version
 
 from bs4 import BeautifulSoup, Comment, ProcessingInstruction, Tag
+from bs4.element import NavigableString
 
-from mongars.ingestion.errors import UnsafeDocumentError
+from mongars.ingestion.errors import (
+    DocumentStructureLimitError,
+    MalformedDocumentError,
+    UnsafeDocumentError,
+)
+from mongars.ingestion.extractors.structure import HeadingPathTracker, cell_reference
 from mongars.ingestion.extractors.text import decode_utf8, enforce_section_limit, normalize_text
-from mongars.ingestion.models import DocumentLimits, DocumentMediaType, ExtractedContent
+from mongars.ingestion.models import (
+    DocumentLimits,
+    DocumentLocator,
+    DocumentMediaType,
+    ExtractedContent,
+    ExtractedSegment,
+)
 
 _ACTIVE_TAGS = frozenset(
     {
@@ -28,33 +40,40 @@ _ACTIVE_TAGS = frozenset(
     }
 )
 _NON_CONTENT_TAGS = frozenset({"head", "link", "meta", "noscript", "style", "template"})
-_SECTION_TAGS = frozenset(
+_ATOMIC_CONTENT_TAGS = frozenset(
     {
         "address",
-        "article",
-        "aside",
         "blockquote",
         "dd",
-        "div",
-        "dl",
         "dt",
         "figcaption",
-        "figure",
-        "footer",
         "h1",
         "h2",
         "h3",
         "h4",
         "h5",
         "h6",
-        "header",
         "li",
-        "main",
-        "nav",
         "p",
         "pre",
+    }
+)
+_CONTENT_CONTAINERS = frozenset(
+    {
+        "article",
+        "aside",
+        "body",
+        "div",
+        "dl",
+        "figure",
+        "footer",
+        "header",
+        "html",
+        "main",
+        "nav",
+        "ol",
         "section",
-        "table",
+        "ul",
     }
 )
 _DANGEROUS_URL = re.compile(
@@ -145,6 +164,151 @@ def _remove_hidden_content(soup: BeautifulSoup) -> None:
             raise UnsafeDocumentError("HTML contains active inline styling")
 
 
+def _structured_segments(
+    soup: BeautifulSoup,
+    *,
+    media_type: DocumentMediaType,
+    max_chars: int,
+    max_sections: int,
+) -> tuple[ExtractedSegment, ...]:
+    root = soup.body or soup
+    tracker = HeadingPathTracker()
+    segments: list[ExtractedSegment] = []
+    next_table_index = 0
+
+    def append_segment(
+        raw_text: str,
+        *,
+        heading_path: tuple[str, ...],
+        table_index: int | None = None,
+        cell: str | None = None,
+    ) -> None:
+        if not raw_text.strip():
+            return
+        if len(segments) >= max_sections:
+            raise DocumentStructureLimitError("HTML exceeds the configured section limit")
+        segments.append(
+            ExtractedSegment(
+                text=normalize_text(raw_text, max_chars=max_chars),
+                locator=DocumentLocator(
+                    media_type=media_type.value,
+                    block_index=len(segments),
+                    heading_path=heading_path,
+                    table_index=table_index,
+                    cell_reference=cell,
+                ),
+            )
+        )
+
+    def walk(container: Tag | BeautifulSoup) -> None:
+        nonlocal next_table_index
+        inline_parts: list[str] = []
+
+        def flush_inline() -> None:
+            if inline_parts:
+                append_segment(" ".join(inline_parts), heading_path=tracker.current)
+                inline_parts.clear()
+
+        for child in container.children:
+            if isinstance(child, NavigableString):
+                if value := str(child).strip():
+                    inline_parts.append(value)
+                continue
+            if not isinstance(child, Tag):
+                continue
+            name = child.name.casefold()
+            if name == "table":
+                flush_inline()
+                table_index = next_table_index
+                next_table_index += 1
+                rows = [
+                    row
+                    for row in child.find_all("tr")
+                    if isinstance(row, Tag) and row.find_parent("table") is child
+                ]
+                occupied_columns: dict[int, int] = {}
+                for row_index, row in enumerate(rows):
+                    occupied_columns = {
+                        column: remaining - 1
+                        for column, remaining in occupied_columns.items()
+                        if remaining > 1
+                    }
+                    cells = row.find_all(["th", "td"], recursive=False)
+                    next_column = 0
+                    for table_cell in cells:
+                        if isinstance(table_cell, Tag):
+                            while next_column in occupied_columns:
+                                next_column += 1
+                            column_span = _table_span(
+                                table_cell,
+                                "colspan",
+                                maximum=max_sections,
+                            )
+                            row_span = _table_span(
+                                table_cell,
+                                "rowspan",
+                                maximum=max_sections,
+                                zero_value=len(rows) - row_index,
+                            )
+                            append_segment(
+                                table_cell.get_text(" ", strip=True),
+                                heading_path=tracker.current,
+                                table_index=table_index,
+                                cell=cell_reference(row_index, next_column),
+                            )
+                            for column in range(next_column, next_column + column_span):
+                                occupied_columns[column] = max(
+                                    occupied_columns.get(column, 0),
+                                    row_span,
+                                )
+                            next_column += column_span
+                continue
+            if name in _ATOMIC_CONTENT_TAGS:
+                flush_inline()
+                value = child.get_text(" ", strip=True)
+                heading_path = tracker.current
+                if len(name) == 2 and name[0] == "h" and name[1].isdigit() and value:
+                    heading_path = tracker.update(int(name[1]), value)
+                append_segment(value, heading_path=heading_path)
+                continue
+            if name in _CONTENT_CONTAINERS:
+                flush_inline()
+                walk(child)
+                continue
+            if value := child.get_text(" ", strip=True):
+                inline_parts.append(value)
+        flush_inline()
+
+    walk(root)
+
+    if not segments:
+        append_segment(root.get_text("\n", strip=True), heading_path=())
+    return tuple(segments)
+
+
+def _table_span(
+    cell: Tag,
+    attribute: str,
+    *,
+    maximum: int,
+    zero_value: int | None = None,
+) -> int:
+    raw_value = cell.get(attribute)
+    if raw_value is None:
+        return 1
+    value = str(raw_value).strip()
+    if not value.isascii() or not value.isdecimal():
+        raise MalformedDocumentError(f"HTML table {attribute} is invalid")
+    span = int(value)
+    if span == 0 and zero_value is not None:
+        span = zero_value
+    if span < 1:
+        raise MalformedDocumentError(f"HTML table {attribute} is invalid")
+    if span > maximum:
+        raise DocumentStructureLimitError(f"HTML table {attribute} exceeds its limit")
+    return span
+
+
 @dataclass(frozen=True, slots=True)
 class HtmlExtractor:
     media_type: DocumentMediaType = DocumentMediaType.HTML
@@ -157,16 +321,21 @@ class HtmlExtractor:
         _reject_active_content(soup, raw_text)
         _remove_hidden_content(soup)
 
-        section_count = sum(
-            1
-            for element in soup.find_all(list(_SECTION_TAGS))
-            if isinstance(element, Tag) and element.get_text(" ", strip=True)
+        segments = _structured_segments(
+            soup,
+            media_type=self.media_type,
+            max_chars=limits.max_extracted_chars,
+            max_sections=limits.max_sections,
         )
-        section_count = max(1, section_count)
+        section_count = len(segments)
         enforce_section_limit(section_count, limits)
-        text = normalize_text(soup.get_text("\n"), max_chars=limits.max_extracted_chars)
+        text = normalize_text(
+            "\n\n".join(segment.text for segment in segments),
+            max_chars=limits.max_extracted_chars,
+        )
         return ExtractedContent(
             text=text,
+            segments=segments,
             page_count=None,
             section_count=section_count,
             parser_name=self.parser_name,

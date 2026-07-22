@@ -212,7 +212,6 @@ export class MongarsClient {
   readiness(options: ApiCallOptions = {}): Promise<ReadinessResponse> {
     return this.request('/v1/readyz', {
       ...options,
-      authenticated: false,
       acceptedStatuses: [503],
     });
   }

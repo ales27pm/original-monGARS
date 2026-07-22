@@ -9,6 +9,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
 _EMBEDDING_DIMENSIONS = 768
+_EMBEDDING_DIGEST = "0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f"
+_EMBEDDING_PREFIXES = (
+    "search_document: ",
+    "search_query: ",
+    "clustering: ",
+    "classification: ",
+)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -23,7 +30,11 @@ class Handler(BaseHTTPRequestHandler):
                 {
                     "models": [
                         {"name": "qwen3:4b-instruct"},
-                        {"name": "nomic-embed-text"},
+                        {
+                            "name": "nomic-embed-text",
+                            "model": "nomic-embed-text",
+                            "digest": _EMBEDDING_DIGEST,
+                        },
                     ]
                 }
             )
@@ -64,6 +75,20 @@ class Handler(BaseHTTPRequestHandler):
             )
         elif path == "/api/embed":
             inputs = payload.get("input", [])
+            if (
+                payload.get("model") != "nomic-embed-text"
+                or payload.get("truncate") is not False
+                or not isinstance(inputs, list)
+                or not inputs
+                or not all(
+                    isinstance(value, str)
+                    and value.startswith(_EMBEDDING_PREFIXES)
+                    and len(value.encode("utf-8")) <= 8_192
+                    for value in inputs
+                )
+            ):
+                self._json({"error": "invalid reviewed embedding request"}, status=422)
+                return
             vector = [1.0, *([0.0] * (_EMBEDDING_DIMENSIONS - 1))]
             self._json(
                 {

@@ -10,13 +10,17 @@ import pytest
 from mongars.embeddings import (
     EmbeddingBatch,
     EmbeddingConfigurationError,
+    EmbeddingContextError,
     EmbeddingDimensionError,
     EmbeddingInputError,
     EmbeddingMetric,
     EmbeddingModelMismatchError,
+    EmbeddingPurpose,
     EmbeddingResponseError,
     EmbeddingService,
 )
+
+_MODEL_DIGEST = "1" * 64
 
 
 def run[T](coroutine: Coroutine[Any, Any, T]) -> T:
@@ -32,10 +36,15 @@ class DeterministicProvider:
         self.calls: list[tuple[str, ...]] = []
         self.response_model = model
         self.response_dimension = dimension
+        self.model_digest = _MODEL_DIGEST
+        self.response_digest = _MODEL_DIGEST
         self.response_count_delta = 0
         self.vector_override: tuple[float, ...] | None = None
         self.mutate_model_after_call: str | None = None
         self.closed = False
+
+    async def resolve_model_digest(self) -> str:
+        return self.model_digest
 
     async def embed(
         self,
@@ -51,6 +60,7 @@ class DeterministicProvider:
         result = EmbeddingBatch(
             embeddings=tuple(vector for _ in range(max(count, 0))),
             model=self.response_model,
+            model_digest=self.response_digest,
             dimension=self.response_dimension,
             latency_ms=1.25,
         )
@@ -80,17 +90,31 @@ def service(
     )
 
 
+def embed(
+    boundary: EmbeddingService,
+    texts: Sequence[str],
+    *,
+    purpose: EmbeddingPurpose = "search_query",
+) -> Coroutine[Any, Any, EmbeddingBatch]:
+    return boundary.embed(texts, purpose=purpose)
+
+
 def test_normalizes_text_splits_batches_and_emits_bounded_metric() -> None:
     provider = DeterministicProvider()
     metrics: list[EmbeddingMetric] = []
 
     result = run(
-        service(provider, metric_sink=metrics).embed(
-            ["  cafe\u0301\r\n", "two", " three ", "four", "five"]
+        embed(
+            service(provider, metric_sink=metrics),
+            ["  cafe\u0301\r\n", "two", " three ", "four", "five"],
         )
     )
 
-    assert provider.calls == [("café", "two"), ("three", "four"), ("five",)]
+    assert provider.calls == [
+        ("search_query: café", "search_query: two"),
+        ("search_query: three", "search_query: four"),
+        ("search_query: five",),
+    ]
     assert result.count == 5
     assert result.model == "test-embed"
     assert result.dimension == 3
@@ -106,8 +130,99 @@ def test_normalizes_text_splits_batches_and_emits_bounded_metric() -> None:
             latency_ms=metrics[0].latency_ms,
             normalized=False,
             outcome="ok",
+            purpose="search_query",
+            embedding_space_id=result.embedding_space_id,
+            input_bytes=sum(len(text.encode()) for call in provider.calls for text in call),
         )
     ]
+
+
+@pytest.mark.parametrize(
+    ("purpose", "prefix"),
+    [
+        ("search_document", "search_document: "),
+        ("search_query", "search_query: "),
+        ("clustering", "clustering: "),
+        ("classification", "classification: "),
+    ],
+)
+def test_service_owns_the_reviewed_purpose_prefix_policy(
+    purpose: EmbeddingPurpose,
+    prefix: str,
+) -> None:
+    provider = DeterministicProvider()
+    boundary = service(provider)
+
+    result = run(embed(boundary, ["do not alter"], purpose=purpose))
+
+    assert provider.calls == [(f"{prefix}do not alter",)]
+    assert result.purpose == purpose
+    assert result.model_digest == _MODEL_DIGEST
+    assert boundary.embedding_space is not None
+    assert result.embedding_space_id == boundary.embedding_space.space_id
+
+
+def test_rejects_unknown_purpose_without_provider_io() -> None:
+    provider = DeterministicProvider()
+
+    with pytest.raises(EmbeddingInputError, match="Unsupported embedding purpose"):
+        run(service(provider).embed(["one"], purpose=cast(Any, "unknown")))
+
+    assert provider.calls == []
+
+
+def test_enforces_utf8_byte_ceiling_after_adding_the_instruction() -> None:
+    provider = DeterministicProvider()
+    boundary = service(provider, max_text_bytes=32, max_total_bytes=64)
+
+    with pytest.raises(EmbeddingContextError) as caught:
+        run(embed(boundary, ["é" * 10]))
+
+    assert caught.value.input_index == 0
+    assert caught.value.input_bytes == len(("search_query: " + ("é" * 10)).encode())
+    assert caught.value.maximum_input_bytes == 32
+    assert provider.calls == []
+
+
+def test_metric_sink_failure_is_nonfatal() -> None:
+    provider = DeterministicProvider()
+
+    def broken_sink(_metric: EmbeddingMetric) -> None:
+        raise RuntimeError("metrics unavailable")
+
+    boundary = EmbeddingService(
+        provider=provider,
+        expected_dimension=provider.dimension,
+        batch_size=2,
+        metric_sink=broken_sink,
+    )
+
+    result = run(embed(boundary, ["one"]))
+
+    assert result.count == 1
+
+
+def test_missing_resolved_space_fails_as_a_configuration_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = DeterministicProvider()
+    metrics: list[EmbeddingMetric] = []
+    boundary = service(provider, metric_sink=metrics)
+
+    async def missing_space() -> None:
+        return None
+
+    monkeypatch.setattr(boundary, "resolve_space", missing_space)
+
+    with pytest.raises(
+        EmbeddingConfigurationError,
+        match="resolution returned no identity",
+    ):
+        run(embed(boundary, ["one"]))
+
+    assert provider.calls == []
+    assert metrics[0].outcome == "error"
+    assert metrics[0].error_code == "embedding_configuration_error"
 
 
 def test_closes_provider_through_service_boundary() -> None:
@@ -134,7 +249,7 @@ def test_rejects_invalid_inputs_without_provider_io(
     provider = DeterministicProvider()
 
     with pytest.raises(EmbeddingInputError, match=message):
-        run(service(provider).embed(texts))
+        run(embed(service(provider), texts))
 
     assert provider.calls == []
 
@@ -149,11 +264,11 @@ def test_enforces_per_text_aggregate_and_item_count_limits() -> None:
     )
 
     with pytest.raises(EmbeddingInputError, match="2-item"):
-        run(boundary.embed(["a", "b", "c"]))
+        run(embed(boundary, ["a", "b", "c"]))
     with pytest.raises(EmbeddingInputError, match="4-character"):
-        run(boundary.embed(["abcde"]))
+        run(embed(boundary, ["abcde"]))
     with pytest.raises(EmbeddingInputError, match="6-character aggregate"):
-        run(boundary.embed(["abcd", "efg"]))
+        run(embed(boundary, ["abcd", "efg"]))
 
     assert provider.calls == []
 
@@ -216,7 +331,7 @@ def test_rejects_model_switching_before_or_during_a_request() -> None:
     provider.model_name = "changed-before-call"
 
     with pytest.raises(EmbeddingModelMismatchError) as before:
-        run(boundary.embed(["one"]))
+        run(embed(boundary, ["one"]))
     assert (before.value.expected, before.value.actual) == (
         "test-embed",
         "changed-before-call",
@@ -226,7 +341,7 @@ def test_rejects_model_switching_before_or_during_a_request() -> None:
     provider = DeterministicProvider()
     provider.mutate_model_after_call = "changed-during-call"
     with pytest.raises(EmbeddingModelMismatchError, match="changed-during-call"):
-        run(service(provider).embed(["one"]))
+        run(embed(service(provider), ["one"]))
 
 
 def test_rejects_mismatched_response_model() -> None:
@@ -234,28 +349,49 @@ def test_rejects_mismatched_response_model() -> None:
     provider.response_model = "unexpected-model"
 
     with pytest.raises(EmbeddingModelMismatchError) as caught:
-        run(service(provider).embed(["one"]))
+        run(embed(service(provider), ["one"]))
 
     assert caught.value.expected == "test-embed"
     assert caught.value.actual == "unexpected-model"
+
+
+def test_rejects_provider_artifact_drift() -> None:
+    provider = DeterministicProvider()
+    boundary = service(provider)
+
+    first = run(embed(boundary, ["one"]))
+    provider.model_digest = "2" * 64
+
+    with pytest.raises(EmbeddingResponseError, match="unexpected artifact digest"):
+        run(embed(boundary, ["two"]))
+
+    assert first.model_digest == _MODEL_DIGEST
+
+
+def test_rejects_batch_from_an_artifact_other_than_the_resolved_model() -> None:
+    provider = DeterministicProvider()
+    provider.response_digest = "2" * 64
+
+    with pytest.raises(EmbeddingResponseError, match="unexpected artifact digest"):
+        run(embed(service(provider), ["one"]))
 
 
 def test_rejects_response_count_and_dimension_mismatches() -> None:
     provider = DeterministicProvider()
     provider.response_count_delta = -1
     with pytest.raises(EmbeddingResponseError, match="response count"):
-        run(service(provider).embed(["one"]))
+        run(embed(service(provider), ["one"]))
 
     provider = DeterministicProvider()
     provider.response_dimension = 2
     with pytest.raises(EmbeddingDimensionError) as metadata:
-        run(service(provider).embed(["one"]))
+        run(embed(service(provider), ["one"]))
     assert (metadata.value.expected, metadata.value.actual, metadata.value.index) == (3, 2, 0)
 
     provider = DeterministicProvider()
     provider.vector_override = (1.0, 2.0)
     with pytest.raises(EmbeddingDimensionError) as vector:
-        run(service(provider).embed(["one", "two", "three"]))
+        run(embed(service(provider), ["one", "two", "three"]))
     assert vector.value.index == 0
 
 
@@ -266,7 +402,7 @@ def test_rejects_non_finite_components_and_emits_failure_metric(invalid: float) 
     metrics: list[EmbeddingMetric] = []
 
     with pytest.raises(EmbeddingResponseError, match="non-finite"):
-        run(service(provider, metric_sink=metrics).embed(["one"]))
+        run(embed(service(provider, metric_sink=metrics), ["one"]))
 
     assert len(metrics) == 1
     assert metrics[0].outcome == "error"
@@ -279,7 +415,7 @@ def test_optionally_l2_normalizes_vectors() -> None:
     provider = DeterministicProvider(dimension=2)
     provider.vector_override = (3.0, 4.0)
 
-    result = run(service(provider, normalize_vectors=True).embed(["one"]))
+    result = run(embed(service(provider, normalize_vectors=True), ["one"]))
 
     assert result.embeddings == ((0.6, 0.8),)
     assert result.normalized is True
@@ -290,7 +426,19 @@ def test_rejects_zero_vector_when_normalization_is_enabled() -> None:
     provider.vector_override = (0.0, 0.0)
 
     with pytest.raises(EmbeddingResponseError, match="cannot be L2-normalized"):
-        run(service(provider, normalize_vectors=True).embed(["one"]))
+        run(embed(service(provider, normalize_vectors=True), ["one"]))
+
+
+def test_rejects_zero_vector_for_cosine_retrieval_without_normalization() -> None:
+    provider = DeterministicProvider(dimension=2)
+    provider.vector_override = (0.0, -0.0)
+    metrics: list[EmbeddingMetric] = []
+
+    with pytest.raises(EmbeddingResponseError, match="zero magnitude"):
+        run(embed(service(provider, normalize_vectors=False, metric_sink=metrics), ["one"]))
+
+    assert metrics[0].outcome == "error"
+    assert metrics[0].error_code == "embedding_invalid_response"
 
 
 def test_rejects_invalid_provider_latency_metadata() -> None:
@@ -305,9 +453,10 @@ def test_rejects_invalid_provider_latency_metadata() -> None:
             return EmbeddingBatch(
                 embeddings=result.embeddings,
                 model=result.model,
+                model_digest=result.model_digest,
                 dimension=result.dimension,
                 latency_ms=math.nan,
             )
 
     with pytest.raises(EmbeddingResponseError, match="latency metadata"):
-        run(service(InvalidLatencyProvider()).embed(["one"]))
+        run(embed(service(InvalidLatencyProvider()), ["one"]))

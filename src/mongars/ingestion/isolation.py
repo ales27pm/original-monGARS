@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import multiprocessing
 import os
@@ -23,18 +24,23 @@ from mongars.ingestion.errors import (
 from mongars.ingestion.extractors.text import normalize_text
 from mongars.ingestion.models import (
     DocumentLimits,
+    DocumentLocator,
     DocumentMediaType,
     ExtractedContent,
+    ExtractedSegment,
     ValidatedUpload,
 )
 from mongars.ingestion.service import DocumentIngestionService
 
 _RESULT_OVERHEAD_BYTES = 65_536
+_MAX_LOCATOR_BYTES = 8_192
 _MAX_ERROR_MESSAGE_CHARS = 500
 _MAX_PARSER_ID_CHARS = 128
+_READINESS_PROBE_CONTENT = b"monGARS parser readiness probe\n"
+_READINESS_PROBE_TEXT = "monGARS parser readiness probe"
 _EXPECTED_PARSER_NAMES: Mapping[DocumentMediaType, str] = {
     DocumentMediaType.TEXT: "utf8-text",
-    DocumentMediaType.MARKDOWN: "markdown-text",
+    DocumentMediaType.MARKDOWN: "markdown-plaintext",
     DocumentMediaType.HTML: "beautifulsoup-html",
     DocumentMediaType.PDF: "pypdf",
     DocumentMediaType.DOCX: "python-docx",
@@ -47,7 +53,16 @@ class DocumentParser(Protocol):
 
     async def extract(self, upload: ValidatedUpload) -> ExtractedContent: ...
 
+    async def health(self) -> ParserHealth: ...
+
     async def aclose(self) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ParserHealth:
+    healthy: bool
+    parser_version: str | None
+    error_code: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +102,34 @@ class IsolatedDocumentParser:
 
         return await asyncio.to_thread(self._extract_blocking, upload)
 
+    async def health(self) -> ParserHealth:
+        probe = ValidatedUpload(
+            original_filename="readiness.txt",
+            validated_mime_type=DocumentMediaType.TEXT,
+            content_sha256=hashlib.sha256(_READINESS_PROBE_CONTENT).hexdigest(),
+            byte_size=len(_READINESS_PROBE_CONTENT),
+            content=_READINESS_PROBE_CONTENT,
+        )
+        try:
+            result = await self.extract(probe)
+        except Exception:
+            return ParserHealth(
+                healthy=False,
+                parser_version=None,
+                error_code="parser_self_test_failed",
+            )
+        if (
+            result.text != _READINESS_PROBE_TEXT
+            or result.parser_name != _EXPECTED_PARSER_NAMES[DocumentMediaType.TEXT]
+            or result.section_count != 1
+        ):
+            return ParserHealth(
+                healthy=False,
+                parser_version=None,
+                error_code="parser_self_test_failed",
+            )
+        return ParserHealth(healthy=True, parser_version="local-isolated-v1")
+
     async def aclose(self) -> None:
         """Local one-shot parser processes retain no shared resources."""
 
@@ -104,7 +147,11 @@ class IsolatedDocumentParser:
             name="mongars-document-parser",
             daemon=True,
         )
-        max_result_bytes = self._document_limits.max_extracted_chars * 4 + _RESULT_OVERHEAD_BYTES
+        max_result_bytes = (
+            self._document_limits.max_extracted_chars * 8
+            + self._document_limits.max_sections * _MAX_LOCATOR_BYTES
+            + _RESULT_OVERHEAD_BYTES
+        )
         try:
             process.start()
             send_connection.close()
@@ -154,6 +201,10 @@ def _parser_child(
         message = {
             "status": "ok",
             "text": result.text,
+            "segments": [
+                {"text": segment.text, "locator": segment.locator.as_dict()}
+                for segment in result.segments
+            ],
             "page_count": result.page_count,
             "section_count": result.section_count,
             "parser_name": result.parser_name,
@@ -222,6 +273,7 @@ def decode_parser_response(
     expected_keys = {
         "status",
         "text",
+        "segments",
         "page_count",
         "section_count",
         "parser_name",
@@ -256,8 +308,60 @@ def decode_parser_response(
         field="section count",
         maximum=limits.max_sections,
     )
+    raw_segments = message.get("segments")
+    if (
+        not isinstance(raw_segments, list)
+        or not raw_segments
+        or len(raw_segments) > limits.max_sections
+    ):
+        raise ParserIsolationError("document parser returned invalid structured segments")
+    segments: list[ExtractedSegment] = []
+    segment_characters = 0
+    for raw_segment in raw_segments:
+        if not isinstance(raw_segment, dict) or set(raw_segment) != {"text", "locator"}:
+            raise ParserIsolationError("document parser returned an invalid structured segment")
+        segment_text = raw_segment.get("text")
+        if not isinstance(segment_text, str):
+            raise ParserIsolationError("document parser returned invalid structured segment text")
+        try:
+            normalized_segment = normalize_text(
+                segment_text,
+                max_chars=limits.max_extracted_chars,
+            )
+            locator = DocumentLocator.from_dict(raw_segment.get("locator"))
+        except (IngestionError, TypeError, ValueError) as exc:
+            raise ParserIsolationError(
+                "document parser returned an invalid structured segment"
+            ) from exc
+        if normalized_segment != segment_text:
+            raise ParserIsolationError("document parser returned unnormalized segment text")
+        if locator.media_type != upload.validated_mime_type.value:
+            raise ParserIsolationError("document parser returned a mismatched segment media type")
+        try:
+            locator.validate_for_document(
+                media_type=upload.validated_mime_type,
+                page_count=page_count,
+                maximum_blocks=limits.max_sections,
+            )
+        except ValueError as exc:
+            raise ParserIsolationError(
+                "document parser returned impossible segment provenance"
+            ) from exc
+        if (
+            locator.line_start is not None
+            and locator.line_end is not None
+            and len(segment_text.splitlines()) > locator.line_end - locator.line_start + 1
+        ):
+            raise ParserIsolationError("document parser returned an impossible source line range")
+        segment_characters += len(segment_text)
+        if segment_characters > limits.max_extracted_chars:
+            raise ParserIsolationError("document parser returned oversized structured segments")
+        segments.append(ExtractedSegment(text=segment_text, locator=locator))
+    if "\n\n".join(segment.text for segment in segments) != text:
+        raise ParserIsolationError("document parser returned inconsistent canonical text")
     return ExtractedContent(
         text=text,
+        segments=tuple(segments),
         page_count=page_count,
         section_count=section_count,
         parser_name=parser_name,

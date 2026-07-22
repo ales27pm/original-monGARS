@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import os
 from collections.abc import Iterator, Sequence
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -16,6 +17,7 @@ from psycopg import sql
 from pydantic import SecretStr
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.engine import make_url
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     async_sessionmaker,
@@ -30,7 +32,7 @@ from mongars.db.models import (
     TaskQueue,
 )
 from mongars.db.session import Database
-from mongars.embeddings.models import EmbeddingBatch
+from mongars.embeddings.models import EmbeddingBatch, EmbeddingProfile, EmbeddingSpace
 from mongars.embeddings.service import EmbeddingService
 from mongars.events.repository import ConversationMessage, EventRepository
 from mongars.memory.chunking import TextChunk
@@ -42,6 +44,7 @@ from mongars.memory.repository import (
 from mongars.memory.service import MemoryService
 from mongars.rm.repository import TaskRepository
 from mongars.rm.worker import ExecutionClaim, TaskLeaseLost, Worker
+from mongars.runtime import RuntimeHeartbeatRepository
 
 _RAW_DATABASE_URL = os.getenv("MONGARS_TEST_DATABASE_URL", "").strip()
 if not _RAW_DATABASE_URL:
@@ -89,6 +92,23 @@ def _unit_vector(index: int, *, sign: float = 1.0) -> list[float]:
     vector = [0.0] * 768
     vector[index] = sign
     return vector
+
+
+def _embedding_space(model_alias: str = "deterministic-integration") -> EmbeddingSpace:
+    digest = (
+        "0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f"
+        if model_alias == "nomic-embed-text"
+        else hashlib.sha256(model_alias.encode()).hexdigest()
+    )
+    return EmbeddingSpace.from_profile(
+        provider="deterministic",
+        model_alias=model_alias,
+        model_digest=digest,
+        dimension=768,
+        normalization_policy="none",
+        maximum_input_bytes=8192,
+        profile=EmbeddingProfile(),
+    )
 
 
 def test_runtime_consistency_migration_fails_preexisting_stranded_task() -> None:
@@ -191,6 +211,462 @@ def test_runtime_consistency_migration_fails_preexisting_stranded_task() -> None
             )
 
 
+def test_embedding_provenance_migration_round_trip_preserves_trusted_data() -> None:
+    """Round-trip an isolated 0003 database through the current embedding schema."""
+
+    root = Path(__file__).resolve().parents[2]
+    config = Config(str(root / "alembic.ini"))
+    database_name = f"mongars_embedding_migration_{uuid4().hex[:12]}"
+    base_url = make_url(DATABASE_URL)
+    admin_url = base_url.set(
+        drivername="postgresql",
+        database="postgres",
+    ).render_as_string(hide_password=False)
+    migration_url = base_url.set(
+        drivername="postgresql+psycopg",
+        database=database_name,
+    ).render_as_string(hide_password=False)
+    direct_url = base_url.set(
+        drivername="postgresql",
+        database=database_name,
+    ).render_as_string(hide_password=False)
+    previous_url = os.environ.get("MONGARS_DATABASE_URL")
+
+    owner_id = "embedding-migration-owner"
+    task_id = uuid4()
+    legacy_ingest_task_id = uuid4()
+    document_id = uuid4()
+    chunk_id = uuid4()
+    new_chunk_id = uuid4()
+    staging_id = uuid4()
+    legacy_ingest_staging_id = uuid4()
+    legacy_model = "legacy-model-v0"
+    current_model = "current-model-v1"
+    legacy_vector = "[" + ",".join(str(value) for value in _unit_vector(0)) + "]"
+    current_vector = "[" + ",".join(str(value) for value in _unit_vector(1)) + "]"
+    legacy_space_id = hashlib.sha256(f"legacy-uninstructed:{legacy_model}".encode()).hexdigest()
+    current_space_id = hashlib.sha256(b"current-compatible-shadow-space").hexdigest()
+    current_model_digest = hashlib.sha256(b"current-model-artifact").hexdigest()
+    trusted_created_at = datetime(2026, 7, 20, 15, 30, tzinfo=UTC)
+    untrusted_source_timestamp = datetime(2021, 1, 2, 3, 4, tzinfo=UTC)
+    shadow_created_at = datetime(2020, 1, 1, tzinfo=UTC)
+    content = b"migration staging payload"
+
+    with psycopg.connect(admin_url, autocommit=True) as admin_connection:
+        admin_connection.execute(
+            sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database_name))
+        )
+
+    try:
+        os.environ["MONGARS_DATABASE_URL"] = migration_url
+        command.upgrade(config, "0003_document_staging")
+
+        with psycopg.connect(direct_url) as connection:
+            connection.execute(
+                """
+                INSERT INTO task_queue (
+                    id,
+                    owner_id,
+                    kind,
+                    risk_level,
+                    status,
+                    priority,
+                    attempt_count,
+                    max_attempts,
+                    run_after,
+                    trace_id,
+                    payload
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    'memory.document.ingest',
+                    'read_only',
+                    'queued',
+                    100,
+                    0,
+                    3,
+                    now(),
+                    'embedding-migration-trace',
+                    '{}'::jsonb
+                )
+                """,
+                (task_id, owner_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO task_queue (
+                    id,
+                    owner_id,
+                    kind,
+                    risk_level,
+                    status,
+                    priority,
+                    attempt_count,
+                    max_attempts,
+                    run_after,
+                    trace_id,
+                    payload,
+                    action_digest,
+                    approval_expires_at
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    'document.ingest',
+                    'local_mutation',
+                    'waiting_approval',
+                    100,
+                    0,
+                    3,
+                    now(),
+                    'legacy-document-ingest-trace',
+                    '{"staging_id":"legacy-contract-without-receipt"}'::jsonb,
+                    repeat('a', 64),
+                    now() + interval '1 hour'
+                )
+                """,
+                (legacy_ingest_task_id, owner_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO memory_documents (
+                    id,
+                    owner_id,
+                    source_type,
+                    source_uri,
+                    source_sha256,
+                    title,
+                    mime_type,
+                    sensitivity,
+                    retention_class,
+                    metadata
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    'document',
+                    'file:///migration-source.txt',
+                    %s,
+                    'Migration source',
+                    'text/plain',
+                    'private',
+                    'keep',
+                    '{"migration": true}'::jsonb
+                )
+                """,
+                (
+                    document_id,
+                    owner_id,
+                    hashlib.sha256(b"migration source").digest(),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO memory_chunks (
+                    id,
+                    document_id,
+                    chunk_index,
+                    token_count,
+                    char_count,
+                    section_path,
+                    plaintext,
+                    embedding,
+                    embedding_model
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    0,
+                    3,
+                    22,
+                    ARRAY['migration'],
+                    'legacy migration chunk',
+                    CAST(%s AS vector),
+                    %s
+                )
+                """,
+                (chunk_id, document_id, legacy_vector, legacy_model),
+            )
+            connection.execute(
+                """
+                INSERT INTO document_staging (
+                    id,
+                    owner_id,
+                    task_id,
+                    original_filename,
+                    detected_mime_type,
+                    source_sha256,
+                    byte_size,
+                    content,
+                    source_timestamp,
+                    expires_at,
+                    created_at
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    %s,
+                    'migration-source.txt',
+                    'text/plain',
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s
+                )
+                """,
+                (
+                    staging_id,
+                    owner_id,
+                    task_id,
+                    hashlib.sha256(content).digest(),
+                    len(content),
+                    content,
+                    untrusted_source_timestamp,
+                    trusted_created_at + timedelta(days=1),
+                    trusted_created_at,
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO document_staging (
+                    id,
+                    owner_id,
+                    task_id,
+                    original_filename,
+                    detected_mime_type,
+                    source_sha256,
+                    byte_size,
+                    content,
+                    source_timestamp,
+                    expires_at,
+                    created_at
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    %s,
+                    'legacy-approved.txt',
+                    'text/plain',
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s,
+                    %s
+                )
+                """,
+                (
+                    legacy_ingest_staging_id,
+                    owner_id,
+                    legacy_ingest_task_id,
+                    hashlib.sha256(b"legacy approved payload").digest(),
+                    len(b"legacy approved payload"),
+                    b"legacy approved payload",
+                    untrusted_source_timestamp,
+                    trusted_created_at + timedelta(days=1),
+                    trusted_created_at,
+                ),
+            )
+
+        command.upgrade(config, "head")
+
+        with psycopg.connect(direct_url) as connection:
+            legacy_profile = connection.execute(
+                """
+                SELECT
+                    embedding_space_id,
+                    provider,
+                    model_alias,
+                    model_digest,
+                    dimension,
+                    normalization_policy,
+                    document_instruction,
+                    query_instruction,
+                    clustering_instruction,
+                    classification_instruction,
+                    truncate,
+                    maximum_input_bytes,
+                    profile_version,
+                    embedding = CAST(%s AS vector)
+                FROM memory_chunk_embeddings
+                WHERE chunk_id = %s
+                """,
+                (legacy_vector, chunk_id),
+            ).fetchone()
+            locator = connection.execute(
+                "SELECT locator FROM memory_chunks WHERE id = %s",
+                (chunk_id,),
+            ).fetchone()
+            receipt = connection.execute(
+                "SELECT received_at, created_at, source_timestamp "
+                "FROM document_staging WHERE id = %s",
+                (staging_id,),
+            ).fetchone()
+            legacy_task = connection.execute(
+                "SELECT status, error_text, lease_expires_at, execution_token "
+                "FROM task_queue WHERE id = %s",
+                (legacy_ingest_task_id,),
+            ).fetchone()
+            legacy_stage = connection.execute(
+                "SELECT id FROM document_staging WHERE id = %s",
+                (legacy_ingest_staging_id,),
+            ).fetchone()
+
+            assert legacy_profile == (
+                legacy_space_id,
+                "ollama",
+                legacy_model,
+                "0" * 64,
+                768,
+                "none",
+                "",
+                "",
+                "",
+                "",
+                False,
+                32000,
+                "legacy-uninstructed-v0",
+                True,
+            )
+            assert locator == ({},)
+            assert receipt == (
+                trusted_created_at,
+                trusted_created_at,
+                untrusted_source_timestamp,
+            )
+            assert legacy_task == (
+                "cancelled",
+                "upgrade requires document re-upload under receipt-bound approval",
+                None,
+                None,
+            )
+            assert legacy_stage is None
+
+            connection.execute(
+                """
+                INSERT INTO memory_chunk_embeddings (
+                    chunk_id,
+                    embedding_space_id,
+                    provider,
+                    model_alias,
+                    model_digest,
+                    dimension,
+                    normalization_policy,
+                    document_instruction,
+                    query_instruction,
+                    clustering_instruction,
+                    classification_instruction,
+                    truncate,
+                    maximum_input_bytes,
+                    profile_version,
+                    embedding,
+                    created_at
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    'deterministic',
+                    %s,
+                    %s,
+                    768,
+                    'none',
+                    'search_document: ',
+                    'search_query: ',
+                    'clustering: ',
+                    'classification: ',
+                    false,
+                    8192,
+                    'current-v1',
+                    CAST(%s AS vector),
+                    %s
+                )
+                """,
+                (
+                    chunk_id,
+                    current_space_id,
+                    current_model,
+                    current_model_digest,
+                    current_vector,
+                    shadow_created_at,
+                ),
+            )
+
+            # A new post-0004 chunk cannot be represented safely by the old
+            # uninstructed schema. The first downgrade attempt must roll back.
+            connection.execute(
+                """
+                INSERT INTO memory_chunks (
+                    id,
+                    document_id,
+                    chunk_index,
+                    token_count,
+                    char_count,
+                    section_path,
+                    locator,
+                    plaintext
+                )
+                VALUES (
+                    %s,
+                    %s,
+                    1,
+                    2,
+                    18,
+                    ARRAY['new'],
+                    '{}'::jsonb,
+                    'new instructed row'
+                )
+                """,
+                (new_chunk_id, document_id),
+            )
+
+        with pytest.raises(
+            ProgrammingError,
+            match="no legacy embedding",
+        ):
+            command.downgrade(config, "0003_document_staging")
+
+        with psycopg.connect(direct_url) as connection:
+            revision_after_rejected_downgrade = connection.execute(
+                "SELECT version_num FROM alembic_version"
+            ).fetchone()
+            assert revision_after_rejected_downgrade == ("0004_embedding_provenance",)
+            connection.execute("DELETE FROM memory_chunks WHERE id = %s", (new_chunk_id,))
+
+        command.downgrade(config, "0003_document_staging")
+
+        with psycopg.connect(direct_url) as connection:
+            downgraded_chunk = connection.execute(
+                """
+                SELECT embedding_model, embedding = CAST(%s AS vector)
+                FROM memory_chunks
+                WHERE id = %s
+                """,
+                (current_vector, chunk_id),
+            ).fetchone()
+            revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+
+        assert downgraded_chunk == (legacy_model, False)
+        assert revision == ("0003_document_staging",)
+    finally:
+        if previous_url is None:
+            os.environ.pop("MONGARS_DATABASE_URL", None)
+        else:
+            os.environ["MONGARS_DATABASE_URL"] = previous_url
+
+        with psycopg.connect(admin_url, autocommit=True) as admin_connection:
+            admin_connection.execute(
+                "SELECT pg_terminate_backend(pid) "
+                "FROM pg_stat_activity WHERE datname = %s AND pid <> pg_backend_pid()",
+                (database_name,),
+            )
+            admin_connection.execute(
+                sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(database_name))
+            )
+
+
 async def _clean_owner_data(engine: AsyncEngine, owners: set[str]) -> None:
     async with engine.begin() as connection:
         await connection.execute(delete(EpisodicEvent).where(EpisodicEvent.owner_id.in_(owners)))
@@ -213,6 +689,9 @@ class DeterministicEmbedding:
         # vector values themselves remain deterministic and offline.
         return "nomic-embed-text"
 
+    async def resolve_model_digest(self) -> str:
+        return _embedding_space("nomic-embed-text").model_digest
+
     async def embed(
         self,
         texts: Sequence[str],
@@ -226,6 +705,7 @@ class DeterministicEmbedding:
         return EmbeddingBatch(
             embeddings=tuple(vector for _text in texts),
             model=self.model_name,
+            model_digest=await self.resolve_model_digest(),
             dimension=expected_dimension,
             latency_ms=self.delay_seconds * 1_000,
         )
@@ -274,7 +754,7 @@ def test_migrated_schema_enforces_owner_isolation() -> None:
                     metadata={"test": True},
                     chunks=[chunk],
                     embeddings=[_unit_vector(0)],
-                    embedding_model="deterministic-integration",
+                    embedding_space=_embedding_space(),
                 )
                 document_b, created_b = await repository.add_document(
                     owner_id=owner_b,
@@ -289,7 +769,7 @@ def test_migrated_schema_enforces_owner_isolation() -> None:
                     metadata={"test": True},
                     chunks=[chunk],
                     embeddings=[_unit_vector(0)],
-                    embedding_model="deterministic-integration",
+                    embedding_space=_embedding_space(),
                 )
 
                 assert created_a is True
@@ -313,6 +793,325 @@ def test_migrated_schema_enforces_owner_isolation() -> None:
                     await repository.find_by_digest(owner_id=owner_b, digest=digest)
                 ) is document_b
         finally:
+            await _clean_owner_data(engine, owners)
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_runtime_embedding_coverage_excludes_foreign_owner_chunks() -> None:
+    async def exercise() -> None:
+        engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        owner_a = _owner("readiness-a")
+        owner_b = _owner("readiness-b")
+        owners = {owner_a, owner_b}
+        active_space = _embedding_space("readiness-active")
+        foreign_legacy_space = _embedding_space("readiness-legacy")
+        chunk = TextChunk(
+            text="owner-scoped readiness memory",
+            approximate_tokens=4,
+            section_path=("readiness",),
+        )
+
+        try:
+            async with sessions.begin() as session:
+                memory = MemoryRepository(session)
+                await memory.add_document(
+                    owner_id=owner_a,
+                    source_type="note",
+                    source_sha256=hashlib.sha256(b"readiness owner a").digest(),
+                    title="Owner A ready",
+                    source_uri=None,
+                    mime_type="text/plain",
+                    sensitivity="private",
+                    retention_class="keep",
+                    expires_at=None,
+                    metadata={"test": True},
+                    chunks=[chunk],
+                    embeddings=[_unit_vector(0)],
+                    embedding_space=active_space,
+                )
+                await memory.add_document(
+                    owner_id=owner_a,
+                    source_type="note",
+                    source_sha256=hashlib.sha256(b"expired readiness owner a").digest(),
+                    title="Owner A expired legacy",
+                    source_uri=None,
+                    mime_type="text/plain",
+                    sensitivity="private",
+                    retention_class="ttl_30d",
+                    expires_at=datetime.now(UTC) - timedelta(seconds=1),
+                    metadata={"test": True},
+                    chunks=[TextChunk(text="expired readiness memory", approximate_tokens=3)],
+                    embeddings=[_unit_vector(1)],
+                    embedding_space=foreign_legacy_space,
+                )
+                await memory.add_document(
+                    owner_id=owner_b,
+                    source_type="note",
+                    source_sha256=hashlib.sha256(b"readiness owner b").digest(),
+                    title="Owner B legacy",
+                    source_uri=None,
+                    mime_type="text/plain",
+                    sensitivity="private",
+                    retention_class="keep",
+                    expires_at=None,
+                    metadata={"test": True},
+                    chunks=[chunk],
+                    embeddings=[_unit_vector(1)],
+                    embedding_space=foreign_legacy_space,
+                )
+
+                runtime = RuntimeHeartbeatRepository(session)
+                owner_a_coverage = await runtime.embedding_coverage(
+                    owner_id=owner_a,
+                    space_id=active_space.space_id,
+                )
+                owner_b_coverage = await runtime.embedding_coverage(
+                    owner_id=owner_b,
+                    space_id=active_space.space_id,
+                )
+
+                assert owner_a_coverage.total_chunk_count == 1
+                assert owner_a_coverage.compatible_chunk_count == 1
+                assert owner_a_coverage.legacy_chunk_count == 0
+                assert owner_a_coverage.reindex_required is False
+                assert owner_b_coverage.total_chunk_count == 1
+                assert owner_b_coverage.compatible_chunk_count == 0
+                assert owner_b_coverage.legacy_chunk_count == 1
+                assert owner_b_coverage.reindex_required is True
+        finally:
+            await _clean_owner_data(engine, owners)
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_expired_document_is_hidden_and_same_digest_is_atomically_reingested() -> None:
+    async def exercise() -> None:
+        engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        owner_id = _owner("expired-dedup")
+        digest = hashlib.sha256(b"reusable expired content").digest()
+        embedding_space = _embedding_space("expired-dedup-space")
+
+        try:
+            async with sessions.begin() as session:
+                repository = MemoryRepository(session)
+                expired, expired_created = await repository.add_document(
+                    owner_id=owner_id,
+                    source_type="note",
+                    source_sha256=digest,
+                    title="Expired source",
+                    source_uri=None,
+                    mime_type="text/plain",
+                    sensitivity="private",
+                    retention_class="ttl_30d",
+                    expires_at=datetime.now(UTC) - timedelta(seconds=1),
+                    metadata={"generation": "expired"},
+                    chunks=[TextChunk(text="expired text", approximate_tokens=2)],
+                    embeddings=[_unit_vector(0)],
+                    embedding_space=embedding_space,
+                )
+                assert expired_created is True
+                assert (
+                    await repository.find_by_digest(
+                        owner_id=owner_id,
+                        digest=digest,
+                    )
+                    is None
+                )
+                assert (
+                    await repository.get_document(
+                        owner_id=owner_id,
+                        document_id=expired.id,
+                    )
+                    is None
+                )
+
+                replacement, replacement_created = await repository.add_document(
+                    owner_id=owner_id,
+                    source_type="note",
+                    source_sha256=digest,
+                    title="Fresh source",
+                    source_uri=None,
+                    mime_type="text/plain",
+                    sensitivity="restricted",
+                    retention_class="keep",
+                    expires_at=None,
+                    metadata={"generation": "fresh"},
+                    chunks=[TextChunk(text="fresh text", approximate_tokens=2)],
+                    embeddings=[_unit_vector(1)],
+                    embedding_space=embedding_space,
+                )
+
+                assert replacement_created is True
+                assert replacement.id != expired.id
+                assert replacement.sensitivity == "restricted"
+                assert (
+                    await repository.find_by_digest(
+                        owner_id=owner_id,
+                        digest=digest,
+                    )
+                    is replacement
+                )
+                assert (
+                    await repository.get_document(
+                        owner_id=owner_id,
+                        document_id=expired.id,
+                    )
+                    is None
+                )
+                remaining = list(
+                    (
+                        await session.scalars(
+                            select(MemoryDocument).where(
+                                MemoryDocument.owner_id == owner_id,
+                                MemoryDocument.source_sha256 == digest,
+                            )
+                        )
+                    ).all()
+                )
+                assert [document.id for document in remaining] == [replacement.id]
+        finally:
+            await _clean_owner_data(engine, {owner_id})
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
+def test_reindex_persistence_rechecks_owner_coverage_and_ignores_expired_chunks() -> None:
+    async def exercise() -> None:
+        engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        owner_id = _owner("reindex-cas")
+        foreign_owner = _owner("reindex-foreign")
+        owners = {owner_id, foreign_owner}
+        legacy_space = _embedding_space("legacy-reindex-cas")
+        embeddings = _embedding_service()
+        settings = Settings(environment=Environment.TEST, owner_id=owner_id)
+        memory = MemoryService(settings=settings, repository=None, embeddings=embeddings)
+
+        try:
+            async with sessions.begin() as session:
+                repository = MemoryRepository(session)
+                owned_document, _created = await repository.add_document(
+                    owner_id=owner_id,
+                    source_type="note",
+                    source_sha256=hashlib.sha256(b"owned legacy CAS").digest(),
+                    title="Owned legacy",
+                    source_uri=None,
+                    mime_type="text/plain",
+                    sensitivity="private",
+                    retention_class="keep",
+                    expires_at=None,
+                    metadata={"test": True},
+                    chunks=[
+                        TextChunk(
+                            text="owned uncovered chunk",
+                            approximate_tokens=3,
+                            locator={"page": 3},
+                        )
+                    ],
+                    embeddings=[_unit_vector(1)],
+                    embedding_space=legacy_space,
+                )
+                foreign_document, _created = await repository.add_document(
+                    owner_id=foreign_owner,
+                    source_type="note",
+                    source_sha256=hashlib.sha256(b"foreign legacy CAS").digest(),
+                    title="Foreign legacy",
+                    source_uri=None,
+                    mime_type="text/plain",
+                    sensitivity="private",
+                    retention_class="keep",
+                    expires_at=None,
+                    metadata={"test": True},
+                    chunks=[
+                        TextChunk(
+                            text="foreign uncovered chunk",
+                            approximate_tokens=3,
+                            locator={"page": 99},
+                        )
+                    ],
+                    embeddings=[_unit_vector(2)],
+                    embedding_space=legacy_space,
+                )
+                await repository.add_document(
+                    owner_id=owner_id,
+                    source_type="note",
+                    source_sha256=hashlib.sha256(b"expired legacy CAS").digest(),
+                    title="Expired legacy",
+                    source_uri=None,
+                    mime_type="text/plain",
+                    sensitivity="private",
+                    retention_class="ttl_30d",
+                    expires_at=datetime.now(UTC) - timedelta(seconds=1),
+                    metadata={"test": True},
+                    chunks=[TextChunk(text="expired uncovered chunk", approximate_tokens=3)],
+                    embeddings=[_unit_vector(3)],
+                    embedding_space=legacy_space,
+                )
+
+            active_space = await memory.resolve_embedding_space()
+            async with sessions() as session:
+                selected = await MemoryRepository(session).list_reindex_chunks(
+                    owner_id=owner_id,
+                    embedding_space_id=active_space.space_id,
+                    limit=10,
+                )
+            assert len(selected) == 1
+            assert selected[0].document_id == owned_document.id
+
+            embedded = await memory.embed_reindex_chunks(selected)
+            # Simulate another approved worker winning after selection but before
+            # this worker's short persistence transaction.
+            async with sessions.begin() as session:
+                inserted = await MemoryRepository(session).add_reindexed_embeddings(
+                    chunks=selected,
+                    embeddings=[_unit_vector(0)],
+                    embedding_space=active_space,
+                )
+                assert inserted == 1
+
+            async with sessions.begin() as session:
+                repository = MemoryRepository(session)
+                stale = await repository.apply_reindex_replacements(
+                    owner_id=owner_id,
+                    replacements=list(embedded.replacements),
+                    embedding_space=active_space,
+                )
+                foreign_attempt = await repository.apply_reindex_replacements(
+                    owner_id=owner_id,
+                    replacements=[
+                        replace(
+                            embedded.replacements[0],
+                            source_chunk_id=(
+                                await repository.list_reindex_chunks(
+                                    owner_id=foreign_owner,
+                                    embedding_space_id=active_space.space_id,
+                                    limit=1,
+                                )
+                            )[0].chunk_id,
+                            document_id=foreign_document.id,
+                        )
+                    ],
+                    embedding_space=active_space,
+                )
+                inventory = await repository.embedding_inventory(
+                    owner_id=owner_id,
+                    embedding_space_id=active_space.space_id,
+                )
+
+            assert stale.source_chunk_count == 0
+            assert stale.active_chunk_count == 0
+            assert foreign_attempt.source_chunk_count == 0
+            assert foreign_attempt.active_chunk_count == 0
+            assert inventory.compatible_chunk_count == 1
+            assert inventory.legacy_chunk_count == 0
+        finally:
+            await embeddings.aclose()
             await _clean_owner_data(engine, owners)
             await engine.dispose()
 
@@ -526,7 +1325,7 @@ def test_pgvector_search_orders_deterministic_vectors_without_inference() -> Non
                     )
                 ],
                 embeddings=[embedding],
-                embedding_model=embedding_model,
+                embedding_space=_embedding_space(embedding_model),
             )
 
         try:
@@ -569,15 +1368,17 @@ def test_pgvector_search_orders_deterministic_vectors_without_inference() -> Non
                     owner_id=owner_id,
                     query_text="ignored for semantic-only search",
                     embedding=_unit_vector(0),
-                    embedding_model="deterministic-integration",
+                    embedding_space_id=_embedding_space().space_id,
                     top_k=3,
                     hybrid=False,
                 )
+                iterative_scan = await session.scalar(text("SHOW hnsw.iterative_scan"))
 
                 assert [hit.text for hit in hits] == ["parallel", "orthogonal", "opposite"]
                 assert [hit.score for hit in hits] == pytest.approx([1.0, 0.0, -1.0])
                 assert all("other owner" not in hit.text for hit in hits)
                 assert all("other model" not in hit.text for hit in hits)
+                assert iterative_scan == "strict_order"
         finally:
             await _clean_owner_data(engine, owners)
             await engine.dispose()
@@ -705,7 +1506,7 @@ def test_duplicate_content_preserves_provenance_and_rejects_governance_change() 
                     metadata={"source": 1},
                     chunks=[chunk],
                     embeddings=[_unit_vector(0)],
-                    embedding_model="deterministic-integration",
+                    embedding_space=_embedding_space(),
                 )
                 assert created is True
                 original_id = original.id
@@ -724,7 +1525,7 @@ def test_duplicate_content_preserves_provenance_and_rejects_governance_change() 
                     metadata={"source": 2},
                     chunks=[chunk],
                     embeddings=[_unit_vector(0)],
-                    embedding_model="deterministic-integration",
+                    embedding_space=_embedding_space(),
                 )
                 assert created is False
                 assert duplicate.id == original_id
@@ -746,7 +1547,7 @@ def test_duplicate_content_preserves_provenance_and_rejects_governance_change() 
                     metadata={"source": 2},
                     chunks=[chunk],
                     embeddings=[_unit_vector(0)],
-                    embedding_model="deterministic-integration",
+                    embedding_space=_embedding_space(),
                 )
                 assert created is False
                 assert retry.id == original_id
@@ -781,7 +1582,7 @@ def test_duplicate_content_preserves_provenance_and_rejects_governance_change() 
                         metadata={},
                         chunks=[chunk],
                         embeddings=[_unit_vector(0)],
-                        embedding_model="deterministic-integration",
+                        embedding_space=_embedding_space(),
                     )
         finally:
             await _clean_owner_data(engine, {owner_id})
@@ -815,7 +1616,7 @@ def test_duplicate_content_with_legacy_embedding_model_requires_reindex() -> Non
                     metadata={"generation": "legacy"},
                     chunks=[chunk],
                     embeddings=[_unit_vector(0)],
-                    embedding_model="legacy-768-model",
+                    embedding_space=_embedding_space("legacy-768-model"),
                 )
                 assert created is True
                 document_id = original.id
@@ -835,7 +1636,10 @@ def test_duplicate_content_with_legacy_embedding_model_requires_reindex() -> Non
                     retention_class="keep",
                 )
                 with pytest.raises(MemoryEmbeddingModelConflict, match="reindex"):
-                    await memory.resolve_existing_ingest(prepared)
+                    await memory.resolve_existing_ingest(
+                        prepared,
+                        embedding_space=_embedding_space("nomic-embed-text"),
+                    )
 
             # The lower repository boundary also protects callers and the
             # concurrent-insert winner path from accepting mixed vector spaces.
@@ -854,7 +1658,7 @@ def test_duplicate_content_with_legacy_embedding_model_requires_reindex() -> Non
                         metadata={"generation": "current"},
                         chunks=[chunk],
                         embeddings=[_unit_vector(0)],
-                        embedding_model="nomic-embed-text",
+                        embedding_space=_embedding_space("nomic-embed-text"),
                     )
 
             async with sessions() as session:
@@ -898,7 +1702,7 @@ def test_concurrent_duplicate_with_conflicting_governance_has_typed_loser() -> N
                     metadata={"retention": retention_class},
                     chunks=[chunk],
                     embeddings=[_unit_vector(0)],
-                    embedding_model="deterministic-integration",
+                    embedding_space=_embedding_space(),
                 )
 
         try:
@@ -1182,7 +1986,7 @@ def test_hnsw_candidate_query_plan_uses_index_with_realistic_corpus() -> None:
                     metadata={"benchmark": True},
                     chunks=chunks,
                     embeddings=embeddings,
-                    embedding_model="deterministic-integration",
+                    embedding_space=_embedding_space(),
                 )
 
             query_vector = "[" + ",".join(str(value) for value in _unit_vector(0)) + "]"
@@ -1193,18 +1997,25 @@ def test_hnsw_candidate_query_plan_uses_index_with_realistic_corpus() -> None:
                     await session.execute(
                         text(
                             "EXPLAIN (ANALYZE, BUFFERS) "
-                            "SELECT mc.id, mc.embedding <=> CAST(:embedding AS vector) AS distance "
+                            "SELECT mc.id, mce.embedding <=> "
+                            "CAST(:embedding AS vector) AS distance "
                             "FROM memory_chunks AS mc "
+                            "JOIN memory_chunk_embeddings AS mce ON mce.chunk_id = mc.id "
                             "JOIN memory_documents AS md ON md.id = mc.document_id "
                             "WHERE md.owner_id = :owner_id "
-                            "ORDER BY mc.embedding <=> CAST(:embedding AS vector) ASC "
+                            "AND mce.embedding_space_id = :space_id "
+                            "ORDER BY mce.embedding <=> CAST(:embedding AS vector) ASC "
                             "LIMIT 32"
                         ),
-                        {"embedding": query_vector, "owner_id": owner_id},
+                        {
+                            "embedding": query_vector,
+                            "owner_id": owner_id,
+                            "space_id": _embedding_space().space_id,
+                        },
                     )
                 ).all()
                 plan = "\n".join(str(row[0]) for row in plan_rows)
-                assert "ix_memory_chunks_embedding_hnsw" in plan
+                assert "ix_memory_chunk_embeddings_hnsw" in plan
                 assert "Buffers:" in plan
         finally:
             await _clean_owner_data(engine, {owner_id})

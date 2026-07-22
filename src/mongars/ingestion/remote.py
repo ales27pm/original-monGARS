@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import json
 import re
 from urllib.parse import urlsplit
 
 import httpx
 
 from mongars.ingestion.errors import ParserIsolationError, ParserTimeoutError
-from mongars.ingestion.isolation import decode_parser_response
+from mongars.ingestion.isolation import ParserHealth, decode_parser_response
 from mongars.ingestion.models import DocumentLimits, ExtractedContent, ValidatedUpload
 
 _RESULT_OVERHEAD_BYTES = 65_536
+_MAX_LOCATOR_BYTES = 8_192
 _CONTENT_LENGTH = re.compile(r"^[0-9]{1,20}$")
+_SAFE_ERROR_CODE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+_SAFE_PARSER_VERSION = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
 
 
 class RemoteDocumentParser:
@@ -31,7 +35,11 @@ class RemoteDocumentParser:
         if timeout_seconds <= 0:
             raise ValueError("parser timeout must be positive")
         self._timeout = httpx.Timeout(timeout_seconds)
-        self._max_response_bytes = document_limits.max_extracted_chars * 4 + _RESULT_OVERHEAD_BYTES
+        self._max_response_bytes = (
+            document_limits.max_extracted_chars * 8
+            + document_limits.max_sections * _MAX_LOCATOR_BYTES
+            + _RESULT_OVERHEAD_BYTES
+        )
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             trust_env=False,
@@ -83,6 +91,68 @@ class RemoteDocumentParser:
             upload=upload,
             limits=self._document_limits,
         )
+
+    async def health(self) -> ParserHealth:
+        try:
+            async with self._client.stream(
+                "GET",
+                f"{self._base_url}/readyz",
+                timeout=self._timeout,
+            ) as response:
+                response_status = response.status_code
+                raw_content_length = response.headers.get("content-length")
+                if raw_content_length is not None:
+                    if not _CONTENT_LENGTH.fullmatch(raw_content_length.strip()):
+                        raise ValueError("invalid parser health Content-Length")
+                    if int(raw_content_length) > _RESULT_OVERHEAD_BYTES:
+                        raise ValueError("oversized parser health response")
+                body = bytearray()
+                async for chunk in response.aiter_bytes():
+                    if len(body) + len(chunk) > _RESULT_OVERHEAD_BYTES:
+                        raise ValueError("oversized parser health response")
+                    body.extend(chunk)
+            payload = json.loads(body)
+            if not isinstance(payload, dict) or set(payload) != {
+                "status",
+                "parser_version",
+                "error_code",
+            }:
+                raise ValueError("invalid parser health response")
+            version = payload.get("parser_version")
+            error_code = payload.get("error_code")
+            if (
+                response_status == httpx.codes.OK
+                and payload.get("status") == "ok"
+                and isinstance(version, str)
+                and _SAFE_PARSER_VERSION.fullmatch(version) is not None
+                and error_code is None
+            ):
+                return ParserHealth(healthy=True, parser_version=version)
+            if (
+                response_status == httpx.codes.SERVICE_UNAVAILABLE
+                and payload.get("status") == "not_ready"
+                and version is None
+                and isinstance(error_code, str)
+                and _SAFE_ERROR_CODE.fullmatch(error_code) is not None
+            ):
+                return ParserHealth(
+                    healthy=False,
+                    parser_version=None,
+                    error_code=error_code,
+                )
+            raise ValueError("invalid parser health response")
+        except httpx.TimeoutException:
+            return ParserHealth(
+                healthy=False,
+                parser_version=None,
+                error_code="timeout",
+            )
+        except (httpx.HTTPError, ValueError):
+            return ParserHealth(
+                healthy=False,
+                parser_version=None,
+                error_code="unavailable",
+            )
 
     async def aclose(self) -> None:
         if self._owns_client:

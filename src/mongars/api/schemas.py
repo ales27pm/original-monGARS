@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from mongars.db.models import MemoryDocument, TaskQueue
 from mongars.memory.repository import MemoryHit
@@ -195,6 +195,18 @@ class MemorySearchRequest(ApiModel):
     top_k: int = Field(default=8, ge=1, le=50)
     mode: Literal["semantic", "hybrid"] = "hybrid"
 
+    @field_validator("query")
+    @classmethod
+    def reject_blank_query(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("query must contain non-whitespace text")
+        return value
+
+
+class MemoryReindexRequest(ApiModel):
+    document_id: UUID | None = None
+    batch_size: int = Field(default=32, ge=1, le=128)
+
 
 class MemorySearchHit(ApiModel):
     chunk_id: UUID
@@ -203,6 +215,7 @@ class MemorySearchHit(ApiModel):
     text: str
     source_uri: str | None
     title: str | None
+    locator: dict[str, Any]
 
     @classmethod
     def from_hit(cls, hit: MemoryHit) -> MemorySearchHit:
@@ -213,6 +226,7 @@ class MemorySearchHit(ApiModel):
             text=hit.text,
             source_uri=hit.source_uri,
             title=hit.title,
+            locator=hit.locator,
         )
 
 

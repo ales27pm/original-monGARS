@@ -181,3 +181,40 @@ test('malformed saved credentials never release a bearer token', async () => {
     /saved monGARS credential is invalid/,
   );
 });
+
+test('readiness sends the origin-bound bearer token while liveness remains public', async () => {
+  const requests = [];
+  let tokenReads = 0;
+  const tokenStore = {
+    clear: async () => undefined,
+    read: async (origin) => {
+      tokenReads += 1;
+      assert.equal(origin, 'https://control.example.test');
+      return 'readiness-token';
+    },
+    save: async () => undefined,
+    subscribe: () => () => undefined,
+  };
+  const { MongarsClient } = loadClient(tokenStore);
+  const client = new MongarsClient({
+    baseUrl: 'https://control.example.test',
+    fetcher: async (url, init = {}) => {
+      requests.push({ url, headers: new Headers(init.headers) });
+      return new Response('{"status":"ok"}', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    },
+    tokenStore,
+  });
+
+  await client.health();
+  await client.readiness();
+
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].url, 'https://control.example.test/v1/healthz');
+  assert.equal(requests[0].headers.get('Authorization'), null);
+  assert.equal(requests[1].url, 'https://control.example.test/v1/readyz');
+  assert.equal(requests[1].headers.get('Authorization'), 'Bearer readiness-token');
+  assert.equal(tokenReads, 1);
+});

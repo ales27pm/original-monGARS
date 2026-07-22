@@ -131,6 +131,7 @@ class DocumentIngestionService:
         extracted = self.extract_content(upload)
         return ExtractionResult(
             text=extracted.text,
+            segments=extracted.segments,
             provenance=DocumentProvenance(
                 sha256=upload.content_sha256,
                 original_filename=upload.original_filename,
@@ -146,6 +147,8 @@ class DocumentIngestionService:
                 sensitivity=context.sensitivity,
                 retention_class=context.retention_class,
                 source_timestamp=context.source_timestamp,
+                received_at=context.received_at,
+                source_time_basis=context.source_time_basis,
             ),
         )
 
@@ -175,6 +178,33 @@ class DocumentIngestionService:
             and extracted.section_count > self._limits.max_sections
         ):
             raise DocumentStructureLimitError("document exceeds the configured section limit")
+        if not extracted.segments:
+            raise MalformedDocumentError("document parser returned no structured text segments")
+        if len(extracted.segments) > self._limits.max_sections:
+            raise DocumentStructureLimitError("document exceeds the configured segment limit")
+        if any(
+            segment.locator.media_type != upload.validated_mime_type.value
+            for segment in extracted.segments
+        ):
+            raise UnsafeDocumentError("document parser returned a mismatched segment media type")
+        try:
+            for segment in extracted.segments:
+                segment.locator.validate_for_document(
+                    media_type=upload.validated_mime_type,
+                    page_count=extracted.page_count,
+                    maximum_blocks=self._limits.max_sections,
+                )
+                locator = segment.locator
+                if (
+                    locator.line_start is not None
+                    and locator.line_end is not None
+                    and len(segment.text.splitlines()) > locator.line_end - locator.line_start + 1
+                ):
+                    raise ValueError("segment text exceeds its source line range")
+        except ValueError as exc:
+            raise UnsafeDocumentError(
+                "document parser returned impossible segment provenance"
+            ) from exc
         return extracted
 
 

@@ -164,6 +164,20 @@ def test_web_document_upload_uses_authenticated_browser_multipart_and_safe_rende
     assert "document.write" not in script
 
 
+def test_web_readiness_uses_the_session_bearer_token_and_handles_rejection() -> None:
+    script = (WEB_STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    readiness_start = script.index("async function refreshReadiness")
+    readiness_end = script.index("function configureTransport", readiness_start)
+    readiness_source = script[readiness_start:readiness_end]
+
+    assert "if (!state.token || !isSecureTransport())" in readiness_source
+    assert 'fetch("/v1/readyz"' in readiness_source
+    assert "Authorization: `Bearer ${state.token}`" in readiness_source
+    assert "response.status === 401" in readiness_source
+    assert 'openAuth("The token was rejected.' in readiness_source
+    assert "response.status !== 503" in readiness_source
+
+
 @pytest.mark.asyncio
 async def test_web_index_has_strict_browser_policy_and_is_not_documented(
     static_root: Path,

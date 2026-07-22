@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from collections.abc import Mapping, Sequence
 from time import monotonic
 from typing import Any
@@ -14,14 +15,17 @@ import httpx
 from .errors import (
     EmbeddingConfigurationError,
     EmbeddingConnectionError,
+    EmbeddingContextError,
     EmbeddingDimensionError,
     EmbeddingHTTPError,
     EmbeddingInputError,
+    EmbeddingModelDigestMismatchError,
     EmbeddingModelMismatchError,
     EmbeddingResponseError,
     EmbeddingTimeoutError,
 )
-from .models import EmbeddingBatch
+from .limits import MAX_EMBEDDING_TEXT_BYTES
+from .models import EmbeddingBatch, validate_model_digest
 
 _PROVIDER = "ollama"
 _DEFAULT_MODEL = "nomic-embed-text"
@@ -29,6 +33,7 @@ _DEFAULT_DIMENSION = 768
 _DEFAULT_MAX_RESPONSE_BYTES = 8_000_000
 _MAX_RESPONSE_BYTES = 64_000_000
 _STREAM_CHUNK_BYTES = 65_536
+_SHA256_PATTERN = re.compile(r"(?:sha256:)?[0-9a-fA-F]{64}")
 
 
 class OllamaEmbeddingProvider:
@@ -41,6 +46,7 @@ class OllamaEmbeddingProvider:
         model: str = _DEFAULT_MODEL,
         dimension: int = _DEFAULT_DIMENSION,
         timeout: float | httpx.Timeout = 30.0,
+        max_input_bytes: int = MAX_EMBEDDING_TEXT_BYTES,
         max_response_bytes: int = _DEFAULT_MAX_RESPONSE_BYTES,
         client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -48,7 +54,9 @@ class OllamaEmbeddingProvider:
         self._model = _validate_model(model)
         self._dimension = _validate_dimension(dimension)
         self._timeout = _validate_timeout(timeout)
+        self._max_input_bytes = _validate_input_limit(max_input_bytes)
         self._max_response_bytes = _validate_response_limit(max_response_bytes)
+        self._locked_digest: str | None = None
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             trust_env=False,
@@ -63,6 +71,16 @@ class OllamaEmbeddingProvider:
     def model_name(self) -> str:
         return self._model
 
+    @property
+    def max_input_bytes(self) -> int:
+        return self._max_input_bytes
+
+    @property
+    def model_digest(self) -> str | None:
+        """Return the pinned digest after the alias has been resolved once."""
+
+        return self._locked_digest
+
     async def __aenter__(self) -> OllamaEmbeddingProvider:
         return self
 
@@ -72,6 +90,21 @@ class OllamaEmbeddingProvider:
     async def aclose(self) -> None:
         if self._owns_client:
             await self._client.aclose()
+
+    async def resolve_model_digest(self) -> str:
+        """Resolve the configured alias through Ollama and reject tag drift."""
+
+        data = await self._request_json(method="GET", path="/api/tags")
+        digest = _extract_model_digest(data, model_alias=self._model)
+        if self._locked_digest is None:
+            self._locked_digest = digest
+        elif digest != self._locked_digest:
+            raise EmbeddingModelDigestMismatchError(
+                provider=_PROVIDER,
+                expected=self._locked_digest,
+                actual=digest,
+            )
+        return self._locked_digest
 
     async def embed(
         self,
@@ -97,11 +130,35 @@ class OllamaEmbeddingProvider:
                 "Ollama embedding inputs must be non-empty strings.",
                 provider=_PROVIDER,
             )
+        for index, text in enumerate(texts):
+            input_bytes = len(text.encode("utf-8"))
+            if input_bytes > self._max_input_bytes:
+                raise EmbeddingContextError(
+                    (
+                        f"Prepared Ollama embedding input {index} exceeds the reviewed "
+                        f"{self._max_input_bytes}-byte context ceiling."
+                    ),
+                    provider=_PROVIDER,
+                    maximum_input_bytes=self._max_input_bytes,
+                    input_bytes=input_bytes,
+                    input_index=index,
+                )
 
         started = monotonic()
+        model_digest = await self.resolve_model_digest()
         data = await self._request_json(
-            {"model": self._model, "input": list(texts)},
+            method="POST",
+            path="/api/embed",
+            payload={
+                "model": self._model,
+                "input": list(texts),
+                "truncate": False,
+            },
         )
+        # The configured model is a mutable Ollama alias. Re-resolve it after
+        # inference so an alias retarget during the request cannot cause vectors
+        # from a different artifact to be accepted under the pinned digest.
+        model_digest = await self.resolve_model_digest()
         latency_ms = (monotonic() - started) * 1_000
 
         response_model = data.get("model")
@@ -163,25 +220,25 @@ class OllamaEmbeddingProvider:
         return EmbeddingBatch(
             embeddings=tuple(embeddings),
             model=response_model,
+            model_digest=model_digest,
             dimension=self._dimension,
             latency_ms=latency_ms,
         )
 
-    async def _request_json(self, payload: Mapping[str, Any]) -> dict[str, Any]:
+    async def _request_json(
+        self,
+        *,
+        method: str,
+        path: str,
+        payload: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
         try:
             async with self._client.stream(
-                "POST",
-                f"{self._base_url}/api/embed",
+                method,
+                f"{self._base_url}{path}",
                 json=payload,
                 timeout=self._timeout,
             ) as response:
-                if not 200 <= response.status_code < 300:
-                    raise EmbeddingHTTPError(
-                        f"Ollama embedding request failed with HTTP {response.status_code}.",
-                        provider=_PROVIDER,
-                        status_code=response.status_code,
-                        retryable=response.status_code == 429 or response.status_code >= 500,
-                    )
                 _validate_content_length(
                     response.headers.get("content-length"),
                     maximum=self._max_response_bytes,
@@ -195,6 +252,19 @@ class OllamaEmbeddingProvider:
                             provider=_PROVIDER,
                         )
                     body.extend(chunk)
+                if not 200 <= response.status_code < 300:
+                    if response.status_code in {400, 413} and _is_context_error(body):
+                        raise EmbeddingContextError(
+                            "Ollama rejected an embedding input that exceeds its context.",
+                            provider=_PROVIDER,
+                            maximum_input_bytes=self._max_input_bytes,
+                        )
+                    raise EmbeddingHTTPError(
+                        f"Ollama embedding request failed with HTTP {response.status_code}.",
+                        provider=_PROVIDER,
+                        status_code=response.status_code,
+                        retryable=response.status_code == 429 or response.status_code >= 500,
+                    )
         except httpx.TimeoutException as exc:
             raise EmbeddingTimeoutError(
                 "Ollama embedding request timed out.",
@@ -282,6 +352,23 @@ def _validate_timeout(value: float | httpx.Timeout) -> httpx.Timeout:
     return httpx.Timeout(float(value))
 
 
+def _validate_input_limit(value: int) -> int:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 256
+        or value > MAX_EMBEDDING_TEXT_BYTES
+    ):
+        raise EmbeddingConfigurationError(
+            (
+                "Ollama embedding input limit must be between 256 and "
+                f"{MAX_EMBEDDING_TEXT_BYTES} bytes."
+            ),
+            provider=_PROVIDER,
+        )
+    return value
+
+
 def _validate_response_limit(value: int) -> int:
     if (
         isinstance(value, bool)
@@ -316,3 +403,66 @@ def _validate_content_length(value: str | None, *, maximum: int) -> None:
             "Ollama embedding response exceeds the configured size limit.",
             provider=_PROVIDER,
         )
+
+
+def _extract_model_digest(data: Mapping[str, Any], *, model_alias: str) -> str:
+    raw_models = data.get("models")
+    if not isinstance(raw_models, list):
+        raise EmbeddingResponseError(
+            "Ollama tags response is missing its model list.",
+            provider=_PROVIDER,
+        )
+    accepted_names = {model_alias}
+    if ":" not in model_alias.rsplit("/", 1)[-1]:
+        accepted_names.add(f"{model_alias}:latest")
+    matches: set[str] = set()
+    for raw_model in raw_models:
+        if not isinstance(raw_model, dict):
+            continue
+        names = {raw_model.get("name"), raw_model.get("model")}
+        if not any(isinstance(name, str) and name in accepted_names for name in names):
+            continue
+        raw_digest = raw_model.get("digest")
+        if not isinstance(raw_digest, str) or _SHA256_PATTERN.fullmatch(raw_digest) is None:
+            raise EmbeddingResponseError(
+                "Ollama tags response contains an invalid model digest.",
+                provider=_PROVIDER,
+            )
+        try:
+            matches.add(validate_model_digest(raw_digest))
+        except ValueError as exc:  # pragma: no cover - guarded by the pattern
+            raise EmbeddingResponseError(
+                "Ollama tags response contains an invalid model digest.",
+                provider=_PROVIDER,
+            ) from exc
+    if not matches:
+        raise EmbeddingResponseError(
+            "Configured Ollama embedding model is not installed.",
+            provider=_PROVIDER,
+        )
+    if len(matches) != 1:
+        raise EmbeddingResponseError(
+            "Configured Ollama embedding alias resolves ambiguously.",
+            provider=_PROVIDER,
+        )
+    return matches.pop()
+
+
+def _is_context_error(body: bytes | bytearray) -> bool:
+    try:
+        data = json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return False
+    if not isinstance(data, dict) or not isinstance(data.get("error"), str):
+        return False
+    message = data["error"].casefold()
+    return any(
+        marker in message
+        for marker in (
+            "context length",
+            "context window",
+            "input length",
+            "input is too large",
+            "too many tokens",
+        )
+    )

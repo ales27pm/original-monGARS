@@ -89,6 +89,13 @@ def test_embedding_model_is_fixed_to_the_reviewed_release_identity() -> None:
     )
 
 
+def test_embedding_artifact_digest_is_validated() -> None:
+    with pytest.raises(ValidationError, match="ollama_embedding_model_digest"):
+        Settings(ollama_embedding_model_digest="mutable-tag")
+
+    assert len(Settings().ollama_embedding_model_digest) == 64
+
+
 def test_memory_chunk_character_ceiling_cannot_exceed_embedding_boundary() -> None:
     with pytest.raises(ValidationError, match="less than or equal to 32000"):
         Settings(memory_chunk_characters=32_001)
@@ -101,6 +108,22 @@ def test_document_parser_origin_is_normalized_and_rejects_credentials_or_paths()
     for value in ("parser:8091", "http://user:pass@parser:8091", "http://parser:8091/api"):
         with pytest.raises(ValidationError, match="document_parser_base_url"):
             Settings(document_parser_base_url=value)
+
+
+def test_document_parser_is_local_only_unless_remote_tls_is_explicitly_enabled() -> None:
+    with pytest.raises(ValidationError, match="remote document parsing is disabled"):
+        Settings(document_parser_base_url="https://parser.example")
+    with pytest.raises(ValidationError, match="remote document parsing requires TLS"):
+        Settings(
+            document_parser_base_url="http://parser.example",
+            allow_remote_document_parser=True,
+        )
+
+    settings = Settings(
+        document_parser_base_url="https://parser.example",
+        allow_remote_document_parser=True,
+    )
+    assert settings.document_parser_base_url == "https://parser.example"
 
 
 @pytest.mark.parametrize(

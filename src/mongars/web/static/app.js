@@ -241,10 +241,34 @@
   }
 
   async function refreshReadiness({ announce = false } = {}) {
+    if (!state.token || !isSecureTransport()) {
+      dom.databaseStatus.textContent = "Protected";
+      dom.inferenceStatus.textContent = "Protected";
+      setReadinessStatus("checking", "Connect to inspect");
+      if (announce) openAuth("Connect with your API token to inspect readiness.");
+      return;
+    }
+
     setReadinessStatus("checking", "Checking");
     try {
-      const response = await fetch("/v1/readyz", { headers: { Accept: "application/json" } });
+      const response = await fetch("/v1/readyz", {
+        headers: {
+          Accept: "application/json",
+          Authorization: `Bearer ${state.token}`,
+        },
+      });
       const payload = await response.json();
+      if (response.status === 401) {
+        forgetToken({ notify: false });
+        openAuth("The token was rejected. Reconnect to inspect readiness.");
+        return;
+      }
+      if (!response.ok && response.status !== 503) {
+        throw new ApiError(
+          apiMessage(payload, `Readiness failed with status ${response.status}.`),
+          response.status,
+        );
+      }
       const database = payload.dependencies?.database;
       const inference = payload.dependencies?.inference;
       const ready = response.ok && payload.status === "ready";
@@ -322,6 +346,7 @@
     dom.authButton.setAttribute("aria-label", "Connected; manage API token");
     closeDialog(dom.authDialog);
     toast("Connected securely to monGARS.", "success");
+    await refreshReadiness();
     await refreshTasks({ silent: true });
     startTaskPolling();
   }

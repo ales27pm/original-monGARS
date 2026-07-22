@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile, status
 
 from mongars.api.dependencies import (
+    DocumentUploadAdmissionDependency,
+    DocumentUploadAdmissionRoute,
     PolicyDependency,
     PrincipalDependency,
     SessionDependency,
@@ -21,7 +23,11 @@ from mongars.ingestion.staging import DocumentStagingQuotaError, DocumentStaging
 from mongars.rm.repository import TaskRepository
 from mongars.rm.service import TaskService
 
-router = APIRouter(prefix="/v1/documents", tags=["documents"])
+router = APIRouter(
+    prefix="/v1/documents",
+    tags=["documents"],
+    route_class=DocumentUploadAdmissionRoute,
+)
 
 _UPLOAD_CHUNK_BYTES = 64 * 1024
 
@@ -29,6 +35,7 @@ _UPLOAD_CHUNK_BYTES = 64 * 1024
 @router.post("", response_model=DocumentUploadResponse, status_code=status.HTTP_202_ACCEPTED)
 async def upload_document(
     principal: PrincipalDependency,
+    admission: DocumentUploadAdmissionDependency,
     session: SessionDependency,
     settings: SettingsDependency,
     policy: PolicyDependency,
@@ -45,6 +52,7 @@ async def upload_document(
         Form(),
     ] = "keep",
 ) -> DocumentUploadResponse:
+    received_at = admission.received_at
     if declared_size > settings.max_document_upload_bytes:
         raise HTTPException(
             status_code=status.HTTP_413_CONTENT_TOO_LARGE,
@@ -95,6 +103,8 @@ async def upload_document(
             "detected_mime_type": validated.validated_mime_type.value,
             "byte_size": validated.byte_size,
             "source_timestamp": source_timestamp.astimezone(UTC).isoformat(),
+            "received_at": received_at.isoformat(),
+            "source_time_basis": "user_supplied",
             "title": normalized_title,
             "sensitivity": sensitivity,
             "retention_class": retention_class,
@@ -110,7 +120,8 @@ async def upload_document(
             source_sha256=bytes.fromhex(validated.content_sha256),
             content=validated.content,
             source_timestamp=source_timestamp.astimezone(UTC),
-            expires_at=datetime.now(UTC) + timedelta(seconds=settings.document_staging_ttl_seconds),
+            received_at=received_at,
+            ttl_seconds=settings.document_staging_ttl_seconds,
             max_owner_objects=settings.max_document_staged_objects,
             max_owner_bytes=settings.max_document_staged_bytes,
         )

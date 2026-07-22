@@ -560,6 +560,7 @@ def _memory_payload(*, hit: MemoryHit, text: str, truncated: bool = False) -> di
         "chunk_id": str(hit.chunk_id),
         "title": hit.title,
         "source_uri": hit.source_uri,
+        "locator": hit.locator,
         "text": text,
     }
     if truncated:

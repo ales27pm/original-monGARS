@@ -81,6 +81,7 @@ def harness() -> ServiceHarness:
         {
             ("memory", "search"): ActionClassification.READ_ONLY,
             ("memory", "note.create"): ActionClassification.LOCAL_MUTATION,
+            ("memory", "reindex"): ActionClassification.LOCAL_MUTATION,
             ("document", "ingest"): ActionClassification.LOCAL_MUTATION,
         }
     )
@@ -138,6 +139,21 @@ async def test_local_mutation_waits_with_digest_bound_to_normalized_payload(
 
 
 @pytest.mark.asyncio
+async def test_memory_reindex_requires_exact_approval(harness: ServiceHarness) -> None:
+    document_id = uuid4()
+    task = await harness.service.create(
+        owner_id="owner-1",
+        kind="memory.reindex",
+        payload={"document_id": str(document_id)},
+    )
+
+    assert task.status == "waiting_approval"
+    assert task.risk_level == ActionClassification.LOCAL_MUTATION.value
+    assert task.payload == {"document_id": str(document_id), "batch_size": 32}
+    assert task.action_digest is not None
+
+
+@pytest.mark.asyncio
 async def test_document_ingest_waits_for_exact_payload_approval(
     harness: ServiceHarness,
 ) -> None:
@@ -153,6 +169,8 @@ async def test_document_ingest_waits_for_exact_payload_approval(
             "detected_mime_type": "text/plain",
             "byte_size": 5,
             "source_timestamp": "2026-07-22T12:30:00-04:00",
+            "received_at": "2026-07-22T16:31:00Z",
+            "source_time_basis": "user_supplied",
             "title": "Notes",
             "sensitivity": "restricted",
             "retention_class": "ttl_30d",
@@ -168,6 +186,8 @@ async def test_document_ingest_waits_for_exact_payload_approval(
         "detected_mime_type": "text/plain",
         "byte_size": 5,
         "source_timestamp": "2026-07-22T16:30:00Z",
+        "received_at": "2026-07-22T16:31:00Z",
+        "source_time_basis": "user_supplied",
         "title": "Notes",
         "sensitivity": "restricted",
         "retention_class": "ttl_30d",

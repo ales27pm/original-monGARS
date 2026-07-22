@@ -23,6 +23,36 @@ export type ReadinessResponse = {
       latency_ms: number;
       error_code: string | null;
     };
+    worker?: {
+      healthy: boolean;
+      status: string;
+      component_id: string | null;
+      instance_id: string | null;
+      version: string | null;
+      git_sha: string | null;
+      last_seen_at: string | null;
+      age_seconds: number | null;
+      error_code: string | null;
+    };
+    parser?: {
+      healthy: boolean;
+      version: string | null;
+      error_code: string | null;
+    };
+    embedding_space?: {
+      healthy: boolean;
+      status: string;
+      space_id: string | null;
+      model_alias: string | null;
+      model_digest: string | null;
+      dimension: number | null;
+      worker_space_id: string | null;
+      total_chunk_count: number;
+      compatible_chunk_count: number;
+      legacy_chunk_count: number;
+      reindex_required: boolean;
+      error_code: string | null;
+    };
   };
 };
 

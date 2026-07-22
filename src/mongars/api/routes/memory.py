@@ -14,12 +14,13 @@ from mongars.api.dependencies import (
 from mongars.api.schemas import (
     MemoryDocumentCreateRequest,
     MemoryDocumentResponse,
+    MemoryReindexRequest,
     MemorySearchHit,
     MemorySearchRequest,
     MemorySearchResponse,
     TaskResponse,
 )
-from mongars.embeddings.errors import EmbeddingError
+from mongars.embeddings.errors import EmbeddingError, EmbeddingInputError
 from mongars.events.repository import EventRepository
 from mongars.memory.repository import MemoryRepository
 from mongars.memory.service import MemoryService
@@ -27,6 +28,28 @@ from mongars.rm.repository import TaskRepository
 from mongars.rm.service import TaskService
 
 router = APIRouter(prefix="/v1/memory", tags=["memory"])
+
+
+@router.post("/reindex", response_model=TaskResponse, status_code=status.HTTP_202_ACCEPTED)
+async def create_reindex_task(
+    request: MemoryReindexRequest,
+    principal: PrincipalDependency,
+    session: SessionDependency,
+    settings: SettingsDependency,
+    policy: PolicyDependency,
+) -> TaskResponse:
+    service = TaskService(
+        settings=settings,
+        repository=TaskRepository(session),
+        events=EventRepository(session),
+        policy=policy,
+    )
+    task = await service.create(
+        owner_id=principal.subject,
+        kind="memory.reindex",
+        payload=request.model_dump(mode="json"),
+    )
+    return TaskResponse.from_model(task)
 
 
 @router.post("/documents", response_model=TaskResponse, status_code=status.HTTP_202_ACCEPTED)
@@ -85,6 +108,11 @@ async def search_memory(
             top_k=request.top_k,
             hybrid=request.mode == "hybrid",
         )
+    except EmbeddingInputError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={"code": exc.code, "retryable": exc.retryable},
+        ) from exc
     except EmbeddingError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

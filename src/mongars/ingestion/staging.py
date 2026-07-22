@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
 
@@ -36,7 +36,8 @@ class DocumentStagingRepository:
         source_sha256: bytes,
         content: bytes,
         source_timestamp: datetime,
-        expires_at: datetime,
+        received_at: datetime,
+        ttl_seconds: int,
         max_owner_objects: int,
         max_owner_bytes: int,
     ) -> DocumentStaging:
@@ -46,6 +47,12 @@ class DocumentStagingRepository:
             raise ValueError("staged document digest must contain 32 bytes")
         if max_owner_objects <= 0 or max_owner_bytes <= 0:
             raise ValueError("staging quotas must be positive")
+        if source_timestamp.tzinfo is None or source_timestamp.utcoffset() is None:
+            raise ValueError("staged document source_timestamp must be timezone-aware")
+        if received_at.tzinfo is None or received_at.utcoffset() is None:
+            raise ValueError("staged document received_at must be timezone-aware")
+        if ttl_seconds <= 0:
+            raise ValueError("staged document TTL must be positive")
 
         # Serialize quota accounting for one owner so concurrent multipart uploads
         # cannot race the aggregate PostgreSQL storage ceiling.
@@ -65,6 +72,11 @@ class DocumentStagingRepository:
             raise DocumentStagingQuotaError("active document staging object limit reached")
         if int(total_bytes) + len(content) > max_owner_bytes:
             raise DocumentStagingQuotaError("active document staging byte limit reached")
+
+        # Admission time is durable provenance, but it must not consume the staging
+        # retention window while a bounded multipart body is still arriving. Start
+        # that window from a fresh server clock reading at the persistence boundary.
+        persistence_time = datetime.now(UTC)
         staged = DocumentStaging(
             id=staging_id,
             task_id=task_id,
@@ -74,8 +86,9 @@ class DocumentStagingRepository:
             source_sha256=source_sha256,
             byte_size=len(content),
             content=bytes(content),
-            source_timestamp=source_timestamp,
-            expires_at=expires_at,
+            source_timestamp=source_timestamp.astimezone(UTC),
+            received_at=received_at.astimezone(UTC),
+            expires_at=persistence_time + timedelta(seconds=ttl_seconds),
         )
         self._session.add(staged)
         await self._session.flush()

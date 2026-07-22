@@ -15,9 +15,11 @@ from mongars.ingestion import (
     ContentTypeMismatchError,
     DocumentIngestionService,
     DocumentLimits,
+    DocumentLocator,
     DocumentStructureLimitError,
     DocumentTooLargeError,
     EncryptedDocumentError,
+    ExtractedSegment,
     ExtractedTextTooLargeError,
     IngestionContext,
     InvalidFilenameError,
@@ -29,6 +31,7 @@ from mongars.ingestion import (
     UnsafeDocumentError,
     UnsupportedDocumentTypeError,
     UploadEnvelope,
+    chunk_segments,
 )
 from mongars.ingestion.extractors.text import TextExtractor
 from mongars.ingestion.registry import ExtractorRegistry
@@ -43,6 +46,7 @@ def _context() -> IngestionContext:
         sensitivity="restricted",
         retention_class="ttl_30d",
         source_timestamp=datetime(2026, 7, 22, 12, 30, tzinfo=UTC),
+        received_at=datetime(2026, 7, 22, 12, 31, tzinfo=UTC),
     )
 
 
@@ -141,6 +145,12 @@ def test_txt_extraction_returns_bounded_provenance() -> None:
     assert result.provenance.section_count == 2
     assert result.provenance.parser_name == "utf8-text"
     assert result.provenance.as_metadata()["source_timestamp"] == "2026-07-22T12:30:00+00:00"
+    assert result.provenance.as_metadata()["received_at"] == "2026-07-22T12:31:00+00:00"
+    assert result.provenance.as_metadata()["source_time_basis"] == "user_supplied"
+    assert [segment.text for segment in result.segments] == ["First", "Second"]
+    assert [
+        (segment.locator.line_start, segment.locator.line_end) for segment in result.segments
+    ] == [(1, 1), (3, 3)]
 
 
 def test_markdown_extraction_preserves_source_semantics() -> None:
@@ -153,6 +163,106 @@ def test_markdown_extraction_preserves_source_semantics() -> None:
     assert result.text.startswith("# Cortex")
     assert "- explicit policy" in result.text
     assert result.provenance.validated_mime_type == "text/markdown"
+    assert result.segments[0].locator.heading_path == ("Cortex",)
+    assert result.segments[1].locator.heading_path == ("Cortex",)
+
+
+def test_markdown_tracks_nested_headings_without_trusting_fenced_code() -> None:
+    result = _extract(
+        "guide.md",
+        "text/markdown",
+        b"""# Root
+Intro
+## Child
+Details
+```markdown
+# Not a heading
+```
+After code
+# Next
+Done
+""",
+    )
+
+    assert [segment.locator.heading_path for segment in result.segments] == [
+        ("Root",),
+        ("Root",),
+        ("Root", "Child"),
+        ("Root", "Child"),
+        ("Root", "Child"),
+        ("Root", "Child"),
+        ("Next",),
+        ("Next",),
+    ]
+    assert result.segments[4].text.startswith("```markdown")
+    assert result.segments[4].locator.line_start == 5
+    assert result.segments[4].locator.line_end == 7
+
+
+def test_markdown_tracks_setext_headings_as_major_boundaries() -> None:
+    result = _extract(
+        "setext.md",
+        "text/markdown",
+        b"Root title\n==========\nIntro\n\nChild title\n-----------\nDetails\n",
+    )
+
+    assert [segment.locator.heading_path for segment in result.segments] == [
+        ("Root title",),
+        ("Root title",),
+        ("Root title", "Child title"),
+        ("Root title", "Child title"),
+    ]
+    assert result.segments[0].locator.line_end == 2
+    assert result.segments[2].locator.line_start == 5
+
+
+def test_markdown_does_not_strip_hash_from_heading_text() -> None:
+    result = _extract(
+        "language.md",
+        "text/markdown",
+        b"# C#\nCode notes\n",
+    )
+
+    assert result.segments[0].locator.heading_path == ("C#",)
+    assert result.segments[1].locator.heading_path == ("C#",)
+
+
+@pytest.mark.parametrize("marker", ["```oops", "~~~oops"])
+def test_markdown_rejects_false_fence_closer_as_heading_boundary(marker: str) -> None:
+    fence = marker[0] * 3
+    result = _extract(
+        "fence.md",
+        "text/markdown",
+        f"{fence}\n{marker}\n# Still code\n{fence}\nAfter\n".encode(),
+    )
+
+    assert len(result.segments) == 2
+    assert result.segments[0].locator.heading_path == ()
+    assert "# Still code" in result.segments[0].text
+    assert result.segments[1].locator.heading_path == ()
+
+
+def test_heading_metadata_limits_fail_with_typed_structure_error() -> None:
+    heading = "x" * 501
+    with pytest.raises(DocumentStructureLimitError, match="heading metadata"):
+        _extract("long.md", "text/markdown", f"# {heading}\nbody".encode())
+    with pytest.raises(DocumentStructureLimitError, match="heading metadata"):
+        _extract(
+            "long.html",
+            "text/html",
+            f"<!doctype html><html><body><h1>{heading}</h1></body></html>".encode(),
+        )
+
+    document = Document()
+    document.add_heading(heading, level=1)
+    output = BytesIO()
+    document.save(output)
+    with pytest.raises(DocumentStructureLimitError, match="heading metadata"):
+        _extract(
+            "long.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            output.getvalue(),
+        )
 
 
 def test_html_sanitization_preserves_visible_text_and_removes_known_hidden_text() -> None:
@@ -169,6 +279,50 @@ def test_html_sanitization_preserves_visible_text_and_removes_known_hidden_text(
     assert "secret" not in result.text
     assert "Hidden" not in result.text
     assert "Not body content" not in result.text
+    assert result.segments[0].locator.heading_path == ("Visible",)
+    assert result.segments[1].locator.heading_path == ("Visible",)
+
+
+def test_html_preserves_direct_text_heading_hierarchy_and_table_cells() -> None:
+    result = _extract(
+        "structured.html",
+        "text/html",
+        b"""<!doctype html><html><body>Intro <strong>bold</strong>
+        <h1>Install</h1>Before table
+        <table><tr><th>Name</th><th>Value</th></tr>
+        <tr><td>GPU</td><td>RTX 2070</td></tr></table></body></html>""",
+    )
+
+    assert result.segments[0].text == "Intro bold"
+    assert result.segments[1].locator.heading_path == ("Install",)
+    assert result.segments[2].text == "Before table"
+    table_segments = result.segments[3:]
+    assert [segment.locator.cell_reference for segment in table_segments] == [
+        "A1",
+        "B1",
+        "A2",
+        "B2",
+    ]
+    assert all(segment.locator.table_index == 0 for segment in table_segments)
+    assert all(segment.locator.heading_path == ("Install",) for segment in table_segments)
+
+
+def test_html_table_coordinates_respect_rowspan_and_colspan() -> None:
+    result = _extract(
+        "spans.html",
+        "text/html",
+        b"""<!doctype html><html><body><table>
+        <tr><th rowspan="2">Name</th><th colspan="2">Values</th></tr>
+        <tr><td>Primary</td><td>Secondary</td></tr>
+        </table></body></html>""",
+    )
+
+    assert [segment.locator.cell_reference for segment in result.segments] == [
+        "A1",
+        "B1",
+        "B2",
+        "C2",
+    ]
 
 
 def test_html_rejects_stylesheet_hidden_content_ambiguity() -> None:
@@ -231,6 +385,22 @@ def test_pdf_extraction_and_page_provenance() -> None:
     assert result.provenance.page_count == 1
     assert result.provenance.section_count == 1
     assert result.provenance.parser_name == "pypdf"
+    assert result.segments[0].locator.page_number == 1
+    assert result.segments[0].locator.block_index == 0
+
+
+def test_pdf_segments_never_cross_page_boundaries() -> None:
+    writer = PdfWriter()
+    writer.append(BytesIO(_make_pdf("First page")))
+    writer.append(BytesIO(_make_pdf("Second page")))
+    output = BytesIO()
+    writer.write(output)
+
+    result = _extract("pages.pdf", "application/pdf", output.getvalue())
+
+    assert [segment.text for segment in result.segments] == ["First page", "Second page"]
+    assert [segment.locator.page_number for segment in result.segments] == [1, 2]
+    assert [segment.locator.block_index for segment in result.segments] == [0, 0]
 
 
 def test_pdf_rejects_encryption_even_when_password_is_empty() -> None:
@@ -279,9 +449,34 @@ def test_docx_extracts_body_and_table() -> None:
 
     assert "Safety report" in result.text
     assert "A bounded DOCX body." in result.text
-    assert "Name\tmonGARS" in result.text
+    assert "Name" in result.text
+    assert "monGARS" in result.text
     assert result.provenance.parser_name == "python-docx"
     assert result.provenance.section_count == 3
+    assert result.segments[0].locator.heading_path == ("Safety report",)
+    table_segments = [
+        segment for segment in result.segments if segment.locator.table_index is not None
+    ]
+    assert [segment.locator.cell_reference for segment in table_segments] == ["A1", "B1"]
+    assert all(segment.locator.heading_path == ("Safety report",) for segment in table_segments)
+
+
+def test_docx_merged_cell_is_emitted_once_at_its_top_left_coordinate() -> None:
+    document = Document()
+    table = document.add_table(rows=1, cols=2)
+    merged = table.cell(0, 0).merge(table.cell(0, 1))
+    merged.text = "Merged value"
+    output = BytesIO()
+    document.save(output)
+
+    result = _extract(
+        "merged.docx",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        output.getvalue(),
+    )
+
+    assert [segment.text for segment in result.segments] == ["Merged value"]
+    assert result.segments[0].locator.cell_reference == "A1"
 
 
 def test_docx_rejects_external_relationship() -> None:
@@ -482,6 +677,89 @@ def test_context_requires_governance_and_timezone() -> None:
 def test_registry_rejects_duplicate_media_type() -> None:
     with pytest.raises(ValueError, match="already registered"):
         ExtractorRegistry((TextExtractor(), TextExtractor()))
+
+
+def test_locator_preserving_chunker_never_crosses_structural_boundaries() -> None:
+    first_locator = DocumentLocator(
+        media_type="application/pdf",
+        page_number=1,
+        block_index=0,
+    )
+    second_locator = DocumentLocator(
+        media_type="application/pdf",
+        page_number=2,
+        block_index=0,
+    )
+    segments = (
+        ExtractedSegment(
+            text=" ".join(f"first-{index}" for index in range(40)),
+            locator=first_locator,
+        ),
+        ExtractedSegment(
+            text=" ".join(f"second-{index}" for index in range(40)),
+            locator=second_locator,
+        ),
+    )
+
+    chunks = chunk_segments(
+        segments,
+        max_tokens=32,
+        overlap_tokens=4,
+        max_characters=1_000,
+    )
+
+    assert len(chunks) == 4
+    assert all(chunk.locator == first_locator for chunk in chunks[:2])
+    assert all(chunk.locator == second_locator for chunk in chunks[2:])
+    assert all("second-" not in chunk.text for chunk in chunks[:2])
+    assert all("first-" not in chunk.text for chunk in chunks[2:])
+
+
+def test_locator_preserving_chunker_narrows_multiline_source_ranges() -> None:
+    segment = ExtractedSegment(
+        text=(
+            " ".join(f"line-one-{index}" for index in range(20))
+            + "\n"
+            + " ".join(f"line-two-{index}" for index in range(20))
+        ),
+        locator=DocumentLocator(
+            media_type="text/plain",
+            block_index=0,
+            line_start=10,
+            line_end=11,
+        ),
+    )
+
+    chunks = chunk_segments(
+        (segment,),
+        max_tokens=32,
+        overlap_tokens=4,
+        max_characters=1_000,
+    )
+
+    assert [chunk.locator.line_start for chunk in chunks] == [10, 11]
+    assert [chunk.locator.line_end for chunk in chunks] == [10, 11]
+
+
+def test_document_locator_rejects_ambiguous_or_invalid_coordinates() -> None:
+    with pytest.raises(ValueError, match="both endpoints"):
+        DocumentLocator(
+            media_type="text/plain",
+            block_index=0,
+            line_start=1,
+        )
+    with pytest.raises(ValueError, match="requires a table"):
+        DocumentLocator(
+            media_type="text/plain",
+            block_index=0,
+            cell_reference="A1",
+        )
+    with pytest.raises(ValueError, match="page number"):
+        DocumentLocator(
+            media_type="application/pdf",
+            block_index=0,
+            page_number=0,
+        )
 
 
 @pytest.mark.asyncio

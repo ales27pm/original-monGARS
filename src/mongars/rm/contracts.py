@@ -15,12 +15,24 @@ class MemorySearchPayload(StrictPayload):
     query: str = Field(min_length=1, max_length=32_000)
     top_k: int = Field(default=8, ge=1, le=50)
 
+    @field_validator("query")
+    @classmethod
+    def reject_blank_query(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("query must contain non-whitespace text")
+        return value
+
 
 class MemoryNoteCreatePayload(StrictPayload):
     text: str = Field(min_length=1, max_length=2_000_000)
     title: str | None = Field(default=None, max_length=500)
     sensitivity: str = Field(default="private", pattern="^(private|shared|restricted)$")
     retention_class: str = Field(default="keep", pattern="^(keep|ttl_30d|ttl_90d|legal_hold)$")
+
+
+class MemoryReindexPayload(StrictPayload):
+    document_id: UUID | None = None
+    batch_size: int = Field(default=32, ge=1, le=128)
 
 
 class DocumentIngestPayload(StrictPayload):
@@ -36,6 +48,8 @@ class DocumentIngestPayload(StrictPayload):
     ]
     byte_size: int = Field(ge=1, le=20_000_000)
     source_timestamp: datetime
+    received_at: datetime
+    source_time_basis: Literal["user_supplied"]
     title: str | None = Field(default=None, max_length=500)
     sensitivity: str = Field(default="private", pattern="^(private|shared|restricted)$")
     retention_class: str = Field(default="keep", pattern="^(keep|ttl_30d|ttl_90d|legal_hold)$")
@@ -47,16 +61,25 @@ class DocumentIngestPayload(StrictPayload):
             raise ValueError("source_timestamp must include a timezone")
         return value.astimezone(UTC)
 
+    @field_validator("received_at")
+    @classmethod
+    def normalize_received_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("received_at must include a timezone")
+        return value.astimezone(UTC)
+
 
 _PAYLOAD_ADAPTERS: dict[str, TypeAdapter[Any]] = {
     "memory.search": TypeAdapter(MemorySearchPayload),
     "memory.note.create": TypeAdapter(MemoryNoteCreatePayload),
+    "memory.reindex": TypeAdapter(MemoryReindexPayload),
     "document.ingest": TypeAdapter(DocumentIngestPayload),
 }
 
 TASK_POLICY_KEYS: dict[str, tuple[str, str]] = {
     "memory.search": ("memory", "search"),
     "memory.note.create": ("memory", "note.create"),
+    "memory.reindex": ("memory", "reindex"),
     "document.ingest": ("document", "ingest"),
 }
 
@@ -79,6 +102,7 @@ __all__ = [
     "TASK_POLICY_KEYS",
     "DocumentIngestPayload",
     "MemoryNoteCreatePayload",
+    "MemoryReindexPayload",
     "MemorySearchPayload",
     "UnsupportedTaskKind",
     "ValidationError",

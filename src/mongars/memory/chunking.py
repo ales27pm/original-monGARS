@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -9,6 +10,7 @@ class TextChunk:
     text: str
     approximate_tokens: int
     section_path: tuple[str, ...] = ()
+    locator: dict[str, Any] = field(default_factory=dict)
 
 
 _PARAGRAPH_BREAK = re.compile(r"\n\s*\n+")

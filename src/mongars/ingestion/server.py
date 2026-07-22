@@ -12,10 +12,15 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from mongars.http import RequestBodyLimitMiddleware
 from mongars.ingestion.errors import IngestionError, ParserIsolationError
-from mongars.ingestion.isolation import IsolatedDocumentParser, ParserProcessLimits
+from mongars.ingestion.isolation import (
+    DocumentParser,
+    IsolatedDocumentParser,
+    ParserProcessLimits,
+)
 from mongars.ingestion.models import DocumentLimits, DocumentMediaType, ValidatedUpload
 
 _UPLOAD_CHUNK_BYTES = 64 * 1024
+_PARSER_SERVER_VERSION = "mongars-parser-v1"
 
 
 class ParserServerSettings(BaseSettings):
@@ -59,10 +64,14 @@ class ParserServerSettings(BaseSettings):
         )
 
 
-def create_parser_app(settings: ParserServerSettings | None = None) -> FastAPI:
+def create_parser_app(
+    settings: ParserServerSettings | None = None,
+    *,
+    document_parser: DocumentParser | None = None,
+) -> FastAPI:
     runtime_settings = settings or ParserServerSettings()
     limits = runtime_settings.document_limits()
-    parser = IsolatedDocumentParser(
+    parser = document_parser or IsolatedDocumentParser(
         document_limits=limits,
         process_limits=ParserProcessLimits(
             timeout_seconds=runtime_settings.timeout_seconds,
@@ -82,8 +91,38 @@ def create_parser_app(settings: ParserServerSettings | None = None) -> FastAPI:
     )
 
     @application.get("/healthz")
-    async def health() -> dict[str, str]:
-        return {"status": "ok"}
+    async def liveness() -> dict[str, str]:
+        """Cheap process liveness; worker readiness uses the extraction self-test."""
+
+        return {"status": "ok", "parser_version": _PARSER_SERVER_VERSION}
+
+    @application.get("/readyz")
+    async def readiness() -> JSONResponse:
+        try:
+            health = await parser.health()
+        except Exception:
+            health = None
+        if health is not None and health.healthy and health.parser_version:
+            return JSONResponse(
+                status_code=status.HTTP_200_OK,
+                content={
+                    "status": "ok",
+                    "parser_version": _PARSER_SERVER_VERSION,
+                    "error_code": None,
+                },
+            )
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "status": "not_ready",
+                "parser_version": None,
+                "error_code": (
+                    health.error_code
+                    if health is not None and health.error_code
+                    else "parser_self_test_failed"
+                ),
+            },
+        )
 
     @application.post("/extract")
     async def extract(
@@ -128,6 +167,10 @@ def create_parser_app(settings: ParserServerSettings | None = None) -> FastAPI:
             content={
                 "status": "ok",
                 "text": result.text,
+                "segments": [
+                    {"text": segment.text, "locator": segment.locator.as_dict()}
+                    for segment in result.segments
+                ],
                 "page_count": result.page_count,
                 "section_count": result.section_count,
                 "parser_name": result.parser_name,

@@ -9,6 +9,8 @@ The current release intentionally supports only these bounded actions:
 
 - `memory.search` is read-only and can be queued without approval.
 - `memory.note.create` writes to PostgreSQL and requires an expiring, single-use approval.
+- `memory.reindex` adds active-space vectors to an owner-scoped corpus and requires an expiring,
+  single-use approval.
 - `document.ingest` stages a validated TXT, Markdown, HTML, PDF, or DOCX upload and requires
   approval before a worker parses, embeds, or persists its text.
 
@@ -108,14 +110,19 @@ complete successfully before the API or worker starts.
 
 ```bash
 curl -fsS http://127.0.0.1:8000/v1/healthz
-curl -fsS http://127.0.0.1:8000/v1/readyz
+read -r MONGARS_TOKEN < secrets/api_token.txt
+curl -fsS -H "Authorization: Bearer ${MONGARS_TOKEN}" \
+  http://127.0.0.1:8000/v1/readyz
 ```
+
+The minimal liveness endpoint is public. Detailed readiness is bearer-protected because it reports
+worker identity, deployed versions, model identity, and owner-corpus state.
 
 ### Bundled web interface
 
 The API image includes a responsive, dependency-free control surface at `/`. It provides chat,
-memory search, protected note creation, exact task-payload review, approvals, cancellation, and
-live readiness status:
+memory search, protected note creation, approved document uploads, exact task-payload review,
+approvals, cancellation, and live readiness status:
 
 ```text
 http://127.0.0.1:8000/
@@ -145,8 +152,10 @@ curl -fsS http://10.0.0.154/mongars-local-ca.crt \
   --output /tmp/mongars-local-ca.crt
 openssl x509 -in /tmp/mongars-local-ca.crt \
   -noout -subject -fingerprint -sha256
+read -r MONGARS_TOKEN < secrets/api_token.txt
 curl --fail --silent --show-error \
   --cacert /tmp/mongars-local-ca.crt \
+  -H "Authorization: Bearer ${MONGARS_TOKEN}" \
   https://10.0.0.154/v1/readyz
 ```
 
@@ -210,22 +219,29 @@ Set `MONGARS_CORS_ORIGINS` to the exact HTTPS web origin if a separate browser f
 the API. Never send the bearer token over plaintext LAN HTTP, publish Ollama, or expose
 PostgreSQL.
 
-### Expo Go iOS client
+### Expo iOS development client
 
-The native Expo SDK 54 client lives in `apps/mobile`. Configure its public API origin, install the
-locked npm dependencies, and start Metro on the LAN:
+The native Expo SDK 54 client lives in `apps/mobile` and requires the repository's pinned
+development build. **Expo Go is unsupported** and cannot load this runtime. Install the locked npm
+dependencies, authenticate EAS CLI, build the internal-distribution client, install that client on
+the registered iPhone, and only then start Metro on the LAN:
 
 ```bash
 cd apps/mobile
 cp .env.example .env.local
 npm ci
-npm run start:lan
+npx --yes eas-cli@21.0.3 login
+npm run build:development:ios
+npm run start:dev-client:lan
 ```
 
-Scan Metro's QR code with Expo Go. The client stores the bearer token in the iOS Keychain through
-`expo-secure-store` and refuses to save or transmit it to non-loopback plaintext HTTP. Set
-`EXPO_PUBLIC_MONGARS_API_URL` to the trusted HTTPS hostname described above for authenticated chat,
-memory, and task operations.
+Open the installed **monGARS** development client—not Expo Go—and scan Metro's QR code. The
+`development` EAS profile is an SDK 54 development client on the pinned `sdk-54` builder image;
+`npm run start:lan` is retained only as an alias for the dev-client LAN command. The client stores
+the bearer token and normalized server origin together in the iOS Keychain through
+`expo-secure-store`, and refuses to save or transmit credentials to non-loopback plaintext HTTP.
+Set `EXPO_PUBLIC_MONGARS_API_URL` only to the trusted HTTPS hostname described above, or select that
+origin in Settings after installation. Never put the bearer token in an `EXPO_PUBLIC_` variable.
 
 Read the bearer token without printing it into shell history:
 
@@ -274,30 +290,53 @@ default and cannot be replayed.
 Neurons is implemented by `mongars.embeddings`. `EmbeddingService` is the only semantic-vector
 boundary used by memory ingestion and retrieval. The initial provider is the fixed
 `nomic-embed-text` Ollama model with the 768-dimensional vector shape required by the current
-pgvector schema. The service never accesses PostgreSQL, never silently changes providers or
-models, bounds and splits batches, validates every returned vector, rejects NaN and infinity, and
-does not put source text into metrics or logs. A duplicate whose existing chunks use any other
-embedding model fails with an explicit reindex-required conflict; it is never reported as an
-idempotent success while remaining invisible to active-model retrieval.
+pgvector schema. Document chunks are prepared with the exact `search_document: ` prefix and search
+queries with the exact `search_query: ` prefix; each prefix ends in one ASCII space. Truncation is
+disabled, so an over-limit input fails instead of silently producing a vector for incomplete text.
+
+The mutable Ollama alias is resolved through `/api/tags` to the reviewed artifact digest
+`0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f`. Neurons pins that digest
+for the process lifetime and derives a SHA-256 `EmbeddingSpace.space_id` from the provider, alias,
+artifact digest, dimension, normalization policy, all four purpose instructions, truncation
+policy, maximum prepared-input bytes, and profile version. The shipped space uses provider
+`ollama`, normalization policy `none`, an 8,192-byte prepared-input ceiling, truncation `false`,
+and profile `nomic-v1.5-rag-v1`. Its immutable identifier is persisted as
+`embedding_space_id`; vectors from another artifact or preparation profile are never mixed into
+active retrieval. `MONGARS_OLLAMA_EMBEDDING_MODEL_DIGEST` can pin a reviewed replacement digest,
+but changing it intentionally creates a new space and requires the approved shadow-reindex
+workflow below.
+
+The service never accesses PostgreSQL, never silently changes providers or models, bounds and
+splits batches, validates every returned vector, rejects NaN and infinity, and does not put source
+text into metrics or logs. A duplicate whose existing chunks lack a complete vector set in the
+active embedding space fails with an explicit reindex-required conflict; it is never reported as
+an idempotent success while remaining invisible to active-space retrieval.
 
 Main is implemented by `mongars.ingestion`; it does not use a `mongars.main` package because
 `mongars/main.py` is the FastAPI entry point. The supported, non-OCR extraction paths are:
 
-| Upload | Declared MIME type | Parser and enforced boundary |
-|---|---|---|
-| `.txt` | `text/plain` | Strict UTF-8 decoding and normalized plain text |
-| `.md`, `.markdown` | `text/markdown` | Strict UTF-8 and plain-text Markdown normalization; no rendering or code execution |
-| `.html`, `.htm` | `text/html` | Beautiful Soup text extraction; active/inline-styled content is rejected, hidden/non-content nodes are removed, and URLs are never fetched |
-| `.pdf` | `application/pdf` | `pypdf` born-digital text extraction; encrypted PDFs and image-only/OCR documents are unsupported |
-| `.docx` | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | Bounded ZIP inspection plus `python-docx`; external relationships, traversal, symlinks, encryption, corruption, and suspicious compression are rejected |
+| Upload | Declared MIME type | Parser and enforced boundary | Structured locator |
+|---|---|---|---|
+| `.txt` | `text/plain` | Strict UTF-8 decoding and normalized plain text | Zero-based `block_index`; one-based `line_start` and `line_end` |
+| `.md`, `.markdown` | `text/markdown` | Strict UTF-8 and plain-text Markdown normalization; no rendering or code execution | `block_index`, one-based source-line range, and current `heading_path` |
+| `.html`, `.htm` | `text/html` | Beautiful Soup text extraction; active/inline-styled content is rejected, hidden/non-content nodes are removed, and URLs are never fetched | `block_index` and `heading_path`; table cells also carry zero-based `table_index` and an A1-style `cell_reference` |
+| `.pdf` | `application/pdf` | `pypdf` born-digital text extraction; encrypted PDFs and image-only/OCR documents are unsupported | One-based `page_number` plus a zero-based block index within that page |
+| `.docx` | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | Bounded ZIP inspection plus `python-docx`; external relationships, traversal, symlinks, encryption, corruption, and suspicious compression are rejected | Document-order `block_index` and `heading_path`; table cells also carry `table_index` and `cell_reference` |
+
+Every parser result uses the same exact locator object keys: `media_type`, `page_number`,
+`heading_path`, `block_index`, `line_start`, `line_end`, `table_index`, and `cell_reference`.
+Coordinates that do not apply to a format are `null` (or `[]` for `heading_path`). Chunking never
+crosses a parser segment, narrows source-line ranges when it splits TXT or Markdown, and persists
+the locator with every memory chunk. `POST /v1/memory/search` returns it as each hit's `locator`, so
+the client can cite a page, source-line range, heading, or exact table cell without parsing prose.
 
 The filename extension, declared MIME type, and detected byte signature must agree. A successful
 upload does not parse or persist document text. It creates an expiring PostgreSQL staging object
 and a `document.ingest` task in `waiting_approval`. The task's exact reviewed payload contains the
-SHA-256 digest, normalized filename, detected MIME type, byte size, source timestamp, sensitivity,
-retention class, title, and staging identifier—not the uploaded bytes. Approval binds that payload
-to its HMAC action digest. The worker then re-hashes and revalidates the staged object before doing
-any work:
+SHA-256 digest, normalized filename, detected MIME type, byte size, user-supplied source timestamp,
+trusted receipt timestamp, source-time basis, sensitivity, retention class, title, and staging
+identifier—not the uploaded bytes. Approval binds that payload to its HMAC action digest. The
+worker then re-hashes and revalidates the staged object before doing any work:
 
 ```text
 multipart upload -> envelope validation -> bounded staging + waiting_approval task
@@ -306,6 +345,14 @@ multipart upload -> envelope validation -> bounded staging + waiting_approval ta
     -> Neurons embedding -> Hippocampus document/chunks/provenance
     -> document_ingested + task_completed events -> staging deletion
 ```
+
+`source_timestamp` is required multipart metadata supplied by the client, must include a timezone,
+and is normalized to UTC. It describes the source file but is not trusted as server time.
+`received_at` is captured by the API immediately after bearer authentication and upload-capacity
+admission, before multipart parsing; the client cannot submit or replace it. This release therefore
+sets `source_time_basis` to the exact value `user_supplied`, persists both timestamps, binds both to
+the approved task, and uses trusted `received_at` for staging expiry. The worker rejects any staged
+record whose timestamps or basis no longer match that approved payload.
 
 Use the loopback endpoint locally, or replace `MONGARS_ORIGIN` with the trusted HTTPS origin for
 another device. The example deliberately reads the bearer token from its secret file instead of
@@ -358,6 +405,78 @@ staging object. Expired approval/staging and deterministic document rejections a
 cleaned up; retryable parser-infrastructure or embedding failures retain staging only while the
 durable task remains eligible for retry.
 
+The API authenticates and takes a process-local upload permit before FastAPI reads any multipart
+bytes. By default it admits at most two concurrent uploads in one API process and one for a given
+owner. Excess requests fail immediately with `429`, `Retry-After: 1`, and `document upload
+concurrency limit reached`; cancellation and all response paths release the permit in `finally`.
+PostgreSQL separately serializes per-owner staging quota accounting, so concurrent requests cannot
+race the durable object/byte ceilings. When horizontally scaling the API, apply an aggregate limit
+at the HTTPS proxy as well because these early body-admission counters are intentionally
+process-local.
+
+#### Approved shadow reindex
+
+`POST /v1/memory/reindex` proposes a `memory.reindex` local mutation; it never starts embedding
+until the exact task payload has been reviewed and approved. Omit `document_id` to cover every
+chunk owned by the authenticated principal, or provide one owner-scoped document UUID. The
+reviewed `batch_size` defaults to 32 and is constrained to 1–128:
+
+```bash
+REINDEX_RESPONSE="$(curl -fsS -X POST \
+  -H "Authorization: Bearer ${MONGARS_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d '{"batch_size":32}' \
+  "${MONGARS_ORIGIN}/v1/memory/reindex")"
+REINDEX_TASK_ID="$(printf '%s' "${REINDEX_RESPONSE}" \
+  | python -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
+
+REINDEX_REVIEW="$(curl -fsS -H "Authorization: Bearer ${MONGARS_TOKEN}" \
+  "${MONGARS_ORIGIN}/v1/tasks/${REINDEX_TASK_ID}")"
+REINDEX_ACTION_DIGEST="$(printf '%s' "${REINDEX_REVIEW}" \
+  | python -c 'import json,sys; print(json.load(sys.stdin)["action_digest"])')"
+curl -fsS -X POST \
+  -H "Authorization: Bearer ${MONGARS_TOKEN}" \
+  -H 'Content-Type: application/json' \
+  -d "{\"action_digest\":\"${REINDEX_ACTION_DIGEST}\"}" \
+  "${MONGARS_ORIGIN}/v1/tasks/${REINDEX_TASK_ID}/approve"
+```
+
+The worker selects only chunks that lack a vector in the active `embedding_space_id`, commits that
+bounded selection, embeds their text with purpose `search_document` outside a database
+transaction, and inserts active-space rows in a new short transaction. Existing vector rows are
+not removed: this is a retry-safe shadow write keyed by `(chunk_id, embedding_space_id)`. The final
+task result reports `embedding_space_id`, `model_alias`, `model_digest`,
+`reindexed_chunk_count`, `compatible_chunk_count`, `legacy_chunk_count`, and `reindex_required`;
+the `memory_reindexed` autobiographical event records the bounded outcome.
+
+#### Durable runtime and corpus readiness
+
+The bearer-protected `GET /v1/readyz` route is ready only when PostgreSQL, inference, configured web
+search, and the durable worker-owned document path agree. The worker publishes its version, Git SHA,
+parser health/version, and exact embedding-space identity to PostgreSQL every
+`MONGARS_WORKER_RUNTIME_HEARTBEAT_SECONDS`. The API marks it stale after
+`MONGARS_WORKER_RUNTIME_STALE_SECONDS`, independently resolves its own active embedding space, and
+compares the two identities. This prevents an API-only health check from hiding a stopped worker,
+offline parser, or worker/API model mismatch.
+
+The `dependencies.embedding_space` object is also the owner-scoped corpus gate. Its
+`total_chunk_count` counts every chunk for `MONGARS_OWNER_ID`, `compatible_chunk_count` counts
+chunks with a vector in the active space, and `legacy_chunk_count` is their difference.
+`reindex_required` is true whenever that legacy count is nonzero. In that case the dependency has
+status `reindex_required`, error code `embedding_reindex_required`, and readiness returns HTTP 503
+until the approved shadow reindex completes. Inspect the full stable shape with:
+
+```bash
+curl -sS -H "Authorization: Bearer ${MONGARS_TOKEN}" \
+  "${MONGARS_ORIGIN}/v1/readyz" | python -m json.tool
+```
+
+The relevant dependency keys are `worker` (`status`, `component_id`, `instance_id`, `version`,
+`git_sha`, `last_seen_at`, and `age_seconds`), `parser` (`healthy`, `version`, `error_code`), and
+`embedding_space` (`status`, `space_id`, `model_alias`, `model_digest`, `dimension`,
+`worker_space_id`, all three corpus counts, `reindex_required`, and `error_code`). A completely
+empty owner corpus is compatible and does not require reindexing.
+
 Document and Neurons resource controls are startup-validated together:
 
 | Setting | Default | Purpose |
@@ -371,30 +490,52 @@ Document and Neurons resource controls are startup-validated together:
 | `MONGARS_MAX_DOCUMENT_ARCHIVE_UNCOMPRESSED_BYTES` | 50,000,000 | DOCX aggregate expanded-byte limit |
 | `MONGARS_DOCUMENT_PARSER_TIMEOUT_SECONDS` | 30 | Parser child wall-clock and bounded CPU basis |
 | `MONGARS_DOCUMENT_PARSER_MEMORY_BYTES` | 536,870,912 | Parser child address-space limit |
-| `MONGARS_DOCUMENT_PARSER_BASE_URL` | `http://parser:8091` in Compose | Fixed internal parser-sidecar origin; required by the production worker |
+| `MONGARS_DOCUMENT_PARSER_BASE_URL` | unset in `Settings`; `http://parser:8091` in Compose | Fixed parser origin; required by the production worker |
+| `MONGARS_ALLOW_REMOTE_DOCUMENT_PARSER` | `false` | Explicit opt-in for a non-local parser origin; that origin must also use HTTPS |
 | `MONGARS_DOCUMENT_STAGING_TTL_SECONDS` | 86,400 | Maximum unprocessed staging lifetime |
 | `MONGARS_MAX_DOCUMENT_STAGED_OBJECTS` | 10 | Per-owner staged-object quota |
 | `MONGARS_MAX_DOCUMENT_STAGED_BYTES` | 50,000,000 | Per-owner aggregate staged-byte quota |
+| `MONGARS_MAX_CONCURRENT_DOCUMENT_UPLOADS` | 2 | Process-local global admission limit before multipart parsing |
+| `MONGARS_MAX_CONCURRENT_DOCUMENT_UPLOADS_PER_OWNER` | 1 | Process-local per-owner admission limit |
 | `MONGARS_EMBEDDING_DIMENSIONS` | 768 | Fixed pgvector/provider dimension; other values are rejected |
 | `MONGARS_EMBEDDING_BATCH_SIZE` | 16 | Maximum texts sent per Ollama embedding request |
+| `MONGARS_EMBEDDING_MAX_INPUT_BYTES` | 8,192 | Prepared per-input byte ceiling, including the purpose prefix |
+| `MONGARS_OLLAMA_EMBEDDING_MODEL_DIGEST` | `0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f` | Reviewed `nomic-embed-text` artifact SHA-256; alias drift is rejected |
 | `MONGARS_MEMORY_CHUNK_CHARACTERS` | 32,000 | Hard character ceiling per embedding chunk, including unbroken text |
+| `MONGARS_WORKER_RUNTIME_HEARTBEAT_SECONDS` | 10 | Durable worker capability publication interval |
+| `MONGARS_WORKER_RUNTIME_STALE_SECONDS` | 45 | Maximum heartbeat age accepted by readiness |
+| `MONGARS_RUNTIME_GIT_SHA` | `unknown` | Release Git identity published by the worker |
+| `MONGARS_RUNTIME_VERSION` | `0.1.0` | Release version published by the worker |
 
 `MONGARS_MAX_DOCUMENT_REQUEST_BYTES` must exceed the upload limit by at least 100,000 bytes for
 multipart overhead. The staged-byte quota cannot be smaller than one allowed upload, and the DOCX
 uncompressed limit cannot be smaller than the upload limit. In addition to these configurable
 ceilings, individual DOCX members are capped at 20 MB and suspicious compression ratios above
 100:1 are rejected. Staging lifetime must be at least as long as the approval lifetime.
+The per-owner upload-concurrency limit cannot exceed the global limit, and the worker stale window
+must exceed two heartbeat intervals. The full reviewed embedding digest is resolved and checked
+before the runtime reports ready or accepts semantic work.
 
-In production the worker copies approved bytes over a fixed internal-only bridge to a dedicated
-parser sidecar. That sidecar has no secrets, persistent/host volumes, backend/edge/egress network,
-or proxy inheritance; it runs as a fixed non-root user with a read-only filesystem, dropped
-capabilities, `no-new-privileges`, memory/CPU/PID ceilings, and bounded concurrency. The worker has
-no listener on that bridge. Each parse then runs in a fresh child process that receives immutable
-bytes and technical metadata only—never governance, owner/task identity, a caller-supplied path,
-database session, or secret. Child-to-parent IPC is length-capped JSON rather than pickle, the child
-environment is scrubbed, and the trusted worker constructs provenance from the approved task and
-staged record. On Ubuntu the child also has explicit CPU, address-space, open-file, and
-zero-output-file limits; timeout or abnormal exit terminates the process.
+With `MONGARS_DOCUMENT_PARSER_BASE_URL` unset, development and test workers default to a local
+`IsolatedDocumentParser` child with OS resource limits; production refuses to start without an
+explicit parser origin. The supplied Compose deployment uses the local service name
+`http://parser:8091` on an internal-only bridge. A hostname outside
+`localhost`, `127.0.0.1`, `::1`, or `parser` is rejected unless
+`MONGARS_ALLOW_REMOTE_DOCUMENT_PARSER=true`, and even then the origin must use HTTPS and contain no
+credentials, path, query, or fragment. Remote parsing is therefore a deliberate TLS opt-in, never
+an automatic fallback.
+
+In the supplied production path the worker copies approved bytes over that fixed bridge to a
+dedicated parser sidecar. The sidecar has no secrets, persistent/host volumes,
+backend/edge/egress network, or proxy inheritance; it runs as a fixed non-root user with a
+read-only filesystem, dropped capabilities, `no-new-privileges`, memory/CPU/PID ceilings, and
+bounded concurrency. The worker has no listener on that bridge. Each parse then runs in a fresh
+child process that receives immutable bytes and technical metadata only—never governance,
+owner/task identity, a caller-supplied path, database session, or secret. Child-to-parent IPC is
+length-capped JSON rather than pickle, the child environment is scrubbed, and the trusted worker
+constructs provenance from the approved task and staged record. On Ubuntu the child also has
+explicit CPU, address-space, open-file, and zero-output-file limits; timeout or abnormal exit
+terminates the process.
 
 Parsing and Ollama embedding happen between short task-owner transactions, while persistence, task
 completion, provenance, autobiographical events, and staging deletion commit together. HTML active
@@ -488,10 +629,11 @@ deployed image: monGARS, Caddy, PostgreSQL/pgvector, Ollama, SearXNG, and the eg
 | Endpoint | Purpose | Authentication |
 |---|---|---|
 | `GET /v1/healthz` | Process liveness | No |
-| `GET /v1/readyz` | PostgreSQL, inference-model, and configured web-search readiness | No |
+| `GET /v1/readyz` | PostgreSQL, inference/search, durable worker/parser, exact embedding-space, and owner-corpus readiness | Bearer |
 | `POST /v1/chat` | Local chat with owner-scoped retrieval and opt-in web search | Bearer |
 | `POST /v1/memory/search` | Semantic or hybrid memory search | Bearer |
 | `POST /v1/memory/documents` | Propose an approved text-note write | Bearer |
+| `POST /v1/memory/reindex` | Propose an approved owner/document shadow reindex into the active embedding space | Bearer |
 | `POST /v1/documents` | Stage a validated multipart upload and propose `document.ingest` | Bearer |
 | `GET /v1/memory/documents/{id}` | Read owner-scoped document metadata | Bearer |
 | `POST /v1/tasks` | Create a registered, schema-validated task | Bearer |
@@ -535,6 +677,16 @@ docker compose exec postgres pg_dump -U mongars -Fc mongars > mongars.dump
 Release images should be tagged immutably. Roll back the API and worker image tag separately
 from schema rollback. The initial migration downgrade drops application tables and is only
 appropriate for a disposable database.
+
+Migration `0004_embedding_provenance` is an expand/compatibility phase. It copies every existing
+vector into an explicitly incompatible `legacy-uninstructed-v0` space, keeps the old chunk vector
+columns nullable for a rolling application transition, and requires the approved shadow reindex
+before active retrieval can resume. Because the new document approval contract binds a trusted
+receipt timestamp, the upgrade fails closed by cancelling any pre-upgrade nonterminal
+`document.ingest` task and deleting its staged bytes; those files must be uploaded and approved
+again. The downgrade restores only a preserved legacy vector and deliberately aborts if any new or
+rechunked row lacks one. Treat that guard as protection against semantic corruption, not as a
+routine production rollback path; restore a tested database backup instead.
 
 ## Current boundary and next slices
 

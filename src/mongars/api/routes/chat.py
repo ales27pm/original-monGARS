@@ -11,7 +11,7 @@ from mongars.api.dependencies import (
     WebSearchDependency,
 )
 from mongars.api.schemas import ChatRequest, ChatResponse, WebSource
-from mongars.embeddings.errors import EmbeddingError
+from mongars.embeddings.errors import EmbeddingError, EmbeddingInputError
 from mongars.inference.base import InferenceError
 from mongars.orchestrator.cortex import Cortex
 
@@ -51,6 +51,11 @@ async def chat(
     except InferenceError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": exc.code, "retryable": exc.retryable},
+        ) from exc
+    except EmbeddingInputError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={"code": exc.code, "retryable": exc.retryable},
         ) from exc
     except EmbeddingError as exc:

@@ -82,13 +82,39 @@ def _check_readiness(client: httpx.Client) -> dict[str, Any]:
     _require(isinstance(dependencies, dict), "readiness response has no dependencies object")
     database = dependencies.get("database")
     inference = dependencies.get("inference")
+    web_search = dependencies.get("web_search")
+    worker = dependencies.get("worker")
+    parser = dependencies.get("parser")
+    embedding_space = dependencies.get("embedding_space")
     _require(isinstance(database, dict), "readiness response has no database object")
     _require(isinstance(inference, dict), "readiness response has no inference object")
+    _require(isinstance(web_search, dict), "readiness response has no web-search object")
+    _require(isinstance(worker, dict), "readiness response has no worker object")
+    _require(isinstance(parser, dict), "readiness response has no parser object")
+    _require(
+        isinstance(embedding_space, dict),
+        "readiness response has no embedding-space object",
+    )
     _require(isinstance(database.get("healthy"), bool), "database health is not boolean")
     _require(isinstance(inference.get("healthy"), bool), "inference health is not boolean")
+    _require(isinstance(web_search.get("healthy"), bool), "web-search health is not boolean")
+    _require(isinstance(web_search.get("enabled"), bool), "web-search enabled is not boolean")
+    _require(isinstance(worker.get("healthy"), bool), "worker health is not boolean")
+    _require(isinstance(parser.get("healthy"), bool), "parser health is not boolean")
+    _require(
+        isinstance(embedding_space.get("healthy"), bool),
+        "embedding-space health is not boolean",
+    )
     _require(inference.get("backend") == "ollama", "readiness did not identify Ollama")
 
-    all_healthy = bool(database["healthy"] and inference["healthy"])
+    all_healthy = bool(
+        database["healthy"]
+        and inference["healthy"]
+        and (not web_search["enabled"] or web_search["healthy"])
+        and worker["healthy"]
+        and parser["healthy"]
+        and embedding_space["healthy"]
+    )
     expected_status = "ready" if all_healthy else "not_ready"
     expected_http = 200 if all_healthy else 503
     _require(body.get("status") == expected_status, "readiness status contradicts dependencies")
@@ -96,6 +122,13 @@ def _check_readiness(client: httpx.Client) -> dict[str, Any]:
         response.status_code == expected_http, "readiness HTTP status contradicts dependencies"
     )
     _require(database["healthy"] is True, "PostgreSQL is not ready")
+    _require(worker["healthy"] is True, "worker heartbeat is not ready")
+    _require(parser["healthy"] is True, "document parser is not ready")
+    _require(embedding_space["healthy"] is True, "embedding space is not ready")
+    _require(
+        embedding_space.get("reindex_required") is False,
+        "owner corpus requires an approved reindex",
+    )
     return body
 
 
@@ -136,12 +169,22 @@ def run_smoke(
     with httpx.Client(base_url=api_url.rstrip("/"), timeout=request_timeout) as anonymous:
         health = _expect_status(anonymous.get("/v1/healthz"), 200, operation="liveness probe")
         _require(health == {"status": "ok"}, "unexpected liveness response")
+        _expect_status(
+            anonymous.get("/v1/readyz"),
+            401,
+            operation="anonymous readiness probe",
+        )
         _expect_status(anonymous.get("/v1/tasks"), 401, operation="anonymous protected route")
         with httpx.Client(
             base_url=api_url.rstrip("/"),
             headers={"Authorization": "Bearer deliberately-invalid-smoke-token"},
             timeout=request_timeout,
         ) as invalid:
+            _expect_status(
+                invalid.get("/v1/readyz"),
+                401,
+                operation="invalid bearer readiness probe",
+            )
             _expect_status(invalid.get("/v1/tasks"), 401, operation="invalid bearer token")
 
     marker = f"mongars-runtime-smoke-{uuid4().hex}"

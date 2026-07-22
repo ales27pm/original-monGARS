@@ -1,8 +1,8 @@
 """Explicit bearer-token authentication dependencies.
 
 Authentication is deliberately exposed as a route dependency instead of global
-middleware.  Protected routes opt in to :class:`BearerTokenAuth`, while
-liveness and readiness routes can remain unauthenticated.
+middleware. Protected routes opt in to :class:`BearerTokenAuth`; detailed
+readiness is protected while minimal process liveness remains unauthenticated.
 """
 
 from __future__ import annotations

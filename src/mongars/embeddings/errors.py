@@ -32,6 +32,27 @@ class EmbeddingInputError(EmbeddingError):
     code = "embedding_invalid_input"
 
 
+class EmbeddingContextError(EmbeddingInputError):
+    """One prepared input cannot fit the reviewed provider context safely."""
+
+    code = "embedding_context_exceeded"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        provider: str,
+        maximum_input_bytes: int,
+        input_bytes: int | None = None,
+        input_index: int | None = None,
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(message, provider=provider, retryable=retryable)
+        self.maximum_input_bytes = maximum_input_bytes
+        self.input_bytes = input_bytes
+        self.input_index = input_index
+
+
 class EmbeddingConnectionError(EmbeddingError):
     """The configured provider could not be reached."""
 
@@ -97,6 +118,20 @@ class EmbeddingModelMismatchError(EmbeddingResponseError):
     def __init__(self, *, provider: str, expected: str, actual: str) -> None:
         super().__init__(
             f"Embedding provider returned model {actual!r}; expected {expected!r}.",
+            provider=provider,
+        )
+        self.expected = expected
+        self.actual = actual
+
+
+class EmbeddingModelDigestMismatchError(EmbeddingResponseError):
+    """A mutable alias resolved to a different provider artifact."""
+
+    code = "embedding_model_digest_mismatch"
+
+    def __init__(self, *, provider: str, expected: str, actual: str) -> None:
+        super().__init__(
+            "Embedding model alias resolved to an unexpected artifact digest.",
             provider=provider,
         )
         self.expected = expected
