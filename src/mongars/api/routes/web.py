@@ -51,6 +51,24 @@ def create_web_router(*, static_root: Path = WEB_STATIC_ROOT) -> APIRouter:
     """Create the bundled UI routes without exposing the package filesystem."""
 
     router = APIRouter(include_in_schema=False)
+    application_bundle: str | None = None
+    application_bundle_checked = False
+
+    def bundled_application_source(application: Path) -> str | None:
+        nonlocal application_bundle, application_bundle_checked
+        if application_bundle_checked:
+            return application_bundle
+        application_bundle_checked = True
+
+        recovery = _contained_file(static_root, _RECOVERY_SCRIPT_NAME)
+        if recovery is None:
+            return None
+        application_source = _read_utf8(application)
+        recovery_source = _read_utf8(recovery)
+        if application_source is None or recovery_source is None:
+            return None
+        application_bundle = f"{application_source}\n;\n{recovery_source}"
+        return application_bundle
 
     @router.get("/")
     async def web_index() -> FileResponse:
@@ -73,14 +91,10 @@ def create_web_router(*, static_root: Path = WEB_STATIC_ROOT) -> APIRouter:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
 
         if asset_name == "app.js":
-            recovery = _contained_file(static_root, _RECOVERY_SCRIPT_NAME)
-            if recovery is not None:
-                application_source = _read_utf8(asset)
-                recovery_source = _read_utf8(recovery)
-                if application_source is None or recovery_source is None:
-                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+            bundle = bundled_application_source(asset)
+            if bundle is not None:
                 return Response(
-                    content=f"{application_source}\n;\n{recovery_source}",
+                    content=bundle,
                     media_type=media_type,
                     headers=_NO_STORE_HEADERS,
                 )
