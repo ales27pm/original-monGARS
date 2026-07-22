@@ -7,9 +7,11 @@ from urllib.parse import urlparse
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from mongars.embeddings.limits import MAX_EMBEDDING_TEXT_CHARACTERS
 from mongars.prompting import CORTEX_MINIMUM_PROMPT_TOKENS
 
 _LOCAL_OLLAMA_HOSTS = frozenset({"127.0.0.1", "localhost", "ollama"})
+_REVIEWED_EMBEDDING_MODEL = "nomic-embed-text"
 
 
 class Environment(StrEnum):
@@ -41,6 +43,7 @@ class Settings(BaseSettings):
     cors_origins: list[str] = Field(default_factory=list)
     trusted_hosts: list[str] = Field(default_factory=lambda: ["localhost", "127.0.0.1"])
     max_request_bytes: int = Field(default=2_100_000, ge=1_024, le=25_000_000)
+    max_document_request_bytes: int = Field(default=10_500_000, ge=1_024, le=25_000_000)
 
     database_url: str = "postgresql+psycopg://mongars:mongars@localhost:5432/mongars"
     database_pool_size: int = Field(default=5, ge=1, le=50)
@@ -73,8 +76,36 @@ class Settings(BaseSettings):
 
     max_chat_chars: int = Field(default=32_000, ge=256, le=1_000_000)
     max_document_chars: int = Field(default=2_000_000, ge=1_000, le=20_000_000)
+    max_document_upload_bytes: int = Field(default=10_000_000, ge=1_024, le=20_000_000)
+    max_document_pages: int = Field(default=500, ge=1, le=10_000)
+    max_document_sections: int = Field(default=10_000, ge=1, le=100_000)
+    max_document_archive_entries: int = Field(default=2_000, ge=1, le=20_000)
+    max_document_archive_uncompressed_bytes: int = Field(
+        default=50_000_000,
+        ge=1_024,
+        le=250_000_000,
+    )
+    document_parser_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    document_parser_memory_bytes: int = Field(
+        default=536_870_912,
+        ge=134_217_728,
+        le=2_147_483_648,
+    )
+    document_parser_base_url: str | None = None
+    document_staging_ttl_seconds: int = Field(default=86_400, ge=300, le=604_800)
+    max_document_staged_objects: int = Field(default=10, ge=1, le=100)
+    max_document_staged_bytes: int = Field(
+        default=50_000_000,
+        ge=1_024,
+        le=500_000_000,
+    )
     memory_chunk_tokens: int = Field(default=800, ge=32, le=4096)
     memory_chunk_overlap_tokens: int = Field(default=100, ge=0, le=1024)
+    memory_chunk_characters: int = Field(
+        default=MAX_EMBEDDING_TEXT_CHARACTERS,
+        ge=256,
+        le=MAX_EMBEDDING_TEXT_CHARACTERS,
+    )
     memory_top_k: int = Field(default=8, ge=0, le=50)
     worker_poll_seconds: float = Field(default=1.0, gt=0, le=60)
     worker_lease_seconds: int = Field(default=120, ge=10, le=3600)
@@ -104,6 +135,22 @@ class Settings(BaseSettings):
         if "*" in value:
             raise ValueError("wildcard CORS origins are not permitted")
         return value
+
+    @field_validator("document_parser_base_url")
+    @classmethod
+    def validate_document_parser_base_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        if not value or value != value.strip():
+            raise ValueError("document_parser_base_url must be a non-empty trimmed URL")
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or parsed.hostname is None:
+            raise ValueError("document_parser_base_url must be an absolute HTTP(S) URL")
+        if parsed.username is not None or parsed.password is not None:
+            raise ValueError("document_parser_base_url must not include credentials")
+        if parsed.path not in {"", "/"} or parsed.params or parsed.query or parsed.fragment:
+            raise ValueError("document_parser_base_url must be an origin without path or query")
+        return value.rstrip("/")
 
     @model_validator(mode="after")
     def validate_security_boundaries(self) -> Settings:
@@ -136,6 +183,23 @@ class Settings(BaseSettings):
             )
         if self.embedding_dimensions != 768:
             raise ValueError("the current pgvector schema requires 768-dimensional embeddings")
+        if self.ollama_embedding_model != _REVIEWED_EMBEDDING_MODEL:
+            raise ValueError("this release requires the reviewed nomic-embed-text embedding model")
+        if self.max_document_archive_uncompressed_bytes < self.max_document_upload_bytes:
+            raise ValueError(
+                "max_document_archive_uncompressed_bytes cannot be smaller than the upload limit"
+            )
+        if self.max_document_staged_bytes < self.max_document_upload_bytes:
+            raise ValueError("max_document_staged_bytes cannot be smaller than the upload limit")
+        if self.document_staging_ttl_seconds < self.approval_ttl_seconds:
+            raise ValueError(
+                "document_staging_ttl_seconds cannot be shorter than approval_ttl_seconds"
+            )
+        if self.max_document_request_bytes < self.max_document_upload_bytes + 100_000:
+            raise ValueError(
+                "max_document_request_bytes must exceed max_document_upload_bytes by at least "
+                "100000"
+            )
         return self
 
 

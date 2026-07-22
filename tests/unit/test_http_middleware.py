@@ -14,7 +14,11 @@ from mongars.http import RequestBodyLimitMiddleware
 from mongars.main import create_app
 
 
-def _scope(headers: list[tuple[bytes, bytes]] | None = None) -> Scope:
+def _scope(
+    headers: list[tuple[bytes, bytes]] | None = None,
+    *,
+    path: str = "/v1/tasks",
+) -> Scope:
     return {
         "type": "http",
         "asgi": {"version": "3.0", "spec_version": "2.3"},
@@ -24,8 +28,8 @@ def _scope(headers: list[tuple[bytes, bytes]] | None = None) -> Scope:
         "scheme": "http",
         "method": "POST",
         "root_path": "",
-        "path": "/v1/tasks",
-        "raw_path": b"/v1/tasks",
+        "path": path,
+        "raw_path": path.encode(),
         "query_string": b"",
         "headers": headers or [],
         "state": {},
@@ -47,10 +51,16 @@ async def test_streamed_body_is_rejected_before_app(
     declared_length: bytes | None,
 ) -> None:
     downstream_called = False
+    downstream_completed = False
 
-    async def downstream(_scope: Scope, _receive: Any, _send: Any) -> None:
-        nonlocal downstream_called
+    async def downstream(_scope: Scope, receive: Any, _send: Any) -> None:
+        nonlocal downstream_called, downstream_completed
         downstream_called = True
+        while True:
+            message = await receive()
+            if message["type"] == "http.disconnect" or not message.get("more_body", False):
+                break
+        downstream_completed = True
 
     sent: list[Message] = []
 
@@ -70,7 +80,8 @@ async def test_streamed_body_is_rejected_before_app(
         send,
     )
 
-    assert downstream_called is False
+    assert downstream_called is True
+    assert downstream_completed is False
     assert sent[0] == {
         "type": "http.response.start",
         "status": 413,
@@ -154,11 +165,11 @@ async def test_content_length_is_a_fast_rejection_path(
 
 @pytest.mark.asyncio
 async def test_accepted_stream_is_replayed_unchanged() -> None:
-    observed: Message | None = None
+    observed: list[Message] = []
 
     async def downstream(_scope: Scope, receive: Any, send: Any) -> None:
-        nonlocal observed
-        observed = await receive()
+        observed.append(await receive())
+        observed.append(await receive())
         await send({"type": "http.response.start", "status": 204, "headers": []})
         await send({"type": "http.response.body", "body": b""})
 
@@ -178,11 +189,38 @@ async def test_accepted_stream_is_replayed_unchanged() -> None:
         send,
     )
 
-    assert observed == {
-        "type": "http.request",
-        "body": b"12345678",
-        "more_body": False,
-    }
+    assert observed == messages
+    assert sent[0]["status"] == 204
+
+
+@pytest.mark.asyncio
+async def test_document_upload_has_a_separate_bounded_request_limit() -> None:
+    downstream_called = False
+
+    async def downstream(_scope: Scope, receive: Any, send: Any) -> None:
+        nonlocal downstream_called
+        downstream_called = True
+        await receive()
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    sent: list[Message] = []
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    middleware = RequestBodyLimitMiddleware(
+        downstream,
+        max_bytes=8,
+        path_limits={"/v1/documents": 16},
+    )
+    await middleware(
+        _scope([(b"content-length", b"12")], path="/v1/documents"),
+        _receiver([{"type": "http.request", "body": b"x" * 12, "more_body": False}]),
+        send,
+    )
+
+    assert downstream_called is True
     assert sent[0]["status"] == 204
 
 
@@ -190,7 +228,8 @@ async def test_accepted_stream_is_replayed_unchanged() -> None:
 async def test_heavily_fragmented_body_has_bounded_replay_memory() -> None:
     chunk_count = 100_000
     remaining = chunk_count
-    observed: Message | None = None
+    observed_bytes = 0
+    observed_chunks = 0
 
     async def receive() -> Message:
         nonlocal remaining
@@ -201,9 +240,14 @@ async def test_heavily_fragmented_body_has_bounded_replay_memory() -> None:
             "more_body": remaining > 0,
         }
 
-    async def downstream(_scope: Scope, replay: Any, send: Any) -> None:
-        nonlocal observed
-        observed = await replay()
+    async def downstream(_scope: Scope, receive_limited: Any, send: Any) -> None:
+        nonlocal observed_bytes, observed_chunks
+        while True:
+            message = await receive_limited()
+            observed_bytes += len(message.get("body", b""))
+            observed_chunks += 1
+            if not message.get("more_body", False):
+                break
         await send({"type": "http.response.start", "status": 204, "headers": []})
         await send({"type": "http.response.body", "body": b""})
 
@@ -218,11 +262,8 @@ async def test_heavily_fragmented_body_has_bounded_replay_memory() -> None:
     finally:
         tracemalloc.stop()
 
-    assert observed == {
-        "type": "http.request",
-        "body": b"x" * chunk_count,
-        "more_body": False,
-    }
+    assert observed_bytes == chunk_count
+    assert observed_chunks == chunk_count
     assert peak < 2_000_000
 
 

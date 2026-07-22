@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -30,10 +30,16 @@ from mongars.db.models import (
     TaskQueue,
 )
 from mongars.db.session import Database
+from mongars.embeddings.models import EmbeddingBatch
+from mongars.embeddings.service import EmbeddingService
 from mongars.events.repository import ConversationMessage, EventRepository
-from mongars.inference.base import EmbeddingResponse
 from mongars.memory.chunking import TextChunk
-from mongars.memory.repository import MemoryGovernanceConflict, MemoryRepository
+from mongars.memory.repository import (
+    MemoryEmbeddingModelConflict,
+    MemoryGovernanceConflict,
+    MemoryRepository,
+)
+from mongars.memory.service import MemoryService
 from mongars.rm.repository import TaskRepository
 from mongars.rm.worker import ExecutionClaim, TaskLeaseLost, Worker
 
@@ -197,23 +203,45 @@ class DeterministicEmbedding:
         self.embed_calls = 0
         self.delay_seconds = delay_seconds
 
+    @property
+    def provider_name(self) -> str:
+        return "deterministic"
+
+    @property
+    def model_name(self) -> str:
+        # Exercise the production fail-closed model-identity contract while the
+        # vector values themselves remain deterministic and offline.
+        return "nomic-embed-text"
+
     async def embed(
         self,
-        inputs: list[str],
+        texts: Sequence[str],
         *,
-        model: str | None = None,
-        expected_dimension: int | None = None,
-    ) -> EmbeddingResponse:
+        expected_dimension: int,
+    ) -> EmbeddingBatch:
         self.embed_calls += 1
         if self.delay_seconds:
             await asyncio.sleep(self.delay_seconds)
-        dimension = expected_dimension or 768
-        vector = (1.0, *([0.0] * (dimension - 1)))
-        return EmbeddingResponse(
-            embeddings=tuple(vector for _input in inputs),
-            model=model or "deterministic-embed",
-            dimension=dimension,
+        vector = (1.0, *([0.0] * (expected_dimension - 1)))
+        return EmbeddingBatch(
+            embeddings=tuple(vector for _text in texts),
+            model=self.model_name,
+            dimension=expected_dimension,
+            latency_ms=self.delay_seconds * 1_000,
         )
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _embedding_service(
+    provider: DeterministicEmbedding | None = None,
+) -> EmbeddingService:
+    return EmbeddingService(
+        provider=provider or DeterministicEmbedding(),
+        expected_dimension=768,
+        batch_size=32,
+    )
 
 
 def test_migrated_schema_enforces_owner_isolation() -> None:
@@ -477,6 +505,7 @@ def test_pgvector_search_orders_deterministic_vectors_without_inference() -> Non
             owner: str,
             label: str,
             embedding: list[float],
+            embedding_model: str = "deterministic-integration",
         ) -> None:
             await repository.add_document(
                 owner_id=owner,
@@ -497,7 +526,7 @@ def test_pgvector_search_orders_deterministic_vectors_without_inference() -> Non
                     )
                 ],
                 embeddings=[embedding],
-                embedding_model="deterministic-integration",
+                embedding_model=embedding_model,
             )
 
         try:
@@ -527,12 +556,20 @@ def test_pgvector_search_orders_deterministic_vectors_without_inference() -> Non
                     label="other owner parallel",
                     embedding=_unit_vector(0),
                 )
+                await add_memory(
+                    repository,
+                    owner=owner_id,
+                    label="other model parallel",
+                    embedding=_unit_vector(0),
+                    embedding_model="legacy-model",
+                )
 
             async with sessions() as session:
                 hits = await MemoryRepository(session).search(
                     owner_id=owner_id,
                     query_text="ignored for semantic-only search",
                     embedding=_unit_vector(0),
+                    embedding_model="deterministic-integration",
                     top_k=3,
                     hybrid=False,
                 )
@@ -540,6 +577,7 @@ def test_pgvector_search_orders_deterministic_vectors_without_inference() -> Non
                 assert [hit.text for hit in hits] == ["parallel", "orthogonal", "opposite"]
                 assert [hit.score for hit in hits] == pytest.approx([1.0, 0.0, -1.0])
                 assert all("other owner" not in hit.text for hit in hits)
+                assert all("other model" not in hit.text for hit in hits)
         finally:
             await _clean_owner_data(engine, owners)
             await engine.dispose()
@@ -600,10 +638,12 @@ def test_expired_leases_emit_distinct_terminal_and_requeue_events() -> None:
                     ]
                 )
 
+            embedding_provider = DeterministicEmbedding()
             worker = Worker(
                 settings=settings,
                 database=database,
-                inference=DeterministicEmbedding(),  # type: ignore[arg-type]
+                inference=embedding_provider,  # type: ignore[arg-type]
+                embeddings=_embedding_service(embedding_provider),
             )
             assert await worker.run_once() is True
 
@@ -750,6 +790,91 @@ def test_duplicate_content_preserves_provenance_and_rejects_governance_change() 
     asyncio.run(exercise())
 
 
+def test_duplicate_content_with_legacy_embedding_model_requires_reindex() -> None:
+    async def exercise() -> None:
+        engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
+        sessions = async_sessionmaker(engine, expire_on_commit=False)
+        owner_id = _owner("legacy-embedding")
+        text_value = "content embedded before the reviewed model was pinned"
+        digest = hashlib.sha256(text_value.encode()).digest()
+        chunk = TextChunk(text=text_value, approximate_tokens=8)
+        settings = Settings(environment=Environment.TEST, owner_id=owner_id)
+
+        try:
+            async with sessions.begin() as session:
+                original, created = await MemoryRepository(session).add_document(
+                    owner_id=owner_id,
+                    source_type="note",
+                    source_sha256=digest,
+                    title="Legacy source",
+                    source_uri=None,
+                    mime_type="text/plain",
+                    sensitivity="private",
+                    retention_class="keep",
+                    expires_at=None,
+                    metadata={"generation": "legacy"},
+                    chunks=[chunk],
+                    embeddings=[_unit_vector(0)],
+                    embedding_model="legacy-768-model",
+                )
+                assert created is True
+                document_id = original.id
+
+            async with sessions.begin() as session:
+                memory = MemoryService(
+                    settings=settings,
+                    repository=MemoryRepository(session),
+                    embeddings=_embedding_service(),
+                )
+                prepared = memory.prepare_ingest(
+                    owner_id=owner_id,
+                    text=text_value,
+                    source_type="document",
+                    title="Re-uploaded source",
+                    sensitivity="private",
+                    retention_class="keep",
+                )
+                with pytest.raises(MemoryEmbeddingModelConflict, match="reindex"):
+                    await memory.resolve_existing_ingest(prepared)
+
+            # The lower repository boundary also protects callers and the
+            # concurrent-insert winner path from accepting mixed vector spaces.
+            async with sessions.begin() as session:
+                with pytest.raises(MemoryEmbeddingModelConflict, match="reindex"):
+                    await MemoryRepository(session).add_document(
+                        owner_id=owner_id,
+                        source_type="document",
+                        source_sha256=digest,
+                        title="Re-uploaded source",
+                        source_uri=None,
+                        mime_type="text/plain",
+                        sensitivity="private",
+                        retention_class="keep",
+                        expires_at=None,
+                        metadata={"generation": "current"},
+                        chunks=[chunk],
+                        embeddings=[_unit_vector(0)],
+                        embedding_model="nomic-embed-text",
+                    )
+
+            async with sessions() as session:
+                provenance_count = len(
+                    (
+                        await session.scalars(
+                            select(MemoryDocumentProvenance).where(
+                                MemoryDocumentProvenance.document_id == document_id
+                            )
+                        )
+                    ).all()
+                )
+                assert provenance_count == 1
+        finally:
+            await _clean_owner_data(engine, {owner_id})
+            await engine.dispose()
+
+    asyncio.run(exercise())
+
+
 def test_concurrent_duplicate_with_conflicting_governance_has_typed_loser() -> None:
     async def exercise() -> None:
         engine = create_async_engine(DATABASE_URL, pool_pre_ping=True)
@@ -861,10 +986,12 @@ def test_stale_execution_token_cannot_persist_memory_effect() -> None:
                     )
                 )
 
+            embedding_provider = DeterministicEmbedding()
             worker = Worker(
                 settings=settings,
                 database=database,
-                inference=DeterministicEmbedding(),  # type: ignore[arg-type]
+                inference=embedding_provider,  # type: ignore[arg-type]
+                embeddings=_embedding_service(embedding_provider),
             )
             claim = ExecutionClaim(
                 task_id=task_id,
@@ -950,11 +1077,10 @@ def test_expired_lease_during_embedding_rolls_back_document_and_provenance() -> 
             class ExpireLeaseEmbedding(DeterministicEmbedding):
                 async def embed(
                     self,
-                    inputs: list[str],
+                    texts: Sequence[str],
                     *,
-                    model: str | None = None,
-                    expected_dimension: int | None = None,
-                ) -> EmbeddingResponse:
+                    expected_dimension: int,
+                ) -> EmbeddingBatch:
                     async with database.session_factory() as session, session.begin():
                         await session.execute(
                             update(TaskQueue)
@@ -962,15 +1088,16 @@ def test_expired_lease_during_embedding_rolls_back_document_and_provenance() -> 
                             .values(lease_expires_at=datetime.now(UTC) - timedelta(seconds=1))
                         )
                     return await super().embed(
-                        inputs,
-                        model=model,
+                        texts,
                         expected_dimension=expected_dimension,
                     )
 
+            embedding_provider = ExpireLeaseEmbedding()
             worker = Worker(
                 settings=settings,
                 database=database,
-                inference=ExpireLeaseEmbedding(),  # type: ignore[arg-type]
+                inference=embedding_provider,  # type: ignore[arg-type]
+                embeddings=_embedding_service(embedding_provider),
             )
             claim = ExecutionClaim(
                 task_id=task_id,

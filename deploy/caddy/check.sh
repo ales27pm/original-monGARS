@@ -103,6 +103,7 @@ docker run --rm \
   --security-opt no-new-privileges:true \
   --env MONGARS_HTTPS_HOST=localhost \
   --env MONGARS_MAX_REQUEST_BYTES=2100000 \
+  --env MONGARS_MAX_DOCUMENT_REQUEST_BYTES=10500000 \
   --mount "type=bind,src=$check_directory/Caddyfile,dst=/etc/caddy/Caddyfile,readonly" \
   --tmpfs /data:rw,noexec,nosuid,nodev,size=16m,uid=65534,gid=65534,mode=0700 \
   --tmpfs /config:rw,noexec,nosuid,nodev,size=16m,uid=65534,gid=65534,mode=0700 \

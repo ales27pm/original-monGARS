@@ -71,7 +71,7 @@ docker compose "${compose_files[@]}" --project-name "$project_name" \
   --profile web-search build api https
 docker compose "${compose_files[@]}" --project-name "$project_name" \
   --profile web-search up --no-build --detach --wait \
-  postgres migrate ollama-mock search-mock search-egress-proxy searxng api https
+  postgres migrate ollama-mock search-mock search-egress-proxy searxng api worker https
 
 # Resolve every host-facing smoke port assigned by Docker. Keeping all three
 # dynamic lets independent CI/local runs execute concurrently without collision.
@@ -152,6 +152,186 @@ assert payload["sources"] == [
 ]
 PY
 
+# Exercise Main, Neurons, RM, and Hippocampus through the deployed HTTPS
+# boundary. The API stages immutable bytes and creates an approval-gated task;
+# only the worker parses, embeds, and persists the document.
+document_marker="mongars-document-smoke-$$"
+document_file="$temporary_directory/smoke-document.txt"
+printf 'Deterministic document ingestion marker: %s\n' "$document_marker" > "$document_file"
+document_size="$(wc -c < "$document_file" | tr -d '[:space:]')"
+document_upload_response="$temporary_directory/document-upload-response.json"
+curl --fail --silent --show-error \
+  --cacert "$ca_certificate" \
+  --header "Authorization: Bearer $api_token" \
+  --form "file=@$document_file;type=text/plain;filename=smoke-document.txt" \
+  --form-string "declared_size=$document_size" \
+  --form-string 'source_timestamp=2026-01-02T03:04:05+00:00' \
+  --form-string 'title=Deployment smoke document' \
+  --form-string 'sensitivity=private' \
+  --form-string 'retention_class=ttl_30d' \
+  "https://localhost:$https_port/v1/documents" > "$document_upload_response"
+
+read -r document_task_id document_action_digest < <(
+  python3 - "$document_upload_response" <<'PY'
+import json
+import sys
+import uuid
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+uuid.UUID(payload["id"])
+assert payload["kind"] == "document.ingest"
+assert payload["status"] == "waiting_approval"
+assert payload["risk_level"] == "local_mutation"
+assert len(payload["action_digest"]) == 64
+int(payload["action_digest"], 16)
+print(payload["id"], payload["action_digest"])
+PY
+)
+
+document_review_response="$temporary_directory/document-review-response.json"
+curl --fail --silent --show-error \
+  --cacert "$ca_certificate" \
+  --header "Authorization: Bearer $api_token" \
+  "https://localhost:$https_port/v1/tasks/$document_task_id" \
+  > "$document_review_response"
+python3 - "$document_review_response" "$document_action_digest" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+assert payload["kind"] == "document.ingest"
+assert payload["status"] == "waiting_approval"
+assert payload["action_digest"] == sys.argv[2]
+assert payload["payload_summary"]["byte_length"] > 0
+PY
+
+document_payload_response="$temporary_directory/document-payload-response.json"
+curl --fail --silent --show-error \
+  --cacert "$ca_certificate" \
+  --header "Authorization: Bearer $api_token" \
+  "https://localhost:$https_port/v1/tasks/$document_task_id/payload?page=0" \
+  > "$document_payload_response"
+python3 - "$document_payload_response" "$document_action_digest" "$document_size" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    page = json.load(handle)
+assert page["action_digest"] == sys.argv[2]
+assert page["page_count"] == 1
+payload = json.loads(page["content"])
+assert payload["original_filename"] == "smoke-document.txt"
+assert payload["detected_mime_type"] == "text/plain"
+assert payload["byte_size"] == int(sys.argv[3])
+assert "content" not in payload
+PY
+
+curl --fail --silent --show-error \
+  --cacert "$ca_certificate" \
+  --header "Authorization: Bearer $api_token" \
+  --header 'Content-Type: application/json' \
+  --data "{\"action_digest\":\"$document_action_digest\"}" \
+  "https://localhost:$https_port/v1/tasks/$document_task_id/approve" >/dev/null
+
+document_task_response="$temporary_directory/document-task-response.json"
+document_task_status=""
+for _ in $(seq 1 120); do
+  curl --fail --silent --show-error \
+    --cacert "$ca_certificate" \
+    --header "Authorization: Bearer $api_token" \
+    "https://localhost:$https_port/v1/tasks/$document_task_id" \
+    > "$document_task_response"
+  document_task_status="$(
+    python3 - "$document_task_response" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    print(json.load(handle)["status"])
+PY
+  )"
+  if [[ "$document_task_status" == "done" ]]; then
+    break
+  fi
+  if [[ "$document_task_status" == "failed" || "$document_task_status" == "cancelled" ]]; then
+    echo "document ingestion task entered terminal state: $document_task_status" >&2
+    cat "$document_task_response" >&2
+    exit 1
+  fi
+  sleep 1
+done
+if [[ "$document_task_status" != "done" ]]; then
+  echo "document ingestion task did not complete before the smoke timeout" >&2
+  exit 1
+fi
+
+document_id="$(
+  python3 - "$document_task_response" <<'PY'
+import json
+import sys
+import uuid
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+result = payload["result"]
+assert payload["kind"] == "document.ingest"
+assert payload["attempt_count"] >= 1
+assert result["created"] is True
+assert result["chunk_count"] >= 1
+uuid.UUID(result["document_id"])
+provenance = result["provenance"]
+assert provenance["validated_mime_type"] == "text/plain"
+assert provenance["original_filename"] == "smoke-document.txt"
+assert provenance["parser_name"] == "utf8-text"
+assert provenance["extracted_character_count"] > 0
+print(result["document_id"])
+PY
+)"
+
+document_response="$temporary_directory/document-response.json"
+curl --fail --silent --show-error \
+  --cacert "$ca_certificate" \
+  --header "Authorization: Bearer $api_token" \
+  "https://localhost:$https_port/v1/memory/documents/$document_id" \
+  > "$document_response"
+python3 - "$document_response" "$document_id" "$document_task_id" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+assert payload["id"] == sys.argv[2]
+assert payload["source_type"] == "document"
+assert payload["mime_type"] == "text/plain"
+assert payload["title"] == "Deployment smoke document"
+assert payload["sensitivity"] == "private"
+assert payload["retention_class"] == "ttl_30d"
+assert payload["metadata"]["ingestion_task_id"] == sys.argv[3]
+PY
+
+document_search_response="$temporary_directory/document-search-response.json"
+curl --fail --silent --show-error \
+  --cacert "$ca_certificate" \
+  --header "Authorization: Bearer $api_token" \
+  --header 'Content-Type: application/json' \
+  --data "{\"query\":\"$document_marker\",\"top_k\":10,\"mode\":\"hybrid\"}" \
+  "https://localhost:$https_port/v1/memory/search" > "$document_search_response"
+python3 - "$document_search_response" "$document_id" "$document_marker" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    payload = json.load(handle)
+matches = [
+    hit
+    for hit in payload["hits"]
+    if hit["document_id"] == sys.argv[2] and sys.argv[3] in hit["text"]
+]
+assert matches
+PY
+
 https_user="$(
   docker compose "${compose_files[@]}" --project-name "$project_name" \
     exec -T https id -u
@@ -161,4 +341,4 @@ if [[ "$https_user" == "0" ]]; then
   exit 1
 fi
 
-echo "HTTPS authenticated required-search deployment smoke passed"
+echo "HTTPS auth, required search, and approved document-ingestion deployment smoke passed"

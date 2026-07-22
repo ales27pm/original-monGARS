@@ -8,7 +8,8 @@ from uuid import UUID
 
 from mongars.config import Settings
 from mongars.db.models import MemoryDocument
-from mongars.inference.base import InferenceBackend
+from mongars.embeddings.errors import EmbeddingConfigurationError
+from mongars.embeddings.service import EmbeddingService
 from mongars.memory.chunking import TextChunk, chunk_text
 from mongars.memory.repository import (
     MemoryHit,
@@ -50,6 +51,7 @@ class EmbeddedIngest:
 class PreparedSearch:
     query: str
     embedding: tuple[float, ...]
+    embedding_model: str
 
 
 class MemoryService:
@@ -58,11 +60,26 @@ class MemoryService:
         *,
         settings: Settings,
         repository: MemoryRepository | None,
-        inference: InferenceBackend,
+        embeddings: EmbeddingService,
     ) -> None:
         self._settings = settings
         self._repository = repository
-        self._inference = inference
+        self._embeddings = embeddings
+        if embeddings.model_name != settings.ollama_embedding_model:
+            raise EmbeddingConfigurationError(
+                "MemoryService embedding model does not match the reviewed runtime model.",
+                provider=embeddings.provider_name,
+            )
+        if embeddings.dimension != settings.embedding_dimensions:
+            raise EmbeddingConfigurationError(
+                "MemoryService embedding dimension does not match the database schema.",
+                provider=embeddings.provider_name,
+            )
+        if settings.memory_chunk_characters > embeddings.max_text_characters:
+            raise EmbeddingConfigurationError(
+                "Memory chunk character ceiling exceeds the embedding service boundary.",
+                provider=embeddings.provider_name,
+            )
 
     def prepare_ingest(
         self,
@@ -87,6 +104,7 @@ class MemoryService:
             normalized,
             max_tokens=self._settings.memory_chunk_tokens,
             overlap_tokens=self._settings.memory_chunk_overlap_tokens,
+            max_characters=self._settings.memory_chunk_characters,
         )
         return PreparedIngest(
             owner_id=owner_id,
@@ -117,6 +135,10 @@ class MemoryService:
         )
         if existing is None:
             return None
+        await repository.require_document_embedding_model(
+            document_id=existing.id,
+            embedding_model=self._settings.ollama_embedding_model,
+        )
         validate_duplicate_governance(
             existing,
             sensitivity=prepared.sensitivity,
@@ -135,24 +157,58 @@ class MemoryService:
     async def embed_prepared_ingest(self, prepared: PreparedIngest) -> EmbeddedIngest:
         """Call the embedding backend without touching the database repository."""
 
-        embeddings: list[tuple[float, ...]] = []
-        embedding_model = self._settings.ollama_embedding_model
-        batch_size = self._settings.embedding_batch_size
-        for offset in range(0, len(prepared.chunks), batch_size):
-            batch = prepared.chunks[offset : offset + batch_size]
-            response = await self._inference.embed(
-                [chunk.text for chunk in batch],
-                expected_dimension=self._settings.embedding_dimensions,
+        vectors: list[tuple[float, ...]] = []
+        model: str | None = None
+        pending: list[str] = []
+        pending_characters = 0
+
+        async def flush() -> None:
+            nonlocal model, pending, pending_characters
+            if not pending:
+                return
+            response = await self._embeddings.embed(pending)
+            if model is not None and response.model != model:
+                raise EmbeddingConfigurationError(
+                    "Embedding model changed while processing one document.",
+                    provider=self._embeddings.provider_name,
+                )
+            model = response.model
+            vectors.extend(response.embeddings)
+            pending = []
+            pending_characters = 0
+
+        for chunk in prepared.chunks:
+            chunk_characters = len(chunk.text)
+            if chunk_characters > self._embeddings.max_text_characters:
+                raise EmbeddingConfigurationError(
+                    "A memory chunk exceeds the embedding service text boundary.",
+                    provider=self._embeddings.provider_name,
+                )
+            if pending and (
+                len(pending) >= self._embeddings.max_inputs
+                or pending_characters + chunk_characters > self._embeddings.max_total_characters
+            ):
+                await flush()
+            pending.append(chunk.text)
+            pending_characters += chunk_characters
+        await flush()
+        if model is None:
+            raise EmbeddingConfigurationError(
+                "Prepared ingestion produced no embeddable chunks.",
+                provider=self._embeddings.provider_name,
             )
-            embedding_model = response.model
-            embeddings.extend(response.embeddings)
         return EmbeddedIngest(
             prepared=prepared,
-            embeddings=tuple(embeddings),
-            embedding_model=embedding_model,
+            embeddings=tuple(vectors),
+            embedding_model=model,
         )
 
     async def persist_prepared_ingest(self, embedded: EmbeddedIngest) -> IngestResult:
+        if embedded.embedding_model != self._settings.ollama_embedding_model:
+            raise EmbeddingConfigurationError(
+                "Refusing to persist vectors from an unreviewed embedding model.",
+                provider=self._embeddings.provider_name,
+            )
         repository = self._require_repository()
         prepared = embedded.prepared
         document, created = await repository.add_document(
@@ -210,10 +266,12 @@ class MemoryService:
         normalized = query.strip()
         if not normalized:
             raise ValueError("search query must not be empty")
-        response = await self._inference.embed(
-            [normalized], expected_dimension=self._settings.embedding_dimensions
+        response = await self._embeddings.embed([normalized])
+        return PreparedSearch(
+            query=normalized,
+            embedding=response.embeddings[0],
+            embedding_model=response.model,
         )
-        return PreparedSearch(query=normalized, embedding=response.embeddings[0])
 
     async def search_prepared(
         self,
@@ -223,10 +281,16 @@ class MemoryService:
         top_k: int,
         hybrid: bool = True,
     ) -> list[MemoryHit]:
+        if prepared.embedding_model != self._settings.ollama_embedding_model:
+            raise EmbeddingConfigurationError(
+                "Refusing to search memory with an unreviewed embedding model.",
+                provider=self._embeddings.provider_name,
+            )
         return await self._require_repository().search(
             owner_id=owner_id,
             query_text=prepared.query,
             embedding=list(prepared.embedding),
+            embedding_model=prepared.embedding_model,
             top_k=top_k,
             hybrid=hybrid,
         )

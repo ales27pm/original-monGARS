@@ -138,7 +138,10 @@
               <h1 id="memory-title">Memory</h1>
               <p>Search and curate the private knowledge available to Cortex.</p>
             </div>
-            <button class="primary-button compact" id="open-note" type="button">＋ Add memory</button>
+            <div class="view-header-actions">
+              <button class="secondary-button compact" id="open-document" type="button">↑ Upload document</button>
+              <button class="primary-button compact" id="open-note" type="button">＋ Add note</button>
+            </div>
           </header>
 
           <form class="search-bar" id="memory-search-form" role="search">
@@ -251,6 +254,66 @@
 
         <p class="field-error" id="note-error" role="alert" hidden></p>
         <button class="primary-button full-width" type="submit">Create approval task</button>
+      </form>
+    </dialog>
+
+    <dialog class="sheet-dialog" id="document-dialog" aria-labelledby="document-title">
+      <form method="dialog" class="dialog-card wide" id="document-form">
+        <button class="dialog-close" id="document-close" type="button" aria-label="Close document upload dialog">×</button>
+        <p class="eyebrow">Main · Protected ingestion</p>
+        <h2 id="document-title">Upload a document</h2>
+        <p class="dialog-intro">The file is staged as a protected local-mutation task. Nothing enters Hippocampus until you review and approve the exact metadata.</p>
+
+        <label class="field-label" for="document-file">Document</label>
+        <input
+          class="input file-input"
+          id="document-file"
+          name="file"
+          type="file"
+          accept=".txt,.md,.markdown,.html,.htm,.pdf,.docx,text/plain,text/markdown,text/html,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          required
+        >
+        <p class="field-help" id="document-file-help">TXT, Markdown, HTML, PDF, or DOCX · maximum 10 MB</p>
+        <p class="selected-file" id="document-file-summary" aria-live="polite">No file selected.</p>
+
+        <label class="field-label" for="document-title-input">Title <span>Optional</span></label>
+        <input class="input" id="document-title-input" type="text" maxlength="500" placeholder="A useful label">
+
+        <div class="field-grid">
+          <label class="field-label" for="document-sensitivity">Sensitivity
+            <select class="input" id="document-sensitivity">
+              <option value="private">Private</option>
+              <option value="restricted">Restricted</option>
+              <option value="shared">Shared</option>
+            </select>
+          </label>
+          <label class="field-label" for="document-retention">Retention
+            <select class="input" id="document-retention">
+              <option value="keep">Keep</option>
+              <option value="ttl_30d">30 days</option>
+              <option value="ttl_90d">90 days</option>
+              <option value="legal_hold">Legal hold</option>
+            </select>
+          </label>
+        </div>
+
+        <p class="field-error" id="document-error" role="alert" hidden></p>
+        <section class="upload-result" id="document-upload-result" aria-live="polite" hidden>
+          <strong>Approval task created</strong>
+          <p id="document-upload-status">The document is waiting for your review.</p>
+          <dl>
+            <div>
+              <dt>State</dt>
+              <dd id="document-upload-state">Waiting approval</dd>
+            </div>
+            <div>
+              <dt>Task</dt>
+              <dd id="document-upload-task-id">—</dd>
+            </div>
+          </dl>
+          <a class="primary-button upload-task-link" id="document-task-link" href="#tasks">Review protected task</a>
+        </section>
+        <button class="primary-button full-width" id="document-submit" type="submit">Create approval task</button>
       </form>
     </dialog>
 

@@ -5,6 +5,8 @@ import { useMongars } from '@/providers/mongars-provider';
 import type {
   ChatRequest,
   ChatResponse,
+  DocumentUploadRequest,
+  DocumentUploadResponse,
   MemoryNoteCreateRequest,
   MemorySearchRequest,
   MemorySearchResponse,
@@ -286,6 +288,19 @@ export function useCreateMemoryNote(): MutationResult<MemoryNoteCreateRequest, T
   const executor = useCallback(
     (request: MemoryNoteCreateRequest, signal: AbortSignal) =>
       requireClient(client, configurationError).createMemoryNote(request, { signal }),
+    [client, configurationError],
+  );
+  return useAbortableMutation(executor);
+}
+
+export function useDocumentUpload(): MutationResult<
+  DocumentUploadRequest,
+  DocumentUploadResponse
+> {
+  const { client, configurationError } = useMongars();
+  const executor = useCallback(
+    (request: DocumentUploadRequest, signal: AbortSignal) =>
+      requireClient(client, configurationError).uploadDocument(request, { signal }),
     [client, configurationError],
   );
   return useAbortableMutation(executor);

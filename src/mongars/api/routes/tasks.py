@@ -21,6 +21,7 @@ from mongars.api.schemas import (
     TaskResponse,
 )
 from mongars.events.repository import EventRepository
+from mongars.ingestion.staging import DocumentStagingRepository
 from mongars.rm.contracts import UnsupportedTaskKind
 from mongars.rm.payload_view import task_payload_page
 from mongars.rm.repository import TaskRepository
@@ -143,6 +144,27 @@ async def approve_task(
     except (TaskStateError, TaskIntegrityError) as exc:
         # Expiry and digest failures intentionally transition the task to a terminal state.
         # Persist that audit-relevant state before the HTTP error causes dependency rollback.
+        terminal_task = await TaskRepository(session).get_for_owner(
+            task_id=task_id,
+            owner_id=principal.subject,
+        )
+        if terminal_task is not None and terminal_task.status in {"cancelled", "failed"}:
+            removed = await DocumentStagingRepository(session).delete_for_task(
+                owner_id=principal.subject,
+                task_id=task_id,
+            )
+            if removed and terminal_task.kind == "document.ingest":
+                await EventRepository(session).record(
+                    owner_id=principal.subject,
+                    trace_id=terminal_task.trace_id,
+                    actor="cortex",
+                    event_type="document_ingest_failed",
+                    summary="Document ingestion approval failed",
+                    payload={
+                        "task_id": str(task_id),
+                        "error_code": "approval_invalid",
+                    },
+                )
         await session.commit()
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if task is None:
@@ -163,4 +185,16 @@ async def cancel_task(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if task is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="task not found")
+    await DocumentStagingRepository(session).delete_for_task(
+        owner_id=principal.subject,
+        task_id=task_id,
+    )
+    await EventRepository(session).record(
+        owner_id=principal.subject,
+        trace_id=task.trace_id,
+        actor="user",
+        event_type="task_cancelled",
+        summary=f"Cancelled {task.kind} task",
+        payload={"task_id": str(task.id)},
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)

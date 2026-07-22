@@ -76,6 +76,94 @@ def test_web_approval_payload_review_is_bounded_paginated_and_stateful() -> None
     assert "overflow-wrap: anywhere" in stylesheet
 
 
+def test_web_document_upload_form_is_bounded_and_exposes_governance_controls() -> None:
+    index = (WEB_STATIC_ROOT / "index.html").read_text(encoding="utf-8")
+
+    assert 'id="open-document"' in index
+    assert 'id="document-dialog"' in index
+    assert 'id="document-form"' in index
+    assert 'id="document-file"' in index
+    assert (
+        'accept=".txt,.md,.markdown,.html,.htm,.pdf,.docx,text/plain,text/markdown,'
+        "text/html,application/pdf,application/vnd.openxmlformats-officedocument."
+        'wordprocessingml.document"'
+    ) in index
+    assert 'id="document-title-input" type="text" maxlength="500"' in index
+    assert 'id="document-sensitivity"' in index
+    assert 'id="document-retention"' in index
+    assert 'id="document-upload-result" aria-live="polite" hidden' in index
+    assert 'id="document-upload-state">Waiting approval</dd>' in index
+    assert 'id="document-task-link" href="#tasks"' in index
+    assert "maximum 10 MB" in index
+
+
+def test_web_document_upload_uses_authenticated_browser_multipart_and_safe_rendering() -> None:
+    script = (WEB_STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    upload_start = script.index("async function uploadDocument")
+    upload_end = script.index("function selectTaskFilter", upload_start)
+    upload_source = script[upload_start:upload_end]
+    response_start = script.index("function validateDocumentUploadResponse")
+    response_end = script.index("async function uploadDocument", response_start)
+    response_source = script[response_start:response_end]
+    fetch_start = script.index("async function apiFetch")
+    fetch_end = script.index("function toast", fetch_start)
+    fetch_source = script[fetch_start:fetch_end]
+    render_start = script.index("function renderSelectedDocument")
+    render_end = script.index("function resetDocumentUpload", render_start)
+    render_source = script[render_start:render_end]
+
+    assert "const MAX_DOCUMENT_BYTES = 10_000_000" in script
+    assert "file.size > MAX_DOCUMENT_BYTES" in script
+    assert 'txt: "text/plain"' in script
+    assert 'md: "text/markdown"' in script
+    assert 'html: "text/html"' in script
+    assert 'pdf: "application/pdf"' in script
+    assert (
+        'docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"' in script
+    )
+    assert 'new Set(["", "application/octet-stream"])' in script
+    assert "FORMAT_CONTROL_CHARACTERS = /\\p{Cf}/u" in script
+    assert "FORMAT_CONTROL_CHARACTERS.test(file.name)" in script
+    assert "!GENERIC_DOCUMENT_MIME_TYPES.has(declared) && declared !== expected" in script
+    assert "file.slice(0, file.size, canonicalMimeType)" in script
+    assert "canonicalContent.size !== file.size" in script
+    assert "const reviewed = validateSelectedDocument()" in render_source
+    assert render_source.index("const reviewed = validateSelectedDocument()") < render_source.index(
+        "dom.documentFileSummary.textContent = `${reviewed.file.name}"
+    )
+    assert 'dom.documentFile.value = ""' in render_source
+    assert "const formData = new FormData()" in upload_source
+    for field in (
+        "file",
+        "declared_size",
+        "source_timestamp",
+        "title",
+        "sensitivity",
+        "retention_class",
+    ):
+        assert f'formData.append("{field}"' in upload_source
+    assert 'apiFetch("/v1/documents"' in upload_source
+    assert 'method: "POST"' in upload_source
+    assert "body: formData" in upload_source
+    assert 'formData.append("file", canonicalContent, file.name)' in upload_source
+    assert 'formData.append("file", file, file.name)' not in upload_source
+    assert "Content-Type" not in upload_source
+    assert 'typeof requestOptions.body === "string"' in fetch_source
+    assert 'headers.set("Authorization", `Bearer ${state.token}`)' in fetch_source
+
+    assert 'payload.kind !== "document.ingest"' in response_source
+    assert 'payload.status !== "waiting_approval"' in response_source
+    assert 'payload.risk_level !== "local_mutation"' in response_source
+    assert "dom.documentUploadTaskId.textContent = payload.id" in upload_source
+    assert "dom.documentUploadResult.hidden = false" in upload_source
+    assert "state.uploadedTaskId = payload.id" in upload_source
+    assert "showUploadedTask" in script
+
+    assert ".innerHTML" not in script
+    assert "insertAdjacentHTML" not in script
+    assert "document.write" not in script
+
+
 @pytest.mark.asyncio
 async def test_web_index_has_strict_browser_policy_and_is_not_documented(
     static_root: Path,

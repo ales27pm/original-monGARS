@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from mongars.config import Settings
 from mongars.db.session import Database
+from mongars.embeddings.service import EmbeddingService
 from mongars.inference.base import InferenceBackend
 from mongars.security.auth import AuthenticatedPrincipal, BearerTokenAuth, bearer_scheme
 from mongars.security.policy import ToolPolicy
@@ -21,6 +22,10 @@ def get_runtime_settings(request: Request) -> Settings:
 
 def get_inference(request: Request) -> InferenceBackend:
     return cast(InferenceBackend, request.app.state.inference)
+
+
+def get_embeddings(request: Request) -> EmbeddingService:
+    return cast(EmbeddingService, request.app.state.embeddings)
 
 
 def get_policy(request: Request) -> ToolPolicy:
@@ -60,5 +65,6 @@ SessionDependency = Annotated[AsyncSession, Depends(get_session, scope="function
 PrincipalDependency = Annotated[AuthenticatedPrincipal, Depends(require_principal)]
 SettingsDependency = Annotated[Settings, Depends(get_runtime_settings)]
 InferenceDependency = Annotated[InferenceBackend, Depends(get_inference)]
+EmbeddingsDependency = Annotated[EmbeddingService, Depends(get_embeddings)]
 PolicyDependency = Annotated[ToolPolicy, Depends(get_policy)]
 WebSearchDependency = Annotated[SearxNGSearchBackend | None, Depends(get_web_search)]

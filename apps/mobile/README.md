@@ -1,7 +1,7 @@
 # monGARS Mobile
 
 Expo SDK 54 / Expo Go client for the local monGARS control plane. It includes chat, memory, task,
-and connection settings surfaces.
+document ingestion, and connection settings surfaces.
 
 ## Run on an iPhone with Expo Go
 
@@ -70,6 +70,7 @@ Available hooks:
 - `useChat()`
 - `useMemorySearch()`
 - `useCreateMemoryNote()`
+- `useDocumentUpload()`
 - `useApproveTask()`
 - `useCancelTask()`
 
@@ -84,6 +85,11 @@ Chat requests always include the selected web-search policy (`Off`, `Auto`, or `
 approval renders a server-bounded payload preview by default; exact content is downloaded through
 one fixed-size page request at a time. Approval sends only the reviewed action digest, while the
 server validates that digest against the complete canonical payload.
+
+The Memory screen accepts one TXT, Markdown, HTML, PDF, or DOCX document up to 10 MB. The picker
+copies the selected file to the app cache, and `expo/fetch` streams that file in a multipart request
+without base64 conversion. The upload includes its measured size, source timestamp, sensitivity,
+and retention policy, then waits for exact task review before any parsing begins.
 
 ## Verification
 

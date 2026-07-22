@@ -1,3 +1,4 @@
+import * as DocumentPicker from 'expo-document-picker';
 import { useState } from 'react';
 import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
 
@@ -7,8 +8,39 @@ import { StatusPill } from '@/components/status-pill';
 import { SurfaceCard } from '@/components/surface-card';
 import { radii } from '@/constants/theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
-import { useMemorySearch } from '@/hooks/use-mongars-api';
+import { useDocumentUpload, useMemorySearch } from '@/hooks/use-mongars-api';
+import { isAbortError } from '@/lib/api';
+import {
+  prepareDocumentUpload,
+  SUPPORTED_DOCUMENT_MIME_TYPES,
+  type PreparedDocumentUpload,
+} from '@/lib/document-upload';
 import { useMongars } from '@/providers/mongars-provider';
+import type {
+  DocumentRetentionClass,
+  DocumentSensitivity,
+} from '@/types/mongars-api';
+
+const sensitivityOptions: readonly DocumentSensitivity[] = [
+  'private',
+  'shared',
+  'restricted',
+];
+const retentionOptions: readonly DocumentRetentionClass[] = [
+  'keep',
+  'ttl_30d',
+  'ttl_90d',
+  'legal_hold',
+];
+
+function readableSize(bytes: number): string {
+  if (bytes < 1_000_000) return `${Math.ceil(bytes / 1_000)} KB`;
+  return `${(bytes / 1_000_000).toFixed(1)} MB`;
+}
+
+function optionLabel(value: DocumentSensitivity | DocumentRetentionClass): string {
+  return value.replaceAll('_', ' ');
+}
 
 export default function MemoryScreen() {
   const { client, configurationError } = useMongars();
@@ -31,9 +63,61 @@ export default function MemoryScreen() {
 
 function ConnectedMemoryScreen() {
   const theme = useAppTheme();
+  const { hasToken, tokenStatus } = useMongars();
   const search = useMemorySearch();
+  const upload = useDocumentUpload();
   const [query, setQuery] = useState('');
   const [mode, setMode] = useState<'hybrid' | 'semantic'>('hybrid');
+  const [selectedDocument, setSelectedDocument] = useState<PreparedDocumentUpload | null>(null);
+  const [title, setTitle] = useState('');
+  const [sensitivity, setSensitivity] = useState<DocumentSensitivity>('private');
+  const [retentionClass, setRetentionClass] = useState<DocumentRetentionClass>('keep');
+  const [selectionError, setSelectionError] = useState<Error | null>(null);
+  const [isPicking, setIsPicking] = useState(false);
+
+  async function chooseDocument() {
+    if (isPicking || upload.isPending) return;
+    setIsPicking(true);
+    setSelectionError(null);
+    upload.reset();
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        type: [...SUPPORTED_DOCUMENT_MIME_TYPES],
+        copyToCacheDirectory: true,
+        multiple: false,
+        base64: false,
+      });
+      if (result.canceled) return;
+      const asset = result.assets[0];
+      if (!asset) throw new Error('No document was returned by the picker.');
+      setSelectedDocument(prepareDocumentUpload(asset));
+    } catch (error) {
+      setSelectedDocument(null);
+      setSelectionError(
+        error instanceof Error ? error : new Error('The selected document could not be opened.'),
+      );
+    } finally {
+      setIsPicking(false);
+    }
+  }
+
+  async function uploadDocument() {
+    if (!selectedDocument || !hasToken || upload.isPending) return;
+    try {
+      await upload.mutate({
+        file: selectedDocument.file,
+        filename: selectedDocument.filename,
+        declared_size: selectedDocument.size,
+        source_timestamp: selectedDocument.sourceTimestamp,
+        title: title.trim() || null,
+        sensitivity,
+        retention_class: retentionClass,
+      });
+    } catch (error) {
+      if (isAbortError(error)) return;
+      // The mutation exposes a user-readable error in the upload card.
+    }
+  }
 
   async function runSearch() {
     const normalized = query.trim();
@@ -47,6 +131,262 @@ function ConnectedMemoryScreen() {
 
   return (
     <ScreenScroll>
+      <SectionHeading
+        detail="TXT, Markdown, HTML, PDF, or DOCX · 10 MB maximum"
+        title="Import a document"
+      />
+
+      <SurfaceCard
+        tone={upload.data ? 'positive' : 'default'}
+        title={upload.data ? 'Approval required' : 'Main document ingestion'}
+        trailing={
+          upload.data ? (
+            <StatusPill label="Waiting" tone="warning" />
+          ) : selectedDocument ? (
+            <StatusPill label={readableSize(selectedDocument.size)} tone="primary" />
+          ) : null
+        }
+      >
+        {upload.data ? (
+          <>
+            <Text selectable style={{ color: theme.positive, fontSize: 14, lineHeight: 20 }}>
+              The exact ingestion metadata is queued for review. Open Tasks to inspect the action
+              digest and approve parsing.
+            </Text>
+            <Text
+              selectable
+              style={{
+                color: theme.textSecondary,
+                fontFamily: process.env.EXPO_OS === 'ios' ? 'Menlo' : 'monospace',
+                fontSize: 11,
+                lineHeight: 17,
+              }}
+            >
+              {upload.data.action_digest}
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => {
+                upload.reset();
+                setSelectedDocument(null);
+                setTitle('');
+              }}
+              style={({ pressed }) => ({
+                alignItems: 'center',
+                backgroundColor: theme.surface,
+                borderColor: theme.border,
+                borderRadius: radii.medium,
+                borderWidth: 1,
+                opacity: pressed ? 0.72 : 1,
+                paddingVertical: 11,
+              })}
+            >
+              <Text style={{ color: theme.text, fontSize: 13, fontWeight: '700' }}>
+                Import another document
+              </Text>
+            </Pressable>
+          </>
+        ) : (
+          <>
+            <Pressable
+              accessibilityRole="button"
+              disabled={isPicking || upload.isPending}
+              onPress={() => void chooseDocument()}
+              style={({ pressed }) => ({
+                alignItems: 'center',
+                backgroundColor: theme.primarySoft,
+                borderColor: theme.primary,
+                borderRadius: radii.medium,
+                borderWidth: 1,
+                opacity: isPicking || upload.isPending ? 0.55 : pressed ? 0.72 : 1,
+                paddingVertical: 13,
+              })}
+            >
+              {isPicking ? (
+                <ActivityIndicator color={theme.primary} />
+              ) : (
+                <Text style={{ color: theme.primary, fontSize: 14, fontWeight: '700' }}>
+                  {selectedDocument ? 'Choose a different document' : 'Choose document'}
+                </Text>
+              )}
+            </Pressable>
+
+            {selectedDocument ? (
+              <View style={{ gap: 4 }}>
+                <Text selectable style={{ color: theme.text, fontSize: 14, fontWeight: '700' }}>
+                  {selectedDocument.filename}
+                </Text>
+                <Text selectable style={{ color: theme.textTertiary, fontSize: 11 }}>
+                  {selectedDocument.mimeType} · {readableSize(selectedDocument.size)}
+                </Text>
+              </View>
+            ) : (
+              <Text selectable style={{ color: theme.textSecondary, fontSize: 13, lineHeight: 19 }}>
+                The file stays local until you submit it. Parsing starts only after you review and
+                approve the durable task.
+              </Text>
+            )}
+
+            {selectedDocument ? (
+              <>
+                <View style={{ gap: 6 }}>
+                  <Text style={{ color: theme.textSecondary, fontSize: 11, fontWeight: '700' }}>
+                    OPTIONAL TITLE
+                  </Text>
+                  <TextInput
+                    accessibilityLabel="Document title"
+                    maxLength={500}
+                    onChangeText={setTitle}
+                    placeholder="Title for durable memory"
+                    placeholderTextColor={theme.textTertiary}
+                    selectionColor={theme.primary}
+                    style={{
+                      backgroundColor: theme.input,
+                      borderRadius: radii.medium,
+                      color: theme.text,
+                      fontSize: 15,
+                      paddingHorizontal: 14,
+                      paddingVertical: 11,
+                    }}
+                    value={title}
+                  />
+                </View>
+
+                <View style={{ gap: 7 }}>
+                  <Text style={{ color: theme.textSecondary, fontSize: 11, fontWeight: '700' }}>
+                    SENSITIVITY
+                  </Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                    {sensitivityOptions.map((option) => {
+                      const selected = option === sensitivity;
+                      return (
+                        <Pressable
+                          accessibilityRole="button"
+                          key={option}
+                          onPress={() => setSensitivity(option)}
+                          style={{
+                            backgroundColor: selected ? theme.primary : theme.surface,
+                            borderColor: selected ? theme.primary : theme.border,
+                            borderRadius: 999,
+                            borderWidth: 1,
+                            paddingHorizontal: 12,
+                            paddingVertical: 8,
+                          }}
+                        >
+                          <Text
+                            style={{
+                              color: selected ? theme.primaryContrast : theme.textSecondary,
+                              fontSize: 12,
+                              fontWeight: '600',
+                              textTransform: 'capitalize',
+                            }}
+                          >
+                            {optionLabel(option)}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+
+                <View style={{ gap: 7 }}>
+                  <Text style={{ color: theme.textSecondary, fontSize: 11, fontWeight: '700' }}>
+                    RETENTION
+                  </Text>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+                    {retentionOptions.map((option) => {
+                      const selected = option === retentionClass;
+                      return (
+                        <Pressable
+                          accessibilityRole="button"
+                          key={option}
+                          onPress={() => setRetentionClass(option)}
+                          style={{
+                            backgroundColor: selected ? theme.primary : theme.surface,
+                            borderColor: selected ? theme.primary : theme.border,
+                            borderRadius: 999,
+                            borderWidth: 1,
+                            paddingHorizontal: 12,
+                            paddingVertical: 8,
+                          }}
+                        >
+                          <Text
+                            style={{
+                              color: selected ? theme.primaryContrast : theme.textSecondary,
+                              fontSize: 12,
+                              fontWeight: '600',
+                              textTransform: 'capitalize',
+                            }}
+                          >
+                            {optionLabel(option)}
+                          </Text>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                </View>
+
+                {!hasToken ? (
+                  <Text selectable style={{ color: theme.warning, fontSize: 12, lineHeight: 18 }}>
+                    {tokenStatus === 'loading'
+                      ? 'Checking the saved API token…'
+                      : 'Save this server’s API token in Settings before uploading.'}
+                  </Text>
+                ) : null}
+
+                {upload.isPending ? (
+                  <View
+                    accessibilityLiveRegion="polite"
+                    style={{ alignItems: 'center', flexDirection: 'row', gap: 10 }}
+                  >
+                    <ActivityIndicator color={theme.primary} />
+                    <Text style={{ color: theme.textSecondary, flex: 1, fontSize: 13 }}>
+                      Uploading {selectedDocument.filename} securely…
+                    </Text>
+                    <Pressable accessibilityRole="button" onPress={upload.cancel}>
+                      <Text style={{ color: theme.danger, fontSize: 13, fontWeight: '700' }}>
+                        Cancel
+                      </Text>
+                    </Pressable>
+                  </View>
+                ) : (
+                  <Pressable
+                    accessibilityRole="button"
+                    disabled={!hasToken}
+                    onPress={() => void uploadDocument()}
+                    style={({ pressed }) => ({
+                      alignItems: 'center',
+                      backgroundColor: hasToken ? theme.primary : theme.surfaceMuted,
+                      borderRadius: radii.medium,
+                      opacity: pressed ? 0.75 : 1,
+                      paddingVertical: 13,
+                    })}
+                  >
+                    <Text
+                      style={{
+                        color: hasToken ? theme.primaryContrast : theme.textTertiary,
+                        fontSize: 14,
+                        fontWeight: '700',
+                      }}
+                    >
+                      Upload for approval
+                    </Text>
+                  </Pressable>
+                )}
+              </>
+            ) : null}
+          </>
+        )}
+
+        {selectionError || upload.error ? (
+          <Text selectable style={{ color: theme.danger, fontSize: 12, lineHeight: 18 }}>
+            {(upload.error ?? selectionError)?.message}
+          </Text>
+        ) : null}
+      </SurfaceCard>
+
+      <SectionHeading detail="Semantic and lexical retrieval" title="Search memory" />
+
       <View style={{ flexDirection: 'row', gap: 8 }}>
         <TextInput
           accessibilityLabel="Search memory"

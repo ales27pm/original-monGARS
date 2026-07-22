@@ -64,10 +64,11 @@ class Handler(BaseHTTPRequestHandler):
             )
         elif path == "/api/embed":
             inputs = payload.get("input", [])
+            vector = [1.0, *([0.0] * (_EMBEDDING_DIMENSIONS - 1))]
             self._json(
                 {
                     "model": payload.get("model", "nomic-embed-text"),
-                    "embeddings": [[0.0] * _EMBEDDING_DIMENSIONS for _ in inputs],
+                    "embeddings": [vector for _ in inputs],
                 }
             )
         else:

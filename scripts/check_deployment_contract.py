@@ -207,6 +207,8 @@ def validate_network_isolation(model: dict[str, object]) -> None:
 
     expected = {
         "api": {"backend", "edge", "search"},
+        "worker": {"backend", "parser"},
+        "parser": {"parser"},
         "https": {"edge", "ingress"},
         "searxng": {"search", "search-proxy"},
         "search-egress-proxy": {"search-egress", "search-proxy"},
@@ -229,7 +231,7 @@ def validate_network_isolation(model: dict[str, object]) -> None:
         f"only the forward proxy may join search-egress, got {sorted(egress_members)}",
     )
 
-    for internal_name in ("backend", "edge", "search", "search-proxy"):
+    for internal_name in ("backend", "edge", "parser", "search", "search-proxy"):
         network = networks.get(internal_name)
         require(isinstance(network, dict), f"Compose network {internal_name} is missing")
         require(
@@ -249,6 +251,24 @@ def validate_network_isolation(model: dict[str, object]) -> None:
     require(
         published_services == {"https"},
         f"only Caddy may publish host ports, got {sorted(published_services)}",
+    )
+
+    parser = services.get("parser")
+    require(isinstance(parser, dict), "Compose parser service is missing")
+    require(parser.get("user") == "10001:10001", "parser must run as the fixed non-root UID")
+    require(parser.get("read_only") is True, "parser filesystem must be read-only")
+    require(parser.get("cap_drop") == ["ALL"], "parser must drop every Linux capability")
+    require(
+        "no-new-privileges:true" in parser.get("security_opt", []),
+        "parser must enable no-new-privileges",
+    )
+    require(not parser.get("secrets"), "parser must not receive Compose secrets")
+    require(not parser.get("volumes"), "parser must not receive persistent or host volumes")
+    parser_environment = parser.get("environment", {})
+    require(isinstance(parser_environment, dict), "parser environment must be a mapping")
+    require(
+        all(str(key).startswith("MONGARS_PARSER_") for key in parser_environment),
+        "parser environment must contain only non-secret parser settings",
     )
 
 

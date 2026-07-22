@@ -13,6 +13,8 @@ import {
 import type {
   ChatRequest,
   ChatResponse,
+  DocumentUploadRequest,
+  DocumentUploadResponse,
   MemoryNoteCreateRequest,
   MemorySearchRequest,
   MemorySearchResponse,
@@ -40,6 +42,7 @@ export type MongarsClientOptions = {
 type RequestOptions = ApiCallOptions & {
   method?: 'GET' | 'POST';
   body?: unknown;
+  multipartBody?: FormData;
   authenticated?: boolean;
   acceptedStatuses?: readonly number[];
 };
@@ -139,6 +142,9 @@ export class MongarsClient {
   }
 
   private async request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+    if (options.body !== undefined && options.multipartBody) {
+      throw new TypeError('A request cannot contain JSON and multipart bodies together.');
+    }
     const authenticated = options.authenticated ?? true;
     const headers = new Headers({ Accept: 'application/json' });
 
@@ -165,7 +171,9 @@ export class MongarsClient {
       response = await this.fetcher(`${this.baseUrl}${path}`, {
         method: options.method ?? 'GET',
         headers,
-        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+        body:
+          options.multipartBody ??
+          (options.body === undefined ? undefined : JSON.stringify(options.body)),
         signal: options.signal,
       });
     } catch (error) {
@@ -232,6 +240,47 @@ export class MongarsClient {
       ...options,
       method: 'POST',
       body: request,
+    });
+  }
+
+  uploadDocument(
+    request: DocumentUploadRequest,
+    options: ApiCallOptions = {},
+  ): Promise<DocumentUploadResponse> {
+    if (
+      !Number.isSafeInteger(request.declared_size) ||
+      request.declared_size <= 0 ||
+      request.file.size !== request.declared_size
+    ) {
+      throw new ApiError('The selected document size could not be verified.', {
+        status: 0,
+        code: 'INVALID_DOCUMENT_SIZE',
+      });
+    }
+
+    const sourceTimestamp = new Date(request.source_timestamp);
+    if (!Number.isFinite(sourceTimestamp.getTime())) {
+      throw new ApiError('The selected document timestamp is invalid.', {
+        status: 0,
+        code: 'INVALID_DOCUMENT_TIMESTAMP',
+      });
+    }
+
+    const multipartBody = new FormData();
+    multipartBody.append('file', request.file, request.filename);
+    multipartBody.append('declared_size', String(request.declared_size));
+    multipartBody.append('source_timestamp', sourceTimestamp.toISOString());
+    multipartBody.append('sensitivity', request.sensitivity);
+    multipartBody.append('retention_class', request.retention_class);
+    if (request.title?.trim()) {
+      multipartBody.append('title', request.title.trim());
+    }
+
+    // Do not set Content-Type here: expo/fetch supplies the multipart boundary for this FormData.
+    return this.request('/v1/documents', {
+      ...options,
+      method: 'POST',
+      multipartBody,
     });
   }
 

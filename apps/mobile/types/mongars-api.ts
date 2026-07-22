@@ -81,6 +81,27 @@ export type MemoryNoteCreateRequest = {
   retention_class?: 'keep' | 'ttl_30d' | 'ttl_90d' | 'legal_hold';
 };
 
+export type DocumentSensitivity = 'private' | 'shared' | 'restricted';
+export type DocumentRetentionClass = 'keep' | 'ttl_30d' | 'ttl_90d' | 'legal_hold';
+
+export type DocumentUploadRequest = {
+  file: Blob;
+  filename: string;
+  declared_size: number;
+  source_timestamp: string;
+  title?: string | null;
+  sensitivity: DocumentSensitivity;
+  retention_class: DocumentRetentionClass;
+};
+
+export type DocumentUploadResponse = {
+  id: string;
+  kind: 'document.ingest';
+  status: 'waiting_approval';
+  risk_level: 'local_mutation';
+  action_digest: string;
+};
+
 export type TaskResponse = {
   id: string;
   kind: string;

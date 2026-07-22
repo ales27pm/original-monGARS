@@ -81,6 +81,7 @@ def harness() -> ServiceHarness:
         {
             ("memory", "search"): ActionClassification.READ_ONLY,
             ("memory", "note.create"): ActionClassification.LOCAL_MUTATION,
+            ("document", "ingest"): ActionClassification.LOCAL_MUTATION,
         }
     )
     service = TaskService(
@@ -134,6 +135,55 @@ async def test_local_mutation_waits_with_digest_bound_to_normalized_payload(
     assert task.action_digest is not None and len(task.action_digest) == 64
     assert task.approval_expires_at is not None
     assert task.approval_expires_at >= before + timedelta(seconds=299)
+
+
+@pytest.mark.asyncio
+async def test_document_ingest_waits_for_exact_payload_approval(
+    harness: ServiceHarness,
+) -> None:
+    staging_id = uuid4()
+
+    task = await harness.service.create(
+        owner_id="owner-1",
+        kind="document.ingest",
+        payload={
+            "staging_id": str(staging_id),
+            "original_filename": "notes.txt",
+            "source_sha256": "a" * 64,
+            "detected_mime_type": "text/plain",
+            "byte_size": 5,
+            "source_timestamp": "2026-07-22T12:30:00-04:00",
+            "title": "Notes",
+            "sensitivity": "restricted",
+            "retention_class": "ttl_30d",
+        },
+    )
+
+    assert task.status == "waiting_approval"
+    assert task.risk_level == ActionClassification.LOCAL_MUTATION.value
+    assert task.payload == {
+        "staging_id": str(staging_id),
+        "original_filename": "notes.txt",
+        "source_sha256": "a" * 64,
+        "detected_mime_type": "text/plain",
+        "byte_size": 5,
+        "source_timestamp": "2026-07-22T16:30:00Z",
+        "title": "Notes",
+        "sensitivity": "restricted",
+        "retention_class": "ttl_30d",
+    }
+    assert task.action_digest is not None and len(task.action_digest) == 64
+
+    approved = await harness.service.approve(
+        owner_id=task.owner_id,
+        task_id=task.id,
+        reviewed_action_digest=task.action_digest,
+    )
+
+    assert approved is task
+    assert task.status == "queued"
+    harness.service.verify_for_execution(task)
+    assert task.consumed_at is not None
 
 
 @pytest.mark.asyncio

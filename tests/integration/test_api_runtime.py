@@ -16,10 +16,11 @@ from sqlalchemy.engine import make_url
 from mongars.config import Environment, Settings
 from mongars.db.models import EpisodicEvent, MemoryDocument, TaskQueue
 from mongars.db.session import Database
+from mongars.embeddings.models import EmbeddingBatch
+from mongars.embeddings.service import EmbeddingService
 from mongars.inference import (
     ChatMessage,
     ChatResponse,
-    EmbeddingResponse,
     HealthStatus,
     JsonValue,
 )
@@ -77,21 +78,6 @@ class DeterministicInference:
         del messages, options
         return ChatResponse(content="runtime smoke answer", model=model or "deterministic-chat")
 
-    async def embed(
-        self,
-        inputs: Sequence[str],
-        *,
-        model: str | None = None,
-        expected_dimension: int | None = None,
-    ) -> EmbeddingResponse:
-        dimension = expected_dimension or 768
-        vector = (1.0, *([0.0] * (dimension - 1)))
-        return EmbeddingResponse(
-            embeddings=tuple(vector for _input in inputs),
-            model=model or "deterministic-embed",
-            dimension=dimension,
-        )
-
     async def health(self) -> HealthStatus:
         return HealthStatus(
             backend="ollama",
@@ -100,6 +86,28 @@ class DeterministicInference:
             embedding_model_ready=self.healthy,
             latency_ms=0.1,
             error_code=None if self.healthy else "connection_error",
+        )
+
+    async def aclose(self) -> None:
+        return None
+
+
+class DeterministicEmbeddingProvider:
+    provider_name = "deterministic"
+    model_name = "nomic-embed-text"
+
+    async def embed(
+        self,
+        texts: Sequence[str],
+        *,
+        expected_dimension: int,
+    ) -> EmbeddingBatch:
+        vector = (1.0, *([0.0] * (expected_dimension - 1)))
+        return EmbeddingBatch(
+            embeddings=tuple(vector for _text in texts),
+            model=self.model_name,
+            dimension=expected_dimension,
+            latency_ms=0.1,
         )
 
     async def aclose(self) -> None:
@@ -129,7 +137,17 @@ async def test_api_approval_worker_memory_and_readiness_smoke() -> None:
     )
     database = Database(settings)
     inference = DeterministicInference()
-    application = create_app(settings=settings, database=database, inference=inference)
+    embeddings = EmbeddingService(
+        provider=DeterministicEmbeddingProvider(),
+        expected_dimension=settings.embedding_dimensions,
+        batch_size=settings.embedding_batch_size,
+    )
+    application = create_app(
+        settings=settings,
+        database=database,
+        inference=inference,
+        embeddings=embeddings,
+    )
     transport = httpx.ASGITransport(app=application)
     headers = {"Authorization": f"Bearer {token}"}
     marker = f"runtime-marker-{uuid4().hex}"
@@ -258,7 +276,12 @@ async def test_api_approval_worker_memory_and_readiness_smoke() -> None:
             assert approve_response.json()["status"] == "queued"
             assert approve_response.json()["approved_at"] is not None
 
-            worker = Worker(settings=settings, database=database, inference=inference)
+            worker = Worker(
+                settings=settings,
+                database=database,
+                inference=inference,
+                embeddings=embeddings,
+            )
             assert await worker.run_once() is True
 
             task_response = await client.get(f"/v1/tasks/{task_id}", headers=headers)
@@ -338,5 +361,6 @@ async def test_api_approval_worker_memory_and_readiness_smoke() -> None:
     finally:
         await _clean_owner(database, owner_id)
         await _clean_owner(database, foreign_owner_id)
+        await embeddings.aclose()
         await inference.aclose()
         await database.close()

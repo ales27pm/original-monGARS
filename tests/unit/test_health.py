@@ -11,7 +11,6 @@ from mongars.config import Environment, Settings
 from mongars.inference import (
     ChatMessage,
     ChatResponse,
-    EmbeddingResponse,
     HealthStatus,
     JsonValue,
 )
@@ -37,15 +36,6 @@ class ReadinessInference:
         model: str | None = None,
         options: Mapping[str, JsonValue] | None = None,
     ) -> ChatResponse:
-        raise NotImplementedError
-
-    async def embed(
-        self,
-        inputs: Sequence[str],
-        *,
-        model: str | None = None,
-        expected_dimension: int | None = None,
-    ) -> EmbeddingResponse:
         raise NotImplementedError
 
     async def aclose(self) -> None:

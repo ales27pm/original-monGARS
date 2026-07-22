@@ -102,6 +102,25 @@ class TaskResponse(ApiModel):
         )
 
 
+class DocumentUploadResponse(ApiModel):
+    id: UUID
+    kind: Literal["document.ingest"] = "document.ingest"
+    status: Literal["waiting_approval"] = "waiting_approval"
+    risk_level: Literal["local_mutation"] = "local_mutation"
+    action_digest: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+
+    @classmethod
+    def from_model(cls, task: TaskQueue) -> DocumentUploadResponse:
+        if (
+            task.kind != "document.ingest"
+            or task.status != "waiting_approval"
+            or task.risk_level != "local_mutation"
+            or task.action_digest is None
+        ):
+            raise ValueError("document upload task is not in its expected approval state")
+        return cls(id=task.id, action_digest=task.action_digest)
+
+
 class TaskPayloadSummary(ApiModel):
     format: Literal["sorted-pretty-json-v1"] = "sorted-pretty-json-v1"
     encoding: Literal["utf-8"] = "utf-8"

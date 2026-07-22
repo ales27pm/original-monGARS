@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, status
 
 from mongars.api.dependencies import (
+    EmbeddingsDependency,
     InferenceDependency,
     PrincipalDependency,
     SessionDependency,
@@ -10,6 +11,7 @@ from mongars.api.dependencies import (
     WebSearchDependency,
 )
 from mongars.api.schemas import ChatRequest, ChatResponse, WebSource
+from mongars.embeddings.errors import EmbeddingError
 from mongars.inference.base import InferenceError
 from mongars.orchestrator.cortex import Cortex
 
@@ -23,11 +25,13 @@ async def chat(
     session: SessionDependency,
     settings: SettingsDependency,
     inference: InferenceDependency,
+    embeddings: EmbeddingsDependency,
     web_search: WebSearchDependency,
 ) -> ChatResponse:
     cortex = Cortex(
         settings=settings,
         inference=inference,
+        embeddings=embeddings,
         session=session,
         web_search=web_search,
     )
@@ -45,6 +49,11 @@ async def chat(
             detail=str(exc),
         ) from exc
     except InferenceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": exc.code, "retryable": exc.retryable},
+        ) from exc
+    except EmbeddingError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={"code": exc.code, "retryable": exc.retryable},

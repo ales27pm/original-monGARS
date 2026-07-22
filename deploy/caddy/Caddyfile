@@ -14,17 +14,26 @@
 https://{$MONGARS_HTTPS_HOST} {
 	tls internal
 
-	request_body {
-		max_size {$MONGARS_MAX_REQUEST_BYTES}
-	}
-
 	header {
 		-Server
 		X-Content-Type-Options nosniff
 		Referrer-Policy no-referrer
 	}
 
-	reverse_proxy api:8000
+	@document_upload path /v1/documents
+	handle @document_upload {
+		request_body {
+			max_size {$MONGARS_MAX_DOCUMENT_REQUEST_BYTES}
+		}
+		reverse_proxy api:8000
+	}
+
+	handle {
+		request_body {
+			max_size {$MONGARS_MAX_REQUEST_BYTES}
+		}
+		reverse_proxy api:8000
+	}
 }
 
 http://{$MONGARS_HTTPS_HOST} {
@@ -52,15 +61,24 @@ http://{$MONGARS_HTTPS_HOST} {
 # Preserve the workstation-only HTTP control-plane address while keeping the Python
 # application on internal Docker networks. Compose publishes this listener on loopback.
 http://:8001 {
-	request_body {
-		max_size {$MONGARS_MAX_REQUEST_BYTES}
-	}
-
 	header {
 		-Server
 		X-Content-Type-Options nosniff
 		Referrer-Policy no-referrer
 	}
 
-	reverse_proxy api:8000
+	@document_upload path /v1/documents
+	handle @document_upload {
+		request_body {
+			max_size {$MONGARS_MAX_DOCUMENT_REQUEST_BYTES}
+		}
+		reverse_proxy api:8000
+	}
+
+	handle {
+		request_body {
+			max_size {$MONGARS_MAX_REQUEST_BYTES}
+		}
+		reverse_proxy api:8000
+	}
 }

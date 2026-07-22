@@ -12,6 +12,7 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mongars.config import Settings
+from mongars.embeddings.service import EmbeddingService
 from mongars.events.repository import ConversationMessage, EventRepository
 from mongars.ids import uuid7
 from mongars.inference.base import ChatMessage, InferenceBackend, InferenceResponseError
@@ -115,6 +116,7 @@ class Cortex:
         *,
         settings: Settings,
         inference: InferenceBackend,
+        embeddings: EmbeddingService,
         session: AsyncSession,
         web_search: SearxNGSearchBackend | None = None,
         utc_now: Callable[[], datetime] | None = None,
@@ -127,7 +129,7 @@ class Cortex:
         self._memory = MemoryService(
             settings=settings,
             repository=self._memory_repository,
-            inference=inference,
+            embeddings=embeddings,
         )
         self._utc_now = utc_now or (lambda: datetime.now(UTC))
         self._web_search = web_search

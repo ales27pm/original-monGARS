@@ -499,6 +499,14 @@ select:disabled {
   line-height: 1.6;
 }
 
+.view-header-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .chat-header {
   align-items: center;
   margin-bottom: 8px;
@@ -1044,6 +1052,11 @@ select:disabled {
   background: linear-gradient(105deg, rgba(242, 189, 103, 0.055), rgba(20, 27, 23, 0.65));
 }
 
+.task-card.is-upload-result {
+  border-color: rgba(185, 242, 115, 0.42);
+  box-shadow: 0 0 0 2px rgba(185, 242, 115, 0.07);
+}
+
 .status-badge {
   display: inline-flex;
   align-items: center;
@@ -1459,6 +1472,37 @@ select:disabled {
   border-color: rgba(185, 242, 115, 0.4);
 }
 
+.file-input {
+  padding: 8px 10px;
+}
+
+.file-input::file-selector-button {
+  min-height: 30px;
+  margin-right: 10px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-strong);
+  color: var(--text-soft);
+  font: inherit;
+  font-weight: 680;
+  cursor: pointer;
+}
+
+.field-help,
+.selected-file {
+  margin: 7px 0 0;
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.selected-file {
+  min-height: 17px;
+  color: var(--text-soft);
+}
+
 .note-textarea {
   min-height: 150px;
   line-height: 1.5;
@@ -1497,6 +1541,61 @@ select:disabled {
   color: var(--danger);
   font-size: 10px;
   line-height: 1.5;
+}
+
+.upload-result {
+  margin-top: 18px;
+  padding: 14px;
+  border: 1px solid rgba(185, 242, 115, 0.26);
+  border-radius: 11px;
+  background: rgba(185, 242, 115, 0.06);
+}
+
+.upload-result > strong {
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.upload-result > p {
+  margin: 6px 0 0;
+  color: var(--text-soft);
+  font-size: 10px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.upload-result dl {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 8px;
+  margin: 13px 0 0;
+}
+
+.upload-result dl div {
+  min-width: 0;
+}
+
+.upload-result dt {
+  color: var(--text-muted);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.upload-result dd {
+  margin: 4px 0 0;
+  color: var(--text-soft);
+  font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;
+  font-size: 9px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.upload-task-link {
+  width: 100%;
+  margin-top: 14px;
+  text-decoration: none;
 }
 
 .dialog-card .primary-button {
@@ -1732,6 +1831,19 @@ select:disabled {
 
   .view-header p {
     font-size: 11px;
+  }
+
+  #memory-view .view-header {
+    flex-wrap: wrap;
+  }
+
+  #memory-view .view-header-actions {
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  #memory-view .view-header-actions > button {
+    flex: 1 1 130px;
   }
 
   .search-bar {

@@ -11,6 +11,13 @@ services:
       search-mock:
         condition: service_healthy
 
+  worker:
+    environment:
+      MONGARS_OLLAMA_BASE_URL: http://ollama:8090
+    depends_on:
+      ollama-mock:
+        condition: service_healthy
+
   ollama-mock:
     image: ${MONGARS_IMAGE:-mongars:local}
     user: "10001:10001"

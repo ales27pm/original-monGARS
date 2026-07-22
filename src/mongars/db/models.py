@@ -7,11 +7,13 @@ from uuid import UUID
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     ARRAY,
+    BigInteger,
     CheckConstraint,
     Computed,
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     LargeBinary,
@@ -173,6 +175,7 @@ class EpisodicEvent(Base):
 class TaskQueue(TimestampMixin, Base):
     __tablename__ = "task_queue"
     __table_args__ = (
+        UniqueConstraint("id", "owner_id", name="uq_task_queue_id_owner"),
         CheckConstraint(
             "risk_level IN ('read_only', 'local_mutation', 'external_side_effect')",
             name="ck_task_queue_risk_level",
@@ -246,6 +249,53 @@ class TaskQueue(TimestampMixin, Base):
     approval_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class DocumentStaging(Base):
+    """Bounded upload bytes awaiting an approved ``document.ingest`` task.
+
+    The task payload contains only immutable review metadata and the content digest;
+    raw bytes stay owner-scoped here and are never copied into task/event JSON.
+    """
+
+    __tablename__ = "document_staging"
+    __table_args__ = (
+        CheckConstraint("byte_size > 0", name="ck_document_staging_positive_size"),
+        CheckConstraint(
+            "byte_size <= 20000000",
+            name="ck_document_staging_max_size",
+        ),
+        CheckConstraint(
+            "octet_length(source_sha256) = 32",
+            name="ck_document_staging_sha256_length",
+        ),
+        CheckConstraint(
+            "octet_length(content) = byte_size",
+            name="ck_document_staging_content_size",
+        ),
+        ForeignKeyConstraint(
+            ("task_id", "owner_id"),
+            ("task_queue.id", "task_queue.owner_id"),
+            name="fk_document_staging_task_owner",
+            ondelete="CASCADE",
+        ),
+        Index("ix_document_staging_owner_created", "owner_id", "created_at"),
+        Index("ix_document_staging_expires", "expires_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid7)
+    owner_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    task_id: Mapped[UUID] = mapped_column(unique=True, nullable=False)
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    detected_mime_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_sha256: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False)
+    byte_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    source_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
 
 
 class InferenceMetric(Base):

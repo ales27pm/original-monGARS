@@ -11,6 +11,9 @@ import pytest
 from pydantic import SecretStr
 
 from mongars.config import Environment, Settings
+from mongars.embeddings.errors import EmbeddingTimeoutError
+from mongars.embeddings.models import EmbeddingBatch
+from mongars.embeddings.service import EmbeddingService
 from mongars.events.repository import ConversationMessage
 from mongars.inference import ChatMessage, ChatResponse, InferenceResponseError
 from mongars.main import create_app
@@ -22,6 +25,25 @@ from mongars.orchestrator.cortex import (
 )
 from mongars.prompting import CORTEX_MINIMUM_PROMPT_TOKENS, build_cortex_system_prompt
 from mongars.web_search import SearchResponse, WebSearchError, WebSearchResult
+
+
+class _UnusedEmbeddingProvider:
+    provider_name = "deterministic"
+    model_name = "nomic-embed-text"
+
+    async def embed(self, *_args: object, **_kwargs: object) -> EmbeddingBatch:
+        raise AssertionError("this test must not request embeddings")
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _unused_embeddings() -> EmbeddingService:
+    return EmbeddingService(
+        provider=_UnusedEmbeddingProvider(),
+        expected_dimension=768,
+        batch_size=8,
+    )
 
 
 def _memory_hit(index: int, text: str) -> MemoryHit:
@@ -415,6 +437,7 @@ async def test_cortex_passes_the_reviewed_context_and_completion_limits() -> Non
     cortex = Cortex(
         settings=settings,
         inference=inference,  # type: ignore[arg-type]
+        embeddings=_unused_embeddings(),
         session=_FakeSession(),  # type: ignore[arg-type]
     )
     cortex._events = _EventSink()  # type: ignore[assignment]
@@ -450,6 +473,7 @@ async def test_cortex_loads_only_the_requested_owner_session_history() -> None:
     cortex = Cortex(
         settings=Settings(environment=Environment.TEST, memory_top_k=0),
         inference=inference,  # type: ignore[arg-type]
+        embeddings=_unused_embeddings(),
         session=_FakeSession(),  # type: ignore[arg-type]
     )
     cortex._events = event_sink  # type: ignore[assignment]
@@ -483,6 +507,7 @@ async def test_explicit_web_request_is_searched_and_serialized_as_untrusted_evid
     cortex = Cortex(
         settings=settings,
         inference=inference,  # type: ignore[arg-type]
+        embeddings=_unused_embeddings(),
         session=_FakeSession(),  # type: ignore[arg-type]
         web_search=search,  # type: ignore[arg-type]
         utc_now=lambda: datetime(2026, 7, 22, tzinfo=UTC),
@@ -537,6 +562,7 @@ async def test_web_grounding_rejects_stale_or_refusal_answers_despite_outcome_ev
     cortex = Cortex(
         settings=Settings(environment=Environment.TEST, memory_top_k=0),
         inference=_StaticAnswerInference(answer),  # type: ignore[arg-type]
+        embeddings=_unused_embeddings(),
         session=_FakeSession(),  # type: ignore[arg-type]
         web_search=_SearchBackend(),  # type: ignore[arg-type]
         utc_now=lambda: datetime(2026, 7, 22, tzinfo=UTC),
@@ -561,6 +587,7 @@ async def test_web_grounding_retries_once_with_structured_correction() -> None:
     cortex = Cortex(
         settings=Settings(environment=Environment.TEST, memory_top_k=0),
         inference=inference,  # type: ignore[arg-type]
+        embeddings=_unused_embeddings(),
         session=_FakeSession(),  # type: ignore[arg-type]
         web_search=_SearchBackend(),  # type: ignore[arg-type]
         utc_now=lambda: datetime(2026, 7, 22, tzinfo=UTC),
@@ -601,6 +628,7 @@ async def test_web_grounding_does_not_reject_third_party_capability_statements(
     cortex = Cortex(
         settings=Settings(environment=Environment.TEST, memory_top_k=0),
         inference=inference,  # type: ignore[arg-type]
+        embeddings=_unused_embeddings(),
         session=_FakeSession(),  # type: ignore[arg-type]
         web_search=_SearchBackend(),  # type: ignore[arg-type]
     )
@@ -623,6 +651,7 @@ async def test_local_memory_request_does_not_trigger_web_search() -> None:
     cortex = Cortex(
         settings=Settings(environment=Environment.TEST, memory_top_k=0),
         inference=inference,  # type: ignore[arg-type]
+        embeddings=_unused_embeddings(),
         session=_FakeSession(),  # type: ignore[arg-type]
         web_search=_UnexpectedSearchBackend(),  # type: ignore[arg-type]
     )
@@ -644,6 +673,7 @@ async def test_explicit_web_request_fails_closed_when_search_is_unavailable() ->
     cortex = Cortex(
         settings=Settings(environment=Environment.TEST, memory_top_k=0),
         inference=_UnusedInference(),  # type: ignore[arg-type]
+        embeddings=_unused_embeddings(),
         session=_FakeSession(),  # type: ignore[arg-type]
         web_search=_FailingSearchBackend(),  # type: ignore[arg-type]
     )
@@ -674,6 +704,7 @@ async def test_long_lived_cortex_refreshes_the_runtime_date_on_each_turn() -> No
     cortex = Cortex(
         settings=Settings(environment=Environment.TEST, memory_top_k=0),
         inference=inference,  # type: ignore[arg-type]
+        embeddings=_unused_embeddings(),
         session=_FakeSession(),  # type: ignore[arg-type]
         utc_now=lambda: next(moments),
     )
@@ -705,6 +736,7 @@ async def test_cortex_rejects_remote_ollama_for_local_only_request_before_side_e
     cortex = Cortex(
         settings=settings,
         inference=_UnusedInference(),  # type: ignore[arg-type]
+        embeddings=_unused_embeddings(),
         session=_FakeSession(),  # type: ignore[arg-type]
     )
     cortex._events = _UnexpectedEventSink()  # type: ignore[assignment]
@@ -726,6 +758,7 @@ async def test_cortex_ends_database_phases_before_external_inference() -> None:
     cortex = Cortex(
         settings=settings,
         inference=inference,  # type: ignore[arg-type]
+        embeddings=_unused_embeddings(),
         session=session,  # type: ignore[arg-type]
     )
     cortex._events = _EventSink(session)  # type: ignore[assignment]
@@ -771,6 +804,44 @@ async def test_chat_api_maps_context_budget_failure_to_422() -> None:
 
     assert response.status_code == 422
     assert response.json() == {"detail": "message exceeds the configured model context budget"}
+
+
+@pytest.mark.asyncio
+async def test_chat_api_maps_embedding_failure_to_bounded_503(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_embedding(*_args: object, **_kwargs: object) -> None:
+        raise EmbeddingTimeoutError(
+            "private provider detail",
+            provider="ollama",
+            retryable=True,
+        )
+
+    monkeypatch.setattr(Cortex, "chat", fail_embedding)
+    token = "embedding-failure-test-token"  # noqa: S105 - test-only credential
+    application = create_app(
+        settings=Settings(
+            environment=Environment.TEST,
+            api_token=SecretStr(token),
+        ),
+        database=_FakeDatabase(),  # type: ignore[arg-type]
+        inference=_UnusedInference(),  # type: ignore[arg-type]
+        embeddings=_unused_embeddings(),
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.post(
+            "/v1/chat",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"message": "search memory"},
+        )
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": {"code": "embedding_timeout", "retryable": True}}
+    assert "private provider detail" not in response.text
 
 
 @pytest.mark.asyncio

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from collections.abc import Mapping, Sequence
 from time import monotonic
 from typing import Any, cast
@@ -13,10 +12,7 @@ import httpx
 from .base import (
     ChatMessage,
     ChatResponse,
-    EmbeddingDimensionError,
-    EmbeddingResponse,
     HealthStatus,
-    InferenceConfigurationError,
     InferenceConnectionError,
     InferenceError,
     InferenceHTTPError,
@@ -39,7 +35,6 @@ class OllamaBackend:
         base_url: str,
         chat_model: str,
         embedding_model: str,
-        embedding_dimension: int | None = None,
         think: bool | None = None,
         timeout: float | httpx.Timeout = 30.0,
         health_timeout: float | httpx.Timeout = 2.0,
@@ -50,10 +45,6 @@ class OllamaBackend:
         self._embedding_model = _validate_model(
             embedding_model,
             field="embedding_model",
-        )
-        self._embedding_dimension = _validate_optional_dimension(
-            embedding_dimension,
-            field="embedding_dimension",
         )
         self._think = think
         self._timeout = _validate_timeout(timeout)
@@ -136,80 +127,6 @@ class OllamaBackend:
             done_reason=done_reason,
             prompt_tokens=_optional_nonnegative_int(data, "prompt_eval_count", "chat"),
             completion_tokens=_optional_nonnegative_int(data, "eval_count", "chat"),
-        )
-
-    async def embed(
-        self,
-        inputs: Sequence[str],
-        *,
-        model: str | None = None,
-        expected_dimension: int | None = None,
-    ) -> EmbeddingResponse:
-        normalized_inputs = _validate_inputs(inputs)
-        selected_model = _validate_model(model, field="model") if model else self._embedding_model
-        dimension = _validate_optional_dimension(
-            expected_dimension,
-            field="expected_dimension",
-        )
-        if dimension is None:
-            dimension = self._embedding_dimension
-        if dimension is None:
-            raise InferenceConfigurationError(
-                "An expected embedding dimension must be supplied by configuration or caller.",
-                backend=_BACKEND,
-                operation="embed",
-            )
-
-        data = await self._request_json(
-            "POST",
-            "/api/embed",
-            operation="embed",
-            json={"model": selected_model, "input": list(normalized_inputs)},
-        )
-        raw_embeddings = data.get("embeddings")
-        if not isinstance(raw_embeddings, list):
-            raise _response_error("Embedding response is missing list 'embeddings'.", "embed")
-        if len(raw_embeddings) != len(normalized_inputs):
-            raise _response_error(
-                (
-                    "Embedding response count does not match input count: "
-                    f"received {len(raw_embeddings)}, expected {len(normalized_inputs)}."
-                ),
-                "embed",
-            )
-
-        embeddings: list[tuple[float, ...]] = []
-        for index, raw_embedding in enumerate(raw_embeddings):
-            if not isinstance(raw_embedding, list):
-                raise _response_error(f"Embedding {index} is not a list.", "embed")
-            if len(raw_embedding) != dimension:
-                raise EmbeddingDimensionError(
-                    backend=_BACKEND,
-                    expected=dimension,
-                    actual=len(raw_embedding),
-                    index=index,
-                )
-            vector: list[float] = []
-            for component in raw_embedding:
-                if (
-                    isinstance(component, bool)
-                    or not isinstance(component, (int, float))
-                    or not math.isfinite(component)
-                ):
-                    raise _response_error(
-                        f"Embedding {index} contains a non-finite or non-numeric component.",
-                        "embed",
-                    )
-                vector.append(float(component))
-            embeddings.append(tuple(vector))
-
-        response_model = data.get("model", selected_model)
-        if not isinstance(response_model, str) or not response_model.strip():
-            raise _response_error("Embedding response has an invalid 'model'.", "embed")
-        return EmbeddingResponse(
-            embeddings=tuple(embeddings),
-            model=response_model,
-            dimension=dimension,
         )
 
     async def health(self) -> HealthStatus:
@@ -396,14 +313,6 @@ def _available_model_aliases(raw_models: list[Any]) -> set[str]:
     return aliases
 
 
-def _validate_optional_dimension(value: int | None, *, field: str) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-        raise ValueError(f"{field} must be a positive integer")
-    return value
-
-
 def _validate_timeout(value: float | httpx.Timeout) -> httpx.Timeout:
     if isinstance(value, httpx.Timeout):
         return value
@@ -439,29 +348,6 @@ def _validate_messages(messages: Sequence[ChatMessage]) -> tuple[ChatMessage, ..
                 backend=_BACKEND,
                 operation="chat",
             )
-    return normalized
-
-
-def _validate_inputs(inputs: Sequence[str]) -> tuple[str, ...]:
-    if isinstance(inputs, (str, bytes)) or not isinstance(inputs, Sequence):
-        raise InferenceRequestError(
-            "Embedding inputs must be a sequence of strings.",
-            backend=_BACKEND,
-            operation="embed",
-        )
-    normalized = tuple(inputs)
-    if not normalized:
-        raise InferenceRequestError(
-            "At least one embedding input is required.",
-            backend=_BACKEND,
-            operation="embed",
-        )
-    if any(not isinstance(value, str) or not value.strip() for value in normalized):
-        raise InferenceRequestError(
-            "Embedding inputs must be non-empty strings.",
-            backend=_BACKEND,
-            operation="embed",
-        )
     return normalized
 
 

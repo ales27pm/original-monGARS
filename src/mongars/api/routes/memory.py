@@ -5,7 +5,7 @@ from uuid import UUID
 from fastapi import APIRouter, HTTPException, status
 
 from mongars.api.dependencies import (
-    InferenceDependency,
+    EmbeddingsDependency,
     PolicyDependency,
     PrincipalDependency,
     SessionDependency,
@@ -19,8 +19,8 @@ from mongars.api.schemas import (
     MemorySearchResponse,
     TaskResponse,
 )
+from mongars.embeddings.errors import EmbeddingError
 from mongars.events.repository import EventRepository
-from mongars.inference.base import InferenceError
 from mongars.memory.repository import MemoryRepository
 from mongars.memory.service import MemoryService
 from mongars.rm.repository import TaskRepository
@@ -71,12 +71,12 @@ async def search_memory(
     principal: PrincipalDependency,
     session: SessionDependency,
     settings: SettingsDependency,
-    inference: InferenceDependency,
+    embeddings: EmbeddingsDependency,
 ) -> MemorySearchResponse:
     service = MemoryService(
         settings=settings,
         repository=MemoryRepository(session),
-        inference=inference,
+        embeddings=embeddings,
     )
     try:
         hits = await service.search(
@@ -85,7 +85,7 @@ async def search_memory(
             top_k=request.top_k,
             hybrid=request.mode == "hybrid",
         )
-    except InferenceError as exc:
+    except EmbeddingError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={"code": exc.code, "retryable": exc.retryable},

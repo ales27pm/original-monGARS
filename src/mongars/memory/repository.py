@@ -35,6 +35,15 @@ class MemoryGovernanceConflict(ValueError):
     """
 
 
+class MemoryEmbeddingModelConflict(MemoryGovernanceConflict):
+    """Duplicate content exists under a different semantic vector space.
+
+    Treat this as a terminal, reviewable conflict rather than reporting an
+    idempotent success for content that the active retrieval model cannot see.
+    An explicit reindex workflow is required to move the existing document.
+    """
+
+
 def validate_duplicate_governance(
     document: MemoryDocument,
     *,
@@ -84,6 +93,7 @@ def build_search_statement(
     owner_id: str,
     query_text: str,
     embedding: list[float],
+    embedding_model: str,
     top_k: int,
     hybrid: bool,
 ) -> Select[tuple[Any, ...]]:
@@ -104,6 +114,7 @@ def build_search_statement(
         .join(MemoryDocument, MemoryDocument.id == MemoryChunk.document_id)
         .where(
             MemoryDocument.owner_id == owner_id,
+            MemoryChunk.embedding_model == embedding_model,
             (MemoryDocument.expires_at.is_(None) | (MemoryDocument.expires_at > func.now())),
         )
         .order_by(distance.asc())
@@ -174,6 +185,28 @@ class MemoryRepository:
         )
         return await self._session.scalar(statement) is not None
 
+    async def require_document_embedding_model(
+        self,
+        *,
+        document_id: UUID,
+        embedding_model: str,
+    ) -> None:
+        """Fail closed unless every stored chunk uses the reviewed model."""
+
+        stored_models = set(
+            (
+                await self._session.scalars(
+                    select(MemoryChunk.embedding_model)
+                    .where(MemoryChunk.document_id == document_id)
+                    .distinct()
+                )
+            ).all()
+        )
+        if stored_models != {embedding_model}:
+            raise MemoryEmbeddingModelConflict(
+                "duplicate content uses a different embedding model; explicit reindex is required"
+            )
+
     async def add_document(
         self,
         *,
@@ -193,6 +226,10 @@ class MemoryRepository:
     ) -> tuple[MemoryDocument, bool]:
         existing = await self.find_by_digest(owner_id=owner_id, digest=source_sha256)
         if existing is not None:
+            await self.require_document_embedding_model(
+                document_id=existing.id,
+                embedding_model=embedding_model,
+            )
             validate_duplicate_governance(
                 existing,
                 sensitivity=sensitivity,
@@ -240,6 +277,10 @@ class MemoryRepository:
             )
             if winner is None:
                 raise RuntimeError("content insert conflicted but the winning row is missing")
+            await self.require_document_embedding_model(
+                document_id=winner.id,
+                embedding_model=embedding_model,
+            )
             validate_duplicate_governance(
                 winner,
                 sensitivity=sensitivity,
@@ -328,6 +369,7 @@ class MemoryRepository:
         owner_id: str,
         query_text: str,
         embedding: list[float],
+        embedding_model: str,
         top_k: int,
         hybrid: bool = True,
     ) -> list[MemoryHit]:
@@ -335,6 +377,7 @@ class MemoryRepository:
             owner_id=owner_id,
             query_text=query_text,
             embedding=embedding,
+            embedding_model=embedding_model,
             top_k=top_k,
             hybrid=hybrid,
         )

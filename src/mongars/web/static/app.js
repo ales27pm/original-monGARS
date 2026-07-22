@@ -4,6 +4,18 @@
   const TOKEN_KEY = "mongars.session.token";
   const LOCAL_HOSTS = new Set(["localhost", "127.0.0.1", "::1", "[::1]"]);
   const TASK_POLL_MS = 8_000;
+  const MAX_DOCUMENT_BYTES = 10_000_000;
+  const DOCUMENT_MIME_TYPES = Object.freeze({
+    txt: "text/plain",
+    md: "text/markdown",
+    markdown: "text/markdown",
+    html: "text/html",
+    htm: "text/html",
+    pdf: "application/pdf",
+    docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  });
+  const GENERIC_DOCUMENT_MIME_TYPES = new Set(["", "application/octet-stream"]);
+  const FORMAT_CONTROL_CHARACTERS = /\p{Cf}/u;
 
   const state = {
     token: readSessionToken(),
@@ -13,6 +25,7 @@
     taskFilter: "all",
     currentView: "chat",
     taskPoll: null,
+    uploadedTaskId: null,
   };
 
   const dom = {
@@ -25,6 +38,21 @@
     connectButton: document.querySelector("#connect-button"),
     databaseStatus: document.querySelector("#database-status"),
     disconnectButton: document.querySelector("#disconnect-button"),
+    documentClose: document.querySelector("#document-close"),
+    documentDialog: document.querySelector("#document-dialog"),
+    documentError: document.querySelector("#document-error"),
+    documentFile: document.querySelector("#document-file"),
+    documentFileSummary: document.querySelector("#document-file-summary"),
+    documentForm: document.querySelector("#document-form"),
+    documentRetention: document.querySelector("#document-retention"),
+    documentSensitivity: document.querySelector("#document-sensitivity"),
+    documentSubmit: document.querySelector("#document-submit"),
+    documentTaskLink: document.querySelector("#document-task-link"),
+    documentTitle: document.querySelector("#document-title-input"),
+    documentUploadResult: document.querySelector("#document-upload-result"),
+    documentUploadState: document.querySelector("#document-upload-state"),
+    documentUploadStatus: document.querySelector("#document-upload-status"),
+    documentUploadTaskId: document.querySelector("#document-upload-task-id"),
     emptyChat: document.querySelector("#empty-chat"),
     globalStatusDot: document.querySelector("#global-status-dot"),
     globalStatusLabel: document.querySelector("#global-status-label"),
@@ -45,6 +73,7 @@
     noteSensitivity: document.querySelector("#note-sensitivity"),
     noteText: document.querySelector("#note-text"),
     noteTitle: document.querySelector("#note-title-input"),
+    openDocument: document.querySelector("#open-document"),
     openNote: document.querySelector("#open-note"),
     refreshStatus: document.querySelector("#refresh-status"),
     refreshTasks: document.querySelector("#refresh-tasks"),
@@ -142,6 +171,9 @@
   function apiMessage(payload, fallback) {
     if (!payload) return fallback;
     if (typeof payload.detail === "string") return payload.detail;
+    if (payload.detail && typeof payload.detail.message === "string") {
+      return payload.detail.message;
+    }
     if (payload.detail && typeof payload.detail.code === "string") {
       return humanize(payload.detail.code);
     }
@@ -158,7 +190,9 @@
 
     const headers = new Headers(requestOptions.headers || {});
     headers.set("Accept", "application/json");
-    if (requestOptions.body !== undefined) headers.set("Content-Type", "application/json");
+    if (typeof requestOptions.body === "string") {
+      headers.set("Content-Type", "application/json");
+    }
     if (authenticated) headers.set("Authorization", `Bearer ${state.token}`);
 
     let response;
@@ -262,6 +296,7 @@
     state.sessionId = null;
     state.tasks = [];
     state.taskReviews.clear();
+    state.uploadedTaskId = null;
     writeSessionToken("");
     stopTaskPolling();
     renderTaskCount();
@@ -482,6 +517,152 @@
     }
   }
 
+  function selectedDocument() {
+    return dom.documentFile.files?.[0] || null;
+  }
+
+  function documentExtension(filename) {
+    const separator = filename.lastIndexOf(".");
+    return separator >= 0 ? filename.slice(separator + 1).toLowerCase() : "";
+  }
+
+  function canonicalDocumentMimeType(file) {
+    const expected = DOCUMENT_MIME_TYPES[documentExtension(file.name)];
+    if (!expected) throw new ApiError("Choose a TXT, Markdown, HTML, PDF, or DOCX document.");
+    const declared = String(file.type || "").split(";", 1)[0].trim().toLowerCase();
+    if (!GENERIC_DOCUMENT_MIME_TYPES.has(declared) && declared !== expected) {
+      throw new ApiError("The selected document type does not match its filename extension.");
+    }
+    return expected;
+  }
+
+  function validateSelectedDocument() {
+    const file = selectedDocument();
+    if (!file) throw new ApiError("Choose a document to upload.");
+    if (typeof file.name !== "string" || !file.name || FORMAT_CONTROL_CHARACTERS.test(file.name)) {
+      throw new ApiError("The selected filename contains unsafe or invisible characters.");
+    }
+    if (!Number.isSafeInteger(file.size) || file.size < 1) {
+      throw new ApiError("The selected document is empty or its size is invalid.");
+    }
+    if (file.size > MAX_DOCUMENT_BYTES) {
+      throw new ApiError("The selected document exceeds the 10 MB upload limit.", 413);
+    }
+    const canonicalMimeType = canonicalDocumentMimeType(file);
+    const canonicalContent = file.slice(0, file.size, canonicalMimeType);
+    if (canonicalContent.size !== file.size || canonicalContent.type !== canonicalMimeType) {
+      throw new ApiError("The browser could not prepare this document safely.");
+    }
+    return { canonicalContent, canonicalMimeType, file };
+  }
+
+  function documentSourceTimestamp(file) {
+    const timestamp = Number.isFinite(file.lastModified) && file.lastModified > 0
+      ? file.lastModified
+      : Date.now();
+    const value = new Date(timestamp);
+    return Number.isNaN(value.getTime()) ? new Date().toISOString() : value.toISOString();
+  }
+
+  function renderSelectedDocument() {
+    const file = selectedDocument();
+    dom.documentError.hidden = true;
+    if (!file) {
+      dom.documentFileSummary.textContent = "No file selected.";
+      return;
+    }
+    try {
+      const reviewed = validateSelectedDocument();
+      const modified = documentSourceTimestamp(reviewed.file);
+      dom.documentFileSummary.textContent = `${reviewed.file.name} · ${formatPayloadBytes(reviewed.file.size)} · ${reviewed.canonicalMimeType} · modified ${formatDate(modified)}`;
+    } catch (error) {
+      dom.documentFile.value = "";
+      dom.documentFileSummary.textContent = "The selected file is not eligible for upload.";
+      dom.documentError.textContent = error instanceof Error
+        ? error.message
+        : "This document cannot be uploaded.";
+      dom.documentError.hidden = false;
+    }
+  }
+
+  function resetDocumentUpload() {
+    dom.documentForm.reset();
+    dom.documentError.hidden = true;
+    dom.documentError.textContent = "";
+    dom.documentUploadResult.hidden = true;
+    dom.documentSubmit.hidden = false;
+    dom.documentSubmit.disabled = false;
+    dom.documentSubmit.textContent = "Create approval task";
+    dom.documentFileSummary.textContent = "No file selected.";
+  }
+
+  function openDocumentUpload() {
+    if (!state.token) return openAuth();
+    resetDocumentUpload();
+    showDialog(dom.documentDialog);
+    window.setTimeout(() => dom.documentFile.focus(), 50);
+  }
+
+  function validateDocumentUploadResponse(payload) {
+    if (
+      !payload
+      || typeof payload.id !== "string"
+      || payload.kind !== "document.ingest"
+      || payload.status !== "waiting_approval"
+      || payload.risk_level !== "local_mutation"
+      || typeof payload.action_digest !== "string"
+      || !/^[0-9a-f]{64}$/.test(payload.action_digest)
+    ) {
+      throw new ApiError("The server returned an invalid document approval task.");
+    }
+    return payload;
+  }
+
+  async function uploadDocument() {
+    const { canonicalContent, file } = validateSelectedDocument();
+    const formData = new FormData();
+    formData.append("file", canonicalContent, file.name);
+    formData.append("declared_size", String(file.size));
+    formData.append("source_timestamp", documentSourceTimestamp(file));
+    formData.append("title", dom.documentTitle.value.trim());
+    formData.append("sensitivity", dom.documentSensitivity.value);
+    formData.append("retention_class", dom.documentRetention.value);
+
+    const payload = validateDocumentUploadResponse(await apiFetch("/v1/documents", {
+      method: "POST",
+      body: formData,
+    }));
+    state.uploadedTaskId = payload.id;
+    dom.documentUploadStatus.textContent = `${file.name} is staged locally and has not been ingested yet.`;
+    dom.documentUploadState.textContent = humanize(payload.status);
+    dom.documentUploadTaskId.textContent = payload.id;
+    dom.documentUploadResult.hidden = false;
+    dom.documentSubmit.hidden = true;
+    await refreshTasks({ silent: true });
+    toast("Document staged for protected approval.", "success");
+  }
+
+  function selectTaskFilter(filter) {
+    state.taskFilter = filter;
+    document.querySelectorAll("[data-task-filter]").forEach((candidate) => {
+      const active = candidate.dataset.taskFilter === filter;
+      candidate.classList.toggle("is-active", active);
+      candidate.setAttribute("aria-pressed", String(active));
+    });
+  }
+
+  async function showUploadedTask() {
+    closeDialog(dom.documentDialog);
+    selectTaskFilter("all");
+    selectView("tasks");
+    await refreshTasks({ silent: true });
+    const card = dom.taskList.querySelector("[data-upload-task-focus='true']");
+    if (card) {
+      card.scrollIntoView({ behavior: "smooth", block: "center" });
+      card.focus({ preventScroll: true });
+    }
+  }
+
   function renderTaskCount() {
     const count = state.tasks.filter((task) => task.status === "waiting_approval").length;
     for (const badge of [dom.taskCount, dom.mobileTaskCount]) {
@@ -682,6 +863,11 @@
 
     for (const task of filtered) {
       const card = element("article", `task-card${task.status === "waiting_approval" ? " is-priority" : ""}`);
+      if (task.id === state.uploadedTaskId) {
+        card.classList.add("is-upload-result");
+        card.dataset.uploadTaskFocus = "true";
+        card.tabIndex = -1;
+      }
       const head = element("div", "task-card-head");
       const title = element("div");
       title.append(
@@ -897,12 +1083,7 @@
 
     document.querySelectorAll("[data-task-filter]").forEach((button) => {
       button.addEventListener("click", () => {
-        state.taskFilter = button.dataset.taskFilter || "all";
-        document.querySelectorAll("[data-task-filter]").forEach((candidate) => {
-          const active = candidate === button;
-          candidate.classList.toggle("is-active", active);
-          candidate.setAttribute("aria-pressed", String(active));
-        });
+        selectTaskFilter(button.dataset.taskFilter || "all");
         renderTasks();
       });
     });
@@ -913,6 +1094,13 @@
     dom.refreshStatus.addEventListener("click", () => refreshReadiness({ announce: true }));
     dom.refreshTasks.addEventListener("click", () => refreshTasks());
     dom.newChat.addEventListener("click", resetChat);
+    dom.openDocument.addEventListener("click", openDocumentUpload);
+    dom.documentClose.addEventListener("click", () => closeDialog(dom.documentDialog));
+    dom.documentFile.addEventListener("change", renderSelectedDocument);
+    dom.documentTaskLink.addEventListener("click", (event) => {
+      event.preventDefault();
+      void showUploadedTask();
+    });
     dom.openNote.addEventListener("click", () => {
       if (!state.token) return openAuth();
       dom.noteError.hidden = true;
@@ -979,6 +1167,24 @@
       const query = dom.memoryQuery.value.trim();
       if (!query) return;
       searchMemory(query, dom.memoryMode.value);
+    });
+
+    dom.documentForm.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      dom.documentSubmit.disabled = true;
+      dom.documentSubmit.textContent = "Staging document…";
+      dom.documentError.hidden = true;
+      dom.documentUploadResult.hidden = true;
+      try {
+        await uploadDocument();
+      } catch (error) {
+        dom.documentError.textContent = error instanceof Error
+          ? error.message
+          : "Could not create the document ingestion task.";
+        dom.documentError.hidden = false;
+        dom.documentSubmit.disabled = false;
+        dom.documentSubmit.textContent = "Create approval task";
+      }
     });
 
     dom.noteForm.addEventListener("submit", async (event) => {

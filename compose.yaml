@@ -7,6 +7,18 @@ x-app-environment: &app-environment
   MONGARS_CORS_ORIGINS: ${MONGARS_CORS_ORIGINS:-[]}
   MONGARS_TRUSTED_HOSTS: ${MONGARS_TRUSTED_HOSTS:-["localhost","127.0.0.1"]}
   MONGARS_MAX_REQUEST_BYTES: ${MONGARS_MAX_REQUEST_BYTES:-2100000}
+  MONGARS_MAX_DOCUMENT_REQUEST_BYTES: ${MONGARS_MAX_DOCUMENT_REQUEST_BYTES:-10500000}
+  MONGARS_MAX_DOCUMENT_UPLOAD_BYTES: ${MONGARS_MAX_DOCUMENT_UPLOAD_BYTES:-10000000}
+  MONGARS_MAX_DOCUMENT_PAGES: ${MONGARS_MAX_DOCUMENT_PAGES:-500}
+  MONGARS_MAX_DOCUMENT_SECTIONS: ${MONGARS_MAX_DOCUMENT_SECTIONS:-10000}
+  MONGARS_MAX_DOCUMENT_ARCHIVE_ENTRIES: ${MONGARS_MAX_DOCUMENT_ARCHIVE_ENTRIES:-2000}
+  MONGARS_MAX_DOCUMENT_ARCHIVE_UNCOMPRESSED_BYTES: ${MONGARS_MAX_DOCUMENT_ARCHIVE_UNCOMPRESSED_BYTES:-50000000}
+  MONGARS_DOCUMENT_PARSER_TIMEOUT_SECONDS: ${MONGARS_DOCUMENT_PARSER_TIMEOUT_SECONDS:-30}
+  MONGARS_DOCUMENT_PARSER_MEMORY_BYTES: ${MONGARS_DOCUMENT_PARSER_MEMORY_BYTES:-536870912}
+  MONGARS_DOCUMENT_PARSER_BASE_URL: ${MONGARS_DOCUMENT_PARSER_BASE_URL:-http://parser:8091}
+  MONGARS_DOCUMENT_STAGING_TTL_SECONDS: ${MONGARS_DOCUMENT_STAGING_TTL_SECONDS:-86400}
+  MONGARS_MAX_DOCUMENT_STAGED_OBJECTS: ${MONGARS_MAX_DOCUMENT_STAGED_OBJECTS:-10}
+  MONGARS_MAX_DOCUMENT_STAGED_BYTES: ${MONGARS_MAX_DOCUMENT_STAGED_BYTES:-50000000}
   MONGARS_DATABASE_POOL_SIZE: ${MONGARS_DATABASE_POOL_SIZE:-5}
   MONGARS_DATABASE_POOL_TIMEOUT_SECONDS: ${MONGARS_DATABASE_POOL_TIMEOUT_SECONDS:-10}
   MONGARS_INFERENCE_BACKEND: ${MONGARS_INFERENCE_BACKEND:-ollama}
@@ -31,6 +43,7 @@ x-app-environment: &app-environment
   MONGARS_MAX_DOCUMENT_CHARS: ${MONGARS_MAX_DOCUMENT_CHARS:-2000000}
   MONGARS_MEMORY_CHUNK_TOKENS: ${MONGARS_MEMORY_CHUNK_TOKENS:-800}
   MONGARS_MEMORY_CHUNK_OVERLAP_TOKENS: ${MONGARS_MEMORY_CHUNK_OVERLAP_TOKENS:-100}
+  MONGARS_MEMORY_CHUNK_CHARACTERS: ${MONGARS_MEMORY_CHUNK_CHARACTERS:-32000}
   MONGARS_MEMORY_TOP_K: ${MONGARS_MEMORY_TOP_K:-8}
   MONGARS_WORKER_POLL_SECONDS: ${MONGARS_WORKER_POLL_SECONDS:-1}
   MONGARS_WORKER_LEASE_SECONDS: ${MONGARS_WORKER_LEASE_SECONDS:-120}
@@ -55,6 +68,8 @@ x-app-base: &app-base
   security_opt:
     - no-new-privileges:true
   pids_limit: 256
+  mem_limit: 1g
+  cpus: 2.0
   environment: *app-environment
   secrets:
     - postgres_password
@@ -138,14 +153,19 @@ services:
         export MONGARS_DATABASE_URL="$$(python -c 'import os; from pathlib import Path; from urllib.parse import quote; user=quote(os.environ["POSTGRES_USER"], safe=""); password=quote(Path("/run/secrets/postgres_password").read_text().strip(), safe=""); database=quote(os.environ["POSTGRES_DB"], safe=""); print(f"postgresql+psycopg://{user}:{password}@postgres:5432/{database}")')"
         export MONGARS_API_TOKEN="$$(cat /run/secrets/api_token)"
         export MONGARS_APPROVAL_HMAC_KEY="$$(cat /run/secrets/approval_hmac_key)"
-        exec uvicorn mongars.main:app --host 0.0.0.0 --port 8000 --workers ${MONGARS_API_WORKERS:-1}
+        exec uvicorn mongars.main:app --host 0.0.0.0 --port 8000 --workers ${MONGARS_API_WORKERS:-1} --limit-concurrency ${MONGARS_API_LIMIT_CONCURRENCY:-64}
     stop_grace_period: 30s
 
   worker:
     <<: *app-base
+    networks:
+      - backend
+      - parser
     depends_on:
       migrate:
         condition: service_completed_successfully
+      parser:
+        condition: service_healthy
     healthcheck:
       disable: true
     entrypoint: ["/bin/sh", "-ec"]
@@ -156,6 +176,66 @@ services:
         export MONGARS_APPROVAL_HMAC_KEY="$$(cat /run/secrets/approval_hmac_key)"
         exec python -m mongars.rm.worker
     stop_grace_period: 30s
+
+  parser:
+    image: ${MONGARS_IMAGE:-mongars:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+      args:
+        SECRET_GID: ${MONGARS_SECRET_GID:-1000}
+    init: true
+    restart: unless-stopped
+    user: "10001:10001"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 768m
+    cpus: 1.0
+    environment:
+      MONGARS_PARSER_MAX_INPUT_BYTES: ${MONGARS_MAX_DOCUMENT_UPLOAD_BYTES:-10000000}
+      MONGARS_PARSER_MAX_EXTRACTED_CHARS: ${MONGARS_MAX_DOCUMENT_CHARS:-2000000}
+      MONGARS_PARSER_MAX_PAGES: ${MONGARS_MAX_DOCUMENT_PAGES:-500}
+      MONGARS_PARSER_MAX_SECTIONS: ${MONGARS_MAX_DOCUMENT_SECTIONS:-10000}
+      MONGARS_PARSER_MAX_ARCHIVE_MEMBERS: ${MONGARS_MAX_DOCUMENT_ARCHIVE_ENTRIES:-2000}
+      MONGARS_PARSER_MAX_ARCHIVE_UNCOMPRESSED_BYTES: ${MONGARS_MAX_DOCUMENT_ARCHIVE_UNCOMPRESSED_BYTES:-50000000}
+      MONGARS_PARSER_TIMEOUT_SECONDS: ${MONGARS_DOCUMENT_PARSER_TIMEOUT_SECONDS:-30}
+      MONGARS_PARSER_PROCESS_MEMORY_BYTES: ${MONGARS_DOCUMENT_PARSER_MEMORY_BYTES:-536870912}
+    entrypoint: ["uvicorn"]
+    command:
+      - mongars.ingestion.server:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8091"
+      - --workers
+      - "1"
+      - --limit-concurrency
+      - "2"
+      - --no-access-log
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    networks:
+      - parser
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8091/healthz", timeout=2).read()'
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
 
   https:
     image: ${MONGARS_CADDY_IMAGE:-mongars-caddy:local}
@@ -173,6 +253,7 @@ services:
     environment:
       MONGARS_HTTPS_HOST: ${MONGARS_HTTPS_HOST:-127.0.0.1}
       MONGARS_MAX_REQUEST_BYTES: ${MONGARS_MAX_REQUEST_BYTES:-2100000}
+      MONGARS_MAX_DOCUMENT_REQUEST_BYTES: ${MONGARS_MAX_DOCUMENT_REQUEST_BYTES:-10500000}
     ports:
       - ${MONGARS_HTTPS_BIND_ADDRESS:-127.0.0.1}:${MONGARS_HTTP_PORT:-80}:8080/tcp
       - ${MONGARS_HTTPS_BIND_ADDRESS:-127.0.0.1}:${MONGARS_HTTPS_PORT:-443}:8443/tcp
@@ -382,6 +463,9 @@ services:
 
 networks:
   backend:
+    driver: bridge
+    internal: true
+  parser:
     driver: bridge
     internal: true
   edge:
