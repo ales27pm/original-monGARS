@@ -42,7 +42,9 @@ fi
 
 docker info >/dev/null
 
-ci_container_id="$({
+docker pull "$ci_postgres_image"
+
+if ! ci_container_id="$(
   docker run --detach --rm \
     --label com.mongars.ci-local=true \
     --env "POSTGRES_DB=$ci_database_name" \
@@ -54,11 +56,15 @@ ci_container_id="$({
     --health-timeout=3s \
     --health-retries=20 \
     "$ci_postgres_image"
-} 2>&1)" || {
-  echo "$ci_container_id" >&2
+)"; then
   ci_container_id=""
   exit 1
-}
+fi
+if [[ ! "$ci_container_id" =~ ^[0-9a-f]{12,64}$ ]]; then
+  echo "docker run returned an invalid container ID" >&2
+  ci_container_id=""
+  exit 1
+fi
 
 ci_database_health=""
 for _ci_attempt in {1..30}; do
@@ -96,6 +102,7 @@ echo "Running local CI against disposable PostgreSQL on 127.0.0.1:${ci_postgres_
 
 "$ci_uv" lock --check
 "$ci_uv" sync --frozen --extra dev --extra documents
+shellcheck scripts/*.sh
 "$ci_uv" run ruff format --check .
 "$ci_uv" run ruff check .
 "$ci_uv" run mypy src

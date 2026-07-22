@@ -7,6 +7,10 @@ from urllib.parse import urlparse
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from mongars.prompting import CORTEX_MINIMUM_PROMPT_TOKENS
+
+_LOCAL_OLLAMA_HOSTS = frozenset({"127.0.0.1", "localhost", "ollama"})
+
 
 class Environment(StrEnum):
     DEVELOPMENT = "development"
@@ -47,6 +51,8 @@ class Settings(BaseSettings):
     ollama_chat_model: str = "qwen3:4b"
     ollama_embedding_model: str = "nomic-embed-text"
     ollama_think: bool = False
+    ollama_context_length: int = Field(default=4096, ge=512, le=1_048_576)
+    ollama_num_predict: int = Field(default=512, ge=1, le=131_072)
     inference_timeout_seconds: float = Field(default=90.0, gt=0, le=600)
     inference_health_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
     # The initial migration fixes pgvector columns at 768 dimensions.
@@ -63,6 +69,15 @@ class Settings(BaseSettings):
     worker_lease_seconds: int = Field(default=120, ge=10, le=3600)
     retention_sweep_seconds: int = Field(default=300, ge=10, le=86_400)
     approval_ttl_seconds: int = Field(default=900, ge=30, le=86_400)
+
+    @property
+    def inference_is_local(self) -> bool:
+        """Return whether the configured inference endpoint is in the local trust boundary."""
+
+        return (
+            self.inference_backend == "ollama"
+            and urlparse(self.ollama_base_url).hostname in _LOCAL_OLLAMA_HOSTS
+        )
 
     @field_validator("log_level")
     @classmethod
@@ -86,12 +101,11 @@ class Settings(BaseSettings):
 
         parsed = urlparse(self.ollama_base_url)
         hostname = parsed.hostname
-        local_hosts = {"127.0.0.1", "localhost", "ollama"}
         if parsed.scheme not in {"http", "https"} or hostname is None:
             raise ValueError("ollama_base_url must be an absolute HTTP(S) URL")
-        if not self.allow_remote_inference and hostname not in local_hosts:
+        if not self.allow_remote_inference and not self.inference_is_local:
             raise ValueError("remote inference is disabled")
-        if hostname not in local_hosts and parsed.scheme != "https":
+        if not self.inference_is_local and parsed.scheme != "https":
             raise ValueError("remote inference requires TLS")
 
         if self.environment is Environment.PRODUCTION:
@@ -101,6 +115,14 @@ class Settings(BaseSettings):
                 raise ValueError("MONGARS_APPROVAL_HMAC_KEY must be changed in production")
         if self.memory_chunk_overlap_tokens >= self.memory_chunk_tokens:
             raise ValueError("memory chunk overlap must be smaller than chunk size")
+        if self.ollama_num_predict >= self.ollama_context_length:
+            raise ValueError("ollama_num_predict must be smaller than ollama_context_length")
+        prompt_tokens = self.ollama_context_length - self.ollama_num_predict
+        if prompt_tokens < CORTEX_MINIMUM_PROMPT_TOKENS:
+            raise ValueError(
+                "ollama_context_length - ollama_num_predict must leave at least "
+                f"{CORTEX_MINIMUM_PROMPT_TOKENS} tokens for the Cortex prompt envelope"
+            )
         if self.embedding_dimensions != 768:
             raise ValueError("the current pgvector schema requires 768-dimensional embeddings")
         return self

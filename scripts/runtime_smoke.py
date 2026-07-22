@@ -3,9 +3,9 @@
 
 The script intentionally uses only public HTTP endpoints for the smoke workflow.  It
 expects the production-like Compose stack (including Ollama and its embedding model) to
-already be running.  Run it against a disposable stack because it creates one retained
-memory note.  ``--cleanup-with-compose`` can remove only that uniquely identified smoke
-artifact from the local Compose database after the checks complete.
+already be running. Run it against a disposable stack because it creates one retained
+memory note. ``--cleanup-with-compose`` removes only the identifiers accumulated by this
+smoke run, including best-effort cleanup when a later check fails.
 """
 
 from __future__ import annotations
@@ -33,11 +33,17 @@ class SmokeFailure(RuntimeError):
     """Raised when the deployed stack violates a smoke-test contract."""
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class CreatedArtifact:
-    task_id: UUID
-    trace_id: str
-    document_id: UUID
+    """Identifiers accumulated as the smoke workflow creates durable state."""
+
+    task_id: UUID | None = None
+    trace_id: str | None = None
+    document_id: UUID | None = None
+
+    @property
+    def has_any(self) -> bool:
+        return self.task_id is not None or self.trace_id is not None or self.document_id is not None
 
 
 def _require(condition: bool, message: str) -> None:
@@ -116,7 +122,9 @@ def run_smoke(
     token: str,
     timeout_seconds: float,
     poll_seconds: float,
+    artifact: CreatedArtifact | None = None,
 ) -> tuple[dict[str, Any], CreatedArtifact]:
+    created_artifact = artifact if artifact is not None else CreatedArtifact()
     parsed_url = urlsplit(api_url)
     _require(
         parsed_url.scheme in {"http", "https"} and parsed_url.hostname is not None,
@@ -163,7 +171,14 @@ def run_smoke(
             operation="memory task creation",
         )
         task_id = UUID(str(created.get("id")))
-        trace_id = str(created.get("trace_id"))
+        created_artifact.task_id = task_id
+        raw_trace_id = created.get("trace_id")
+        _require(
+            isinstance(raw_trace_id, str) and _SAFE_TRACE_ID.fullmatch(raw_trace_id) is not None,
+            "memory task creation returned an invalid trace ID",
+        )
+        trace_id = raw_trace_id
+        created_artifact.trace_id = trace_id
         _require(created.get("kind") == "memory.note.create", "unexpected memory task kind")
         _require(created.get("risk_level") == "local_mutation", "memory write was misclassified")
         _require(created.get("status") == "waiting_approval", "memory write bypassed approval")
@@ -189,6 +204,7 @@ def run_smoke(
         result = completed.get("result")
         _require(isinstance(result, dict), "completed task has no result object")
         document_id = UUID(str(result.get("document_id")))
+        created_artifact.document_id = document_id
         _require(result.get("created") is True, "unique smoke document was not created")
         _require(int(result.get("chunk_count", 0)) >= 1, "smoke document has no chunks")
 
@@ -239,11 +255,14 @@ def run_smoke(
         "document_id": str(document_id),
         "retrieval_hits": len(matching_hits),
     }
-    return summary, CreatedArtifact(task_id, trace_id, document_id)
+    return summary, created_artifact
 
 
 def _cleanup_with_compose(artifact: CreatedArtifact, *, compose_project: str | None) -> None:
-    _require(_SAFE_TRACE_ID.fullmatch(artifact.trace_id) is not None, "unsafe trace ID")
+    if not artifact.has_any:
+        return
+    if artifact.trace_id is not None:
+        _require(_SAFE_TRACE_ID.fullmatch(artifact.trace_id) is not None, "unsafe trace ID")
     postgres_user = os.getenv("POSTGRES_USER", "mongars")
     postgres_database = os.getenv("POSTGRES_DB", "mongars")
     _require(re.fullmatch(r"[A-Za-z0-9_-]{1,63}", postgres_user) is not None, "unsafe DB user")
@@ -267,13 +286,31 @@ def _cleanup_with_compose(artifact: CreatedArtifact, *, compose_project: str | N
             postgres_database,
         ]
     )
-    sql = (
-        "BEGIN;\n"
-        f"DELETE FROM episodic_events WHERE trace_id = '{artifact.trace_id}';\n"
-        f"DELETE FROM memory_documents WHERE id = '{artifact.document_id}'::uuid;\n"
-        f"DELETE FROM task_queue WHERE id = '{artifact.task_id}'::uuid;\n"
-        "COMMIT;\n"
-    )
+    if artifact.trace_id is not None:
+        command.extend(["--set", f"smoke_trace_id={artifact.trace_id}"])
+    if artifact.document_id is not None:
+        command.extend(["--set", f"smoke_document_id={artifact.document_id}"])
+    if artifact.task_id is not None:
+        command.extend(["--set", f"smoke_task_id={artifact.task_id}"])
+    statements = ["BEGIN;"]
+    if artifact.trace_id is not None:
+        statements.append("DELETE FROM episodic_events WHERE trace_id = :'smoke_trace_id';")
+    if artifact.document_id is not None and artifact.task_id is not None:
+        statements.append(
+            "DELETE FROM memory_documents "
+            "WHERE id = :'smoke_document_id'::uuid "
+            "OR metadata ->> 'task_id' = :'smoke_task_id';"
+        )
+    elif artifact.document_id is not None:
+        statements.append("DELETE FROM memory_documents WHERE id = :'smoke_document_id'::uuid;")
+    elif artifact.task_id is not None:
+        statements.append(
+            "DELETE FROM memory_documents WHERE metadata ->> 'task_id' = :'smoke_task_id';"
+        )
+    if artifact.task_id is not None:
+        statements.append("DELETE FROM task_queue WHERE id = :'smoke_task_id'::uuid;")
+    statements.append("COMMIT;")
+    sql = "\n".join(statements) + "\n"
     completed = subprocess.run(  # noqa: S603 -- fixed executable and validated arguments
         command,
         input=sql,
@@ -282,7 +319,7 @@ def _cleanup_with_compose(artifact: CreatedArtifact, *, compose_project: str | N
         capture_output=True,
     )
     if completed.returncode != 0:
-        raise SmokeFailure("smoke passed but exact-artifact Compose cleanup failed")
+        raise SmokeFailure("exact-artifact Compose cleanup failed")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -317,6 +354,10 @@ def _parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     arguments = _parser().parse_args()
+    artifact = CreatedArtifact()
+    summary: dict[str, Any] | None = None
+    failure_message: str | None = None
+    artifacts_cleaned = False
     try:
         _require(arguments.timeout_seconds > 0, "timeout must be positive")
         _require(arguments.poll_seconds > 0, "poll interval must be positive")
@@ -326,13 +367,37 @@ def main() -> int:
             token=token,
             timeout_seconds=arguments.timeout_seconds,
             poll_seconds=arguments.poll_seconds,
+            artifact=artifact,
         )
-        if arguments.cleanup_with_compose:
-            _cleanup_with_compose(artifact, compose_project=arguments.compose_project)
-            summary["artifacts_cleaned"] = True
     except (OSError, ValueError, httpx.HTTPError, SmokeFailure) as exc:
-        print(json.dumps({"status": "failed", "error": str(exc)}), file=sys.stderr)
+        failure_message = str(exc)
+    finally:
+        if arguments.cleanup_with_compose and artifact.has_any:
+            try:
+                _cleanup_with_compose(artifact, compose_project=arguments.compose_project)
+                artifacts_cleaned = True
+            except (OSError, SmokeFailure) as exc:
+                cleanup_message = str(exc)
+                failure_message = (
+                    cleanup_message
+                    if failure_message is None
+                    else f"{failure_message}; cleanup also failed: {cleanup_message}"
+                )
+
+    if failure_message is not None:
+        failure = {"status": "failed", "error": failure_message}
+        if artifacts_cleaned:
+            failure["artifacts_cleaned"] = True
+        print(json.dumps(failure, sort_keys=True), file=sys.stderr)
         return 1
+    if summary is None:
+        print(
+            json.dumps({"status": "failed", "error": "smoke run produced no summary"}),
+            file=sys.stderr,
+        )
+        return 1
+    if artifacts_cleaned:
+        summary["artifacts_cleaned"] = True
     print(json.dumps(summary, sort_keys=True))
     return 0
 

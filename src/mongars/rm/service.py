@@ -155,7 +155,12 @@ class TaskService:
         )
         return task
 
-    def verify_for_execution(self, task: TaskQueue) -> None:
+    def verify_for_execution(
+        self,
+        task: TaskQueue,
+        *,
+        allow_consumed_approval: bool = False,
+    ) -> None:
         try:
             normalized_payload = normalize_task_payload(task.kind, task.payload)
             tool, action = TASK_POLICY_KEYS[task.kind]
@@ -176,9 +181,9 @@ class TaskService:
         now = datetime.now(UTC)
         if task.approved_at is None or task.approval_expires_at is None:
             raise TaskIntegrityError("privileged task has no approval")
-        if task.approval_expires_at <= now:
+        if task.consumed_at is None and task.approval_expires_at <= now:
             raise TaskIntegrityError("task approval expired before execution")
-        if task.consumed_at is not None:
+        if task.consumed_at is not None and not allow_consumed_approval:
             raise TaskIntegrityError("task approval has already been consumed")
         expected = self._digest(
             owner_id=task.owner_id,
@@ -188,4 +193,5 @@ class TaskService:
         )
         if task.action_digest is None or not hmac.compare_digest(expected, task.action_digest):
             raise TaskIntegrityError("task payload changed after approval")
-        task.consumed_at = now
+        if task.consumed_at is None:
+            task.consumed_at = now

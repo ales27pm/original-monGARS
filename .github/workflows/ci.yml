@@ -61,6 +61,7 @@ jobs:
 
       - name: Lint and type-check
         run: |
+          shellcheck scripts/*.sh
           uv run ruff format --check .
           uv run ruff check .
           uv run mypy src

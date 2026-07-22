@@ -7,14 +7,15 @@ from contextlib import asynccontextmanager
 from typing import cast
 
 import uvicorn
-from fastapi import FastAPI, Request, status
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import Response
 
 from mongars.api.routes import chat, health, memory, tasks
 from mongars.config import Environment, Settings, get_settings
 from mongars.db.session import Database
+from mongars.http import RequestBodyLimitMiddleware
 from mongars.inference.base import InferenceBackend
 from mongars.inference.ollama import OllamaBackend
 from mongars.logging import configure_logging
@@ -68,7 +69,13 @@ def create_app(
         }
     )
 
+    application.add_middleware(
+        RequestBodyLimitMiddleware,
+        max_bytes=runtime_settings.max_request_bytes,
+    )
     if runtime_settings.cors_origins:
+        # CORS must wrap the body limiter so browser clients can observe 4xx boundary
+        # responses. TrustedHost remains outside both in production.
         application.add_middleware(
             CORSMiddleware,
             allow_origins=runtime_settings.cors_origins,
@@ -84,21 +91,6 @@ def create_app(
 
     @application.middleware("http")
     async def request_boundary(request: Request, call_next: object) -> Response:
-        content_length = request.headers.get("content-length")
-        if content_length is not None:
-            try:
-                too_large = int(content_length) > runtime_settings.max_request_bytes
-            except ValueError:
-                return JSONResponse(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    content={"detail": "invalid Content-Length header"},
-                )
-            if too_large:
-                return JSONResponse(
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                    content={"detail": "request body exceeds configured limit"},
-                )
-
         started = time.monotonic()
         response = await call_next(request)  # type: ignore[operator]
         duration_ms = (time.monotonic() - started) * 1000

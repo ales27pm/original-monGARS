@@ -42,6 +42,9 @@ async def readyz(request: Request) -> JSONResponse:
             "inference": {
                 "backend": inference_status.backend,
                 "healthy": inference_status.healthy,
+                "backend_reachable": inference_status.backend_reachable,
+                "chat_model_ready": inference_status.chat_model_ready,
+                "embedding_model_ready": inference_status.embedding_model_ready,
                 "latency_ms": round(inference_status.latency_ms, 2),
                 "error_code": inference_status.error_code,
             },

@@ -203,7 +203,7 @@ class OllamaBackend:
         )
 
     async def health(self) -> HealthStatus:
-        """Probe Ollama's model-list endpoint and convert failures to status data."""
+        """Probe Ollama and verify that both configured mandatory models exist."""
 
         started = monotonic()
         try:
@@ -213,19 +213,34 @@ class OllamaBackend:
                 operation="health",
                 request_timeout=self._health_timeout,
             )
-            if not isinstance(data.get("models"), list):
+            raw_models = data.get("models")
+            if not isinstance(raw_models, list):
                 raise _response_error("Health response is missing list 'models'.", "health")
         except InferenceError as exc:
             return HealthStatus(
                 backend=_BACKEND,
-                healthy=False,
+                backend_reachable=not isinstance(
+                    exc,
+                    (InferenceConnectionError, InferenceTimeoutError),
+                ),
+                chat_model_ready=False,
+                embedding_model_ready=False,
                 latency_ms=(monotonic() - started) * 1000,
                 error_code=exc.code,
             )
+
+        available_models = _available_model_aliases(raw_models)
+        chat_model_ready = bool(_model_aliases(self._chat_model) & available_models)
+        embedding_model_ready = bool(_model_aliases(self._embedding_model) & available_models)
         return HealthStatus(
             backend=_BACKEND,
-            healthy=True,
+            backend_reachable=True,
+            chat_model_ready=chat_model_ready,
+            embedding_model_ready=embedding_model_ready,
             latency_ms=(monotonic() - started) * 1000,
+            error_code=(
+                None if chat_model_ready and embedding_model_ready else "required_models_missing"
+            ),
         )
 
     async def _request_json(
@@ -319,6 +334,45 @@ def _validate_model(value: str, *, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{field} must be a non-empty string")
     return value.strip()
+
+
+def _model_aliases(value: str) -> set[str]:
+    """Return canonical aliases for Ollama's short and registry-qualified names."""
+
+    normalized = value.strip().casefold().rstrip("/")
+    if not normalized:
+        return set()
+    # Ollama reports default-library models both as short names and under its own
+    # registry namespace. Only collapse that known namespace: taking the basename of
+    # every qualified name would make unrelated registries/owners collide.
+    library_prefix = "registry.ollama.ai/library/"
+    canonical = (
+        normalized[len(library_prefix) :] if normalized.startswith(library_prefix) else normalized
+    )
+    names = {normalized, canonical}
+    aliases: set[str] = set()
+    for name in names:
+        aliases.add(name)
+        if name.endswith(":latest"):
+            aliases.add(name[: -len(":latest")])
+        elif ":" not in name:
+            aliases.add(f"{name}:latest")
+    return aliases
+
+
+def _available_model_aliases(raw_models: list[Any]) -> set[str]:
+    aliases: set[str] = set()
+    for raw_model in raw_models:
+        if isinstance(raw_model, str):
+            aliases.update(_model_aliases(raw_model))
+            continue
+        if not isinstance(raw_model, Mapping):
+            continue
+        for key in ("name", "model"):
+            value = raw_model.get(key)
+            if isinstance(value, str):
+                aliases.update(_model_aliases(value))
+    return aliases
 
 
 def _validate_optional_dimension(value: int | None, *, field: str) -> int | None:

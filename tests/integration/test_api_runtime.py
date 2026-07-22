@@ -94,7 +94,9 @@ class DeterministicInference:
     async def health(self) -> HealthStatus:
         return HealthStatus(
             backend="ollama",
-            healthy=self.healthy,
+            backend_reachable=self.healthy,
+            chat_model_ready=self.healthy,
+            embedding_model_ready=self.healthy,
             latency_ms=0.1,
             error_code=None if self.healthy else "connection_error",
         )
@@ -154,6 +156,9 @@ async def test_api_approval_worker_memory_and_readiness_smoke() -> None:
                 "inference": {
                     "backend": "ollama",
                     "healthy": True,
+                    "backend_reachable": True,
+                    "chat_model_ready": True,
+                    "embedding_model_ready": True,
                     "latency_ms": 0.1,
                     "error_code": None,
                 },
@@ -255,6 +260,9 @@ async def test_api_approval_worker_memory_and_readiness_smoke() -> None:
             assert degraded_body["dependencies"]["inference"] == {
                 "backend": "ollama",
                 "healthy": False,
+                "backend_reachable": False,
+                "chat_model_ready": False,
+                "embedding_model_ready": False,
                 "latency_ms": 0.1,
                 "error_code": "connection_error",
             }

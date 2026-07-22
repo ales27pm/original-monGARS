@@ -43,9 +43,17 @@ class HealthStatus:
     """A non-throwing dependency health result suitable for readiness checks."""
 
     backend: str
-    healthy: bool
+    backend_reachable: bool
+    chat_model_ready: bool
+    embedding_model_ready: bool
     latency_ms: float
     error_code: str | None = None
+
+    @property
+    def healthy(self) -> bool:
+        """Require both connectivity and every configured mandatory model."""
+
+        return self.backend_reachable and self.chat_model_ready and self.embedding_model_ready
 
 
 class InferenceError(RuntimeError):

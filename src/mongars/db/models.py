@@ -8,6 +8,7 @@ from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     ARRAY,
     CheckConstraint,
+    Computed,
     DateTime,
     Float,
     ForeignKey,
@@ -20,7 +21,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from mongars.ids import uuid7
@@ -84,6 +85,11 @@ class MemoryChunk(Base):
             postgresql_using="hnsw",
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
+        Index(
+            "ix_memory_chunks_search_vector_gin",
+            "search_vector",
+            postgresql_using="gin",
+        ),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid7)
@@ -95,8 +101,48 @@ class MemoryChunk(Base):
     char_count: Mapped[int] = mapped_column(Integer, nullable=False)
     section_path: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
     plaintext: Mapped[str] = mapped_column(Text, nullable=False)
+    search_vector: Mapped[str] = mapped_column(
+        TSVECTOR,
+        Computed("to_tsvector('simple'::regconfig, plaintext)", persisted=True),
+        nullable=False,
+    )
     embedding: Mapped[list[float]] = mapped_column(Vector(768), nullable=False)
     embedding_model: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class MemoryDocumentProvenance(Base):
+    """One immutable source observation for content-addressed memory.
+
+    Content is deduplicated at ``MemoryDocument`` while each accepted submission keeps
+    its own source and metadata here. The digest makes retries of the same submission
+    idempotent without discarding genuinely new provenance.
+    """
+
+    __tablename__ = "memory_document_provenance"
+    __table_args__ = (
+        UniqueConstraint(
+            "document_id",
+            "provenance_sha256",
+            name="uq_memory_document_provenance_digest",
+        ),
+        Index("ix_memory_document_provenance_document", "document_id", "created_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid7)
+    document_id: Mapped[UUID] = mapped_column(
+        ForeignKey("memory_documents.id", ondelete="CASCADE"), nullable=False
+    )
+    provenance_sha256: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_uri: Mapped[str | None] = mapped_column(Text)
+    title: Mapped[str | None] = mapped_column(Text)
+    mime_type: Mapped[str | None] = mapped_column(String(255))
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -140,7 +186,8 @@ class TaskQueue(TimestampMixin, Base):
         CheckConstraint("attempt_count <= max_attempts", name="ck_task_queue_attempt_within_limit"),
         CheckConstraint("priority BETWEEN 0 AND 1000", name="ck_task_queue_priority_range"),
         CheckConstraint(
-            "(status = 'running') = (lease_expires_at IS NOT NULL)",
+            "((status = 'running') = (lease_expires_at IS NOT NULL)) AND "
+            "((status = 'running') = (execution_token IS NOT NULL))",
             name="ck_task_queue_running_has_lease",
         ),
         CheckConstraint(
@@ -189,6 +236,7 @@ class TaskQueue(TimestampMixin, Base):
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    execution_token: Mapped[UUID | None] = mapped_column()
     dedupe_key: Mapped[str | None] = mapped_column(String(255))
     trace_id: Mapped[str] = mapped_column(String(128), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, default=dict)

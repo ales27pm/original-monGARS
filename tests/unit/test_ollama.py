@@ -247,7 +247,7 @@ def test_invalid_json_is_normalized() -> None:
     run(exercise())
 
 
-def test_health_returns_typed_success_and_failure() -> None:
+def test_health_requires_both_configured_models_and_canonicalizes_names() -> None:
     async def exercise() -> None:
         calls = 0
 
@@ -256,8 +256,99 @@ def test_health_returns_typed_success_and_failure() -> None:
             assert request.url.path == "/api/tags"
             calls += 1
             if calls == 1:
-                return httpx.Response(200, json={"models": []})
+                return httpx.Response(
+                    200,
+                    json={
+                        "models": [
+                            {
+                                "name": "registry.ollama.ai/library/qwen-chat:latest",
+                            },
+                            {"model": "nomic-embed:latest"},
+                        ]
+                    },
+                )
+            if calls == 2:
+                return httpx.Response(200, json={"models": [{"name": "qwen-chat"}]})
+            if calls == 3:
+                return httpx.Response(200, json={"models": [{"name": "unrelated:latest"}]})
             return httpx.Response(503, json={"error": "offline"})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            backend = OllamaBackend(
+                base_url="http://ollama:11434",
+                chat_model="qwen-chat",
+                embedding_model="nomic-embed",
+                client=client,
+            )
+            ready = await backend.health()
+            embedding_missing = await backend.health()
+            unrelated = await backend.health()
+            unavailable = await backend.health()
+
+        assert ready.healthy is True
+        assert ready.backend_reachable is True
+        assert ready.chat_model_ready is True
+        assert ready.embedding_model_ready is True
+        assert ready.error_code is None
+        assert ready.latency_ms >= 0
+
+        assert embedding_missing.healthy is False
+        assert embedding_missing.backend_reachable is True
+        assert embedding_missing.chat_model_ready is True
+        assert embedding_missing.embedding_model_ready is False
+        assert embedding_missing.error_code == "required_models_missing"
+
+        assert unrelated.healthy is False
+        assert unrelated.backend_reachable is True
+        assert unrelated.chat_model_ready is False
+        assert unrelated.embedding_model_ready is False
+        assert unrelated.error_code == "required_models_missing"
+
+        assert unavailable.healthy is False
+        assert unavailable.backend_reachable is True
+        assert unavailable.chat_model_ready is False
+        assert unavailable.embedding_model_ready is False
+        assert unavailable.error_code == "http_error"
+
+    run(exercise())
+
+
+def test_health_does_not_collapse_unrelated_model_namespaces() -> None:
+    async def exercise() -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/api/tags"
+            return httpx.Response(
+                200,
+                json={
+                    "models": [
+                        {"name": "registry.example/attacker/qwen3:4b"},
+                        {"name": "registry.example/attacker/embed:latest"},
+                    ]
+                },
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            backend = OllamaBackend(
+                base_url="http://ollama:11434",
+                chat_model="registry.example/acme/qwen3:4b",
+                embedding_model="registry.example/acme/embed:latest",
+                client=client,
+            )
+            health = await backend.health()
+
+        assert health.backend_reachable is True
+        assert health.chat_model_ready is False
+        assert health.embedding_model_ready is False
+        assert health.healthy is False
+        assert health.error_code == "required_models_missing"
+
+    run(exercise())
+
+
+def test_health_reports_connection_failure_as_unreachable() -> None:
+    async def exercise() -> None:
+        def handler(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectError("offline", request=request)
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             backend = OllamaBackend(
@@ -266,13 +357,12 @@ def test_health_returns_typed_success_and_failure() -> None:
                 embedding_model="embed",
                 client=client,
             )
-            healthy = await backend.health()
-            unhealthy = await backend.health()
+            result = await backend.health()
 
-        assert healthy.healthy is True
-        assert healthy.error_code is None
-        assert healthy.latency_ms >= 0
-        assert unhealthy.healthy is False
-        assert unhealthy.error_code == "http_error"
+        assert result.healthy is False
+        assert result.backend_reachable is False
+        assert result.chat_model_ready is False
+        assert result.embedding_model_ready is False
+        assert result.error_code == "connection_error"
 
     run(exercise())

@@ -31,7 +31,7 @@ digest again immediately before the database mutation.
 
 ## Prerequisites
 
-- Python 3.12 and `uv` 0.11.30 for local development
+- Python 3.12, `uv` 0.11.30, and ShellCheck for local development
 - Docker Engine with the Compose plugin
 - NVIDIA driver and NVIDIA Container Toolkit for the optional Ollama GPU profile
 - An RTX 2070 or similar CUDA GPU is sufficient for a quantized 3B–8B model at a conservative
@@ -81,6 +81,42 @@ worker starts.
 curl -fsS http://127.0.0.1:8000/v1/healthz
 curl -fsS http://127.0.0.1:8000/v1/readyz
 ```
+
+### Secure iPhone and LAN access
+
+Keep `MONGARS_BIND_ADDRESS=127.0.0.1` and put an HTTPS reverse proxy in front of the API.
+The simplest private path is Tailscale Serve on the workstation, which terminates HTTPS for a
+tailnet hostname and proxies to the loopback-only service:
+
+```bash
+sudo tailscale serve --bg http://127.0.0.1:8000
+```
+
+Add the exact HTTPS hostname to `MONGARS_TRUSTED_HOSTS` in `.env`, alongside the loopback
+defaults. For example:
+
+```dotenv
+MONGARS_TRUSTED_HOSTS=["workstation.example-tailnet.ts.net","localhost","127.0.0.1"]
+```
+
+Caddy, Nginx, or Traefik is also appropriate when it is configured with a certificate trusted
+by the iPhone and proxies only to `127.0.0.1:8000`. Set the proxy request-body limit to the
+same value as (or lower than) `MONGARS_MAX_REQUEST_BYTES`, so oversized uploads are rejected
+before they reach the application. For example, an Nginx TLS `server` block should include:
+
+```nginx
+client_max_body_size 2100000;
+
+location / {
+    proxy_pass http://127.0.0.1:8000;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto https;
+}
+```
+
+Set `MONGARS_CORS_ORIGINS` to the exact HTTPS web origin if a separate browser frontend calls
+the API. Never send the bearer token over plaintext LAN HTTP, publish Ollama, or expose
+PostgreSQL.
 
 Read the bearer token without printing it into shell history:
 
@@ -145,6 +181,19 @@ Docker-assigned loopback port, runs migrations and every test/security/package g
 production image, verifies its non-root user, and removes the disposable database on exit. The
 suite enforces 80% branch coverage; the current baseline is above that threshold. Direct
 integration-test invocations still require `MONGARS_TEST_DATABASE_URL` and skip when it is absent.
+
+On a representative retained corpus, capture both the planner's natural choice and an
+index-forced comparison with `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)`:
+
+```bash
+uv run python scripts/benchmark_memory_search.py \
+  --owner-id local-owner \
+  --candidate-count 64 > memory-search-plan.json
+```
+
+The normal plan is the production signal; the forced plan proves HNSW eligibility when a small
+development corpus would otherwise make a sequential scan cheaper. Re-run this benchmark after
+large ingest batches, PostgreSQL upgrades, or changes to embedding dimensions and ANN settings.
 
 ### Runtime and inference smoke tests
 

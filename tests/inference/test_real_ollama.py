@@ -16,8 +16,13 @@ pytestmark = [
 
 
 @pytest.mark.asyncio
-async def test_real_ollama_completion() -> None:
-    """Make a real non-streaming completion through the production adapter."""
+async def test_real_ollama_nonstreaming_connectivity_and_parsing() -> None:
+    """Verify only live adapter connectivity and non-streaming response parsing.
+
+    Generative wording is intentionally not a contract: even at low temperature a
+    model may narrate an instruction before answering. Semantic-output behavior belongs
+    in model evaluations, while this opt-in smoke test proves the production transport.
+    """
 
     backend = OllamaBackend(
         base_url=os.getenv("MONGARS_OLLAMA_BASE_URL", "http://127.0.0.1:11434"),
@@ -35,10 +40,10 @@ async def test_real_ollama_completion() -> None:
             [
                 ChatMessage(
                     role="user",
-                    content="Reply with the single word PONG and no explanation.",
+                    content="Return a short acknowledgement.",
                 )
             ],
-            options={"temperature": 0.0, "num_predict": 8},
+            options={"temperature": 0.2, "num_predict": 16},
         )
     finally:
         await backend.aclose()
@@ -47,3 +52,5 @@ async def test_real_ollama_completion() -> None:
     assert "<think>" not in response.content
     assert "</think>" not in response.content
     assert response.model.strip()
+    assert response.prompt_tokens is not None and response.prompt_tokens > 0
+    assert response.completion_tokens is not None and response.completion_tokens > 0
