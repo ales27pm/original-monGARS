@@ -50,6 +50,31 @@ def test_empty_or_whitespace_only_text_has_no_chunks() -> None:
     assert chunk_text(" \n\t \n") == []
 
 
+def test_unbroken_input_is_split_at_the_character_ceiling_without_data_loss() -> None:
+    text = "x" * 1_003
+
+    chunks = chunk_text(
+        text,
+        max_tokens=32,
+        overlap_tokens=0,
+        max_characters=100,
+    )
+
+    assert all(1 <= len(chunk.text) <= 100 for chunk in chunks)
+    assert "".join(chunk.text for chunk in chunks) == text
+
+
+def test_character_ceiling_prefers_whitespace_boundaries() -> None:
+    chunks = chunk_text(
+        "alpha beta gamma delta epsilon",
+        max_tokens=32,
+        overlap_tokens=0,
+        max_characters=12,
+    )
+
+    assert [chunk.text for chunk in chunks] == ["alpha beta", "gamma delta", "epsilon"]
+
+
 @pytest.mark.parametrize(
     ("max_tokens", "overlap_tokens", "message"),
     [
@@ -66,3 +91,8 @@ def test_chunking_rejects_invalid_bounds(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         chunk_text("some text", max_tokens=max_tokens, overlap_tokens=overlap_tokens)
+
+
+def test_chunking_rejects_non_positive_character_ceiling() -> None:
+    with pytest.raises(ValueError, match="max_characters must be positive"):
+        chunk_text("some text", max_characters=0)

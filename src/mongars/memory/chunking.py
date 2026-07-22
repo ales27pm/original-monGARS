@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 
 @dataclass(frozen=True, slots=True)
@@ -9,6 +10,7 @@ class TextChunk:
     text: str
     approximate_tokens: int
     section_path: tuple[str, ...] = ()
+    locator: dict[str, Any] = field(default_factory=dict)
 
 
 _PARAGRAPH_BREAK = re.compile(r"\n\s*\n+")
@@ -36,6 +38,7 @@ def chunk_text(
     *,
     max_tokens: int = 800,
     overlap_tokens: int = 100,
+    max_characters: int = 32_000,
 ) -> list[TextChunk]:
     """Create deterministic, paragraph-aware chunks without a model-specific tokenizer.
 
@@ -47,6 +50,8 @@ def chunk_text(
         raise ValueError("max_tokens must be at least 32")
     if overlap_tokens < 0 or overlap_tokens >= max_tokens:
         raise ValueError("overlap_tokens must be non-negative and smaller than max_tokens")
+    if max_characters < 1:
+        raise ValueError("max_characters must be positive")
 
     paragraphs = [
         normalized
@@ -79,6 +84,33 @@ def chunk_text(
     if current:
         chunks.append(current)
 
-    return [
-        TextChunk(text=" ".join(words), approximate_tokens=len(words)) for words in chunks if words
-    ]
+    bounded: list[TextChunk] = []
+    for words in chunks:
+        if not words:
+            continue
+        for value in _character_windows(" ".join(words), max_characters):
+            bounded.append(
+                TextChunk(
+                    text=value,
+                    approximate_tokens=len(value.split()),
+                )
+            )
+    return bounded
+
+
+def _character_windows(value: str, max_characters: int) -> list[str]:
+    """Split oversized text at whitespace when possible, including unbroken strings."""
+
+    windows: list[str] = []
+    remaining = value
+    while len(remaining) > max_characters:
+        boundary = remaining.rfind(" ", 0, max_characters + 1)
+        if boundary <= 0:
+            boundary = max_characters
+        window = remaining[:boundary].strip()
+        if window:
+            windows.append(window)
+        remaining = remaining[boundary:].strip()
+    if remaining:
+        windows.append(remaining)
+    return windows

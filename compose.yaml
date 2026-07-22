@@ -7,27 +7,55 @@ x-app-environment: &app-environment
   MONGARS_CORS_ORIGINS: ${MONGARS_CORS_ORIGINS:-[]}
   MONGARS_TRUSTED_HOSTS: ${MONGARS_TRUSTED_HOSTS:-["localhost","127.0.0.1"]}
   MONGARS_MAX_REQUEST_BYTES: ${MONGARS_MAX_REQUEST_BYTES:-2100000}
+  MONGARS_MAX_DOCUMENT_REQUEST_BYTES: ${MONGARS_MAX_DOCUMENT_REQUEST_BYTES:-10500000}
+  MONGARS_MAX_DOCUMENT_UPLOAD_BYTES: ${MONGARS_MAX_DOCUMENT_UPLOAD_BYTES:-10000000}
+  MONGARS_MAX_DOCUMENT_PAGES: ${MONGARS_MAX_DOCUMENT_PAGES:-500}
+  MONGARS_MAX_DOCUMENT_SECTIONS: ${MONGARS_MAX_DOCUMENT_SECTIONS:-10000}
+  MONGARS_MAX_DOCUMENT_ARCHIVE_ENTRIES: ${MONGARS_MAX_DOCUMENT_ARCHIVE_ENTRIES:-2000}
+  MONGARS_MAX_DOCUMENT_ARCHIVE_UNCOMPRESSED_BYTES: ${MONGARS_MAX_DOCUMENT_ARCHIVE_UNCOMPRESSED_BYTES:-50000000}
+  MONGARS_DOCUMENT_PARSER_TIMEOUT_SECONDS: ${MONGARS_DOCUMENT_PARSER_TIMEOUT_SECONDS:-30}
+  MONGARS_DOCUMENT_PARSER_MEMORY_BYTES: ${MONGARS_DOCUMENT_PARSER_MEMORY_BYTES:-536870912}
+  MONGARS_DOCUMENT_PARSER_BASE_URL: ${MONGARS_DOCUMENT_PARSER_BASE_URL:-http://parser:8091}
+  MONGARS_ALLOW_REMOTE_DOCUMENT_PARSER: ${MONGARS_ALLOW_REMOTE_DOCUMENT_PARSER:-false}
+  MONGARS_DOCUMENT_STAGING_TTL_SECONDS: ${MONGARS_DOCUMENT_STAGING_TTL_SECONDS:-86400}
+  MONGARS_MAX_DOCUMENT_STAGED_OBJECTS: ${MONGARS_MAX_DOCUMENT_STAGED_OBJECTS:-10}
+  MONGARS_MAX_DOCUMENT_STAGED_BYTES: ${MONGARS_MAX_DOCUMENT_STAGED_BYTES:-50000000}
+  MONGARS_MAX_CONCURRENT_DOCUMENT_UPLOADS: ${MONGARS_MAX_CONCURRENT_DOCUMENT_UPLOADS:-2}
+  MONGARS_MAX_CONCURRENT_DOCUMENT_UPLOADS_PER_OWNER: ${MONGARS_MAX_CONCURRENT_DOCUMENT_UPLOADS_PER_OWNER:-1}
   MONGARS_DATABASE_POOL_SIZE: ${MONGARS_DATABASE_POOL_SIZE:-5}
   MONGARS_DATABASE_POOL_TIMEOUT_SECONDS: ${MONGARS_DATABASE_POOL_TIMEOUT_SECONDS:-10}
   MONGARS_INFERENCE_BACKEND: ${MONGARS_INFERENCE_BACKEND:-ollama}
   MONGARS_OLLAMA_BASE_URL: ${MONGARS_OLLAMA_BASE_URL:-http://ollama:11434}
-  MONGARS_OLLAMA_CHAT_MODEL: ${MONGARS_OLLAMA_CHAT_MODEL:-qwen3:4b}
+  MONGARS_OLLAMA_CHAT_MODEL: ${MONGARS_OLLAMA_CHAT_MODEL:-qwen3:4b-instruct}
   MONGARS_OLLAMA_EMBEDDING_MODEL: ${MONGARS_OLLAMA_EMBEDDING_MODEL:-nomic-embed-text}
+  MONGARS_OLLAMA_EMBEDDING_MODEL_DIGEST: ${MONGARS_OLLAMA_EMBEDDING_MODEL_DIGEST:-0a109f422b47e3a30ba2b10eca18548e944e8a23073ee3f3e947efcf3c45e59f}
   MONGARS_OLLAMA_THINK: ${MONGARS_OLLAMA_THINK:-false}
   MONGARS_OLLAMA_CONTEXT_LENGTH: ${MONGARS_OLLAMA_CONTEXT_LENGTH:-4096}
   MONGARS_OLLAMA_NUM_PREDICT: ${MONGARS_OLLAMA_NUM_PREDICT:-512}
   MONGARS_INFERENCE_TIMEOUT_SECONDS: ${MONGARS_INFERENCE_TIMEOUT_SECONDS:-90}
   MONGARS_INFERENCE_HEALTH_TIMEOUT_SECONDS: ${MONGARS_INFERENCE_HEALTH_TIMEOUT_SECONDS:-2}
+  MONGARS_WEB_SEARCH_ENABLED: ${MONGARS_WEB_SEARCH_ENABLED:-false}
+  MONGARS_WEB_SEARCH_BASE_URL: ${MONGARS_WEB_SEARCH_BASE_URL:-http://searxng:8080}
+  MONGARS_WEB_SEARCH_TIMEOUT_SECONDS: ${MONGARS_WEB_SEARCH_TIMEOUT_SECONDS:-10}
+  MONGARS_WEB_SEARCH_MAX_QUERY_CHARS: ${MONGARS_WEB_SEARCH_MAX_QUERY_CHARS:-500}
+  MONGARS_WEB_SEARCH_MAX_RESULTS: ${MONGARS_WEB_SEARCH_MAX_RESULTS:-5}
+  MONGARS_WEB_SEARCH_MAX_RESPONSE_BYTES: ${MONGARS_WEB_SEARCH_MAX_RESPONSE_BYTES:-1000000}
   MONGARS_EMBEDDING_DIMENSIONS: ${MONGARS_EMBEDDING_DIMENSIONS:-768}
   MONGARS_EMBEDDING_BATCH_SIZE: ${MONGARS_EMBEDDING_BATCH_SIZE:-16}
+  MONGARS_EMBEDDING_MAX_INPUT_BYTES: ${MONGARS_EMBEDDING_MAX_INPUT_BYTES:-8192}
   MONGARS_ALLOW_REMOTE_INFERENCE: ${MONGARS_ALLOW_REMOTE_INFERENCE:-false}
   MONGARS_MAX_CHAT_CHARS: ${MONGARS_MAX_CHAT_CHARS:-32000}
   MONGARS_MAX_DOCUMENT_CHARS: ${MONGARS_MAX_DOCUMENT_CHARS:-2000000}
   MONGARS_MEMORY_CHUNK_TOKENS: ${MONGARS_MEMORY_CHUNK_TOKENS:-800}
   MONGARS_MEMORY_CHUNK_OVERLAP_TOKENS: ${MONGARS_MEMORY_CHUNK_OVERLAP_TOKENS:-100}
+  MONGARS_MEMORY_CHUNK_CHARACTERS: ${MONGARS_MEMORY_CHUNK_CHARACTERS:-32000}
   MONGARS_MEMORY_TOP_K: ${MONGARS_MEMORY_TOP_K:-8}
   MONGARS_WORKER_POLL_SECONDS: ${MONGARS_WORKER_POLL_SECONDS:-1}
   MONGARS_WORKER_LEASE_SECONDS: ${MONGARS_WORKER_LEASE_SECONDS:-120}
+  MONGARS_WORKER_RUNTIME_HEARTBEAT_SECONDS: ${MONGARS_WORKER_RUNTIME_HEARTBEAT_SECONDS:-10}
+  MONGARS_WORKER_RUNTIME_STALE_SECONDS: ${MONGARS_WORKER_RUNTIME_STALE_SECONDS:-45}
+  MONGARS_RUNTIME_GIT_SHA: ${MONGARS_RUNTIME_GIT_SHA:-unknown}
+  MONGARS_RUNTIME_VERSION: ${MONGARS_RUNTIME_VERSION:-0.1.0}
   MONGARS_RETENTION_SWEEP_SECONDS: ${MONGARS_RETENTION_SWEEP_SECONDS:-300}
   MONGARS_APPROVAL_TTL_SECONDS: ${MONGARS_APPROVAL_TTL_SECONDS:-900}
   POSTGRES_DB: ${POSTGRES_DB:-mongars}
@@ -49,6 +77,8 @@ x-app-base: &app-base
   security_opt:
     - no-new-privileges:true
   pids_limit: 256
+  mem_limit: 1g
+  cpus: 2.0
   environment: *app-environment
   secrets:
     - postgres_password
@@ -119,8 +149,10 @@ services:
 
   api:
     <<: *app-base
-    ports:
-      - ${MONGARS_BIND_ADDRESS:-127.0.0.1}:${MONGARS_API_PORT:-8000}:8000
+    networks:
+      - backend
+      - edge
+      - search
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -130,14 +162,21 @@ services:
         export MONGARS_DATABASE_URL="$$(python -c 'import os; from pathlib import Path; from urllib.parse import quote; user=quote(os.environ["POSTGRES_USER"], safe=""); password=quote(Path("/run/secrets/postgres_password").read_text().strip(), safe=""); database=quote(os.environ["POSTGRES_DB"], safe=""); print(f"postgresql+psycopg://{user}:{password}@postgres:5432/{database}")')"
         export MONGARS_API_TOKEN="$$(cat /run/secrets/api_token)"
         export MONGARS_APPROVAL_HMAC_KEY="$$(cat /run/secrets/approval_hmac_key)"
-        exec uvicorn mongars.main:app --host 0.0.0.0 --port 8000 --workers ${MONGARS_API_WORKERS:-1}
+        # Upload admission is intentionally process-local in this single-workstation
+        # release. Keep exactly one API worker until admission moves to PostgreSQL.
+        exec uvicorn mongars.main:app --host 0.0.0.0 --port 8000 --workers 1 --limit-concurrency ${MONGARS_API_LIMIT_CONCURRENCY:-64}
     stop_grace_period: 30s
 
   worker:
     <<: *app-base
+    networks:
+      - backend
+      - parser
     depends_on:
       migrate:
         condition: service_completed_successfully
+      parser:
+        condition: service_healthy
     healthcheck:
       disable: true
     entrypoint: ["/bin/sh", "-ec"]
@@ -148,6 +187,151 @@ services:
         export MONGARS_APPROVAL_HMAC_KEY="$$(cat /run/secrets/approval_hmac_key)"
         exec python -m mongars.rm.worker
     stop_grace_period: 30s
+
+  parser:
+    image: ${MONGARS_IMAGE:-mongars:local}
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+      args:
+        SECRET_GID: ${MONGARS_SECRET_GID:-1000}
+    init: true
+    restart: unless-stopped
+    user: "10001:10001"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 768m
+    cpus: 1.0
+    environment:
+      MONGARS_PARSER_MAX_INPUT_BYTES: ${MONGARS_MAX_DOCUMENT_UPLOAD_BYTES:-10000000}
+      MONGARS_PARSER_MAX_EXTRACTED_CHARS: ${MONGARS_MAX_DOCUMENT_CHARS:-2000000}
+      MONGARS_PARSER_MAX_PAGES: ${MONGARS_MAX_DOCUMENT_PAGES:-500}
+      MONGARS_PARSER_MAX_SECTIONS: ${MONGARS_MAX_DOCUMENT_SECTIONS:-10000}
+      MONGARS_PARSER_MAX_ARCHIVE_MEMBERS: ${MONGARS_MAX_DOCUMENT_ARCHIVE_ENTRIES:-2000}
+      MONGARS_PARSER_MAX_ARCHIVE_UNCOMPRESSED_BYTES: ${MONGARS_MAX_DOCUMENT_ARCHIVE_UNCOMPRESSED_BYTES:-50000000}
+      MONGARS_PARSER_TIMEOUT_SECONDS: ${MONGARS_DOCUMENT_PARSER_TIMEOUT_SECONDS:-30}
+      MONGARS_PARSER_PROCESS_MEMORY_BYTES: ${MONGARS_DOCUMENT_PARSER_MEMORY_BYTES:-536870912}
+    entrypoint: ["uvicorn"]
+    command:
+      - mongars.ingestion.server:app
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8091"
+      - --workers
+      - "1"
+      - --limit-concurrency
+      - "2"
+      - --no-access-log
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=64m
+    networks:
+      - parser
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8091/healthz", timeout=2).read()'
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  https:
+    image: ${MONGARS_CADDY_IMAGE:-mongars-caddy:local}
+    build:
+      context: .
+      dockerfile: deploy/caddy/Dockerfile
+    init: true
+    restart: unless-stopped
+    user: "65534:65534"
+    depends_on:
+      api:
+        condition: service_healthy
+      https-volume-init:
+        condition: service_completed_successfully
+    environment:
+      MONGARS_HTTPS_HOST: ${MONGARS_HTTPS_HOST:-127.0.0.1}
+      MONGARS_MAX_REQUEST_BYTES: ${MONGARS_MAX_REQUEST_BYTES:-2100000}
+      MONGARS_MAX_DOCUMENT_REQUEST_BYTES: ${MONGARS_MAX_DOCUMENT_REQUEST_BYTES:-10500000}
+    ports:
+      - ${MONGARS_HTTPS_BIND_ADDRESS:-127.0.0.1}:${MONGARS_HTTP_PORT:-80}:8080/tcp
+      - ${MONGARS_HTTPS_BIND_ADDRESS:-127.0.0.1}:${MONGARS_HTTPS_PORT:-443}:8443/tcp
+      # Caddy is the only host-facing boundary. It also preserves the loopback API
+      # endpoint without attaching the application container to an egress network.
+      - ${MONGARS_BIND_ADDRESS:-127.0.0.1}:${MONGARS_API_PORT:-8000}:8001/tcp
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+    networks:
+      - edge
+      - ingress
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'curl --fail --silent --show-error --cacert /data/caddy/pki/authorities/local/root.crt --resolve "$${MONGARS_HTTPS_HOST}:8443:127.0.0.1" "https://$${MONGARS_HTTPS_HOST}:8443/v1/healthz" >/dev/null'
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+  # Existing Caddy volumes may contain a root-owned local CA from an older
+  # release. This one-shot, networkless migration grants ownership only to the
+  # fixed non-root runtime UID before HTTPS starts.
+  https-volume-init:
+    image: ${MONGARS_CADDY_IMAGE:-mongars-caddy:local}
+    build:
+      context: .
+      dockerfile: deploy/caddy/Dockerfile
+    restart: "no"
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_READ_SEARCH
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 32
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        chown -R 65534:65534 /data/caddy /config/caddy
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    logging:
+      driver: json-file
+      options:
+        max-size: 1m
+        max-file: "1"
 
   ollama:
     image: ${MONGARS_OLLAMA_IMAGE:-ollama/ollama@sha256:6345fbc18bd73a1e16404be681dbc6fd291a027cab43ed541abe78c4c81051b0}
@@ -189,14 +373,132 @@ services:
         max-size: 10m
         max-file: "3"
 
+  searxng:
+    image: ${MONGARS_SEARXNG_IMAGE:-docker.io/searxng/searxng@sha256:b8ca38ba06eea544d7555e88321e212ddc0d5c3c7de055419cfb2e5c6bf30812}
+    init: true
+    profiles:
+      - web-search
+    restart: unless-stopped
+    depends_on:
+      search-egress-proxy:
+        condition: service_healthy
+    user: "977:977"
+    group_add:
+      - ${MONGARS_SECRET_GID:-1000}
+    environment:
+      FORCE_OWNERSHIP: "false"
+      HTTP_PROXY: http://search-egress-proxy:3128
+      HTTPS_PROXY: http://search-egress-proxy:3128
+      ALL_PROXY: http://search-egress-proxy:3128
+      NO_PROXY: localhost,127.0.0.1,::1
+      http_proxy: http://search-egress-proxy:3128
+      https_proxy: http://search-egress-proxy:3128
+      all_proxy: http://search-egress-proxy:3128
+      no_proxy: localhost,127.0.0.1,::1
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        searxng_secret_value="$$(cat /run/secrets/searxng_secret)"
+        test -n "$${searxng_secret_value}"
+        export SEARXNG_SECRET="$${searxng_secret_value}"
+        exec /usr/local/searxng/entrypoint.sh
+    secrets:
+      - searxng_secret
+    volumes:
+      - ./deploy/searxng:/etc/searxng:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=32m
+      - /var/cache/searxng:rw,noexec,nosuid,nodev,size=64m,uid=977,gid=977,mode=0700
+    networks:
+      - search
+      - search-proxy
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q -O /dev/null http://127.0.0.1:8080/config
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    logging:
+      # Engine failure messages can contain the full search URL and query.
+      driver: none
+
+  search-egress-proxy:
+    image: ${MONGARS_SQUID_IMAGE:-ubuntu/squid@sha256:8a3baed477e2c282ab8aa5edad442f69873246964f225c5c2ae8364b6610963c}
+    profiles:
+      - web-search
+    restart: unless-stopped
+    user: "13:13"
+    entrypoint: ["/usr/sbin/squid"]
+    command: ["-f", "/etc/squid/squid.conf", "-NYC"]
+    volumes:
+      - ./deploy/egress-proxy/squid.conf:/etc/squid/squid.conf:ro
+    tmpfs:
+      - /run/squid:rw,noexec,nosuid,nodev,size=4m,uid=13,gid=13,mode=0700
+      - /tmp:rw,noexec,nosuid,nodev,size=16m,uid=13,gid=13,mode=0700
+    networks:
+      - search-proxy
+      - search-egress
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    healthcheck:
+      test:
+        - CMD
+        - /usr/bin/bash
+        - -ec
+        - |
+          /usr/sbin/squid -k check -f /etc/squid/squid.conf >/dev/null 2>&1
+          exec 3<>/dev/tcp/127.0.0.1/3128
+          printf 'GET http://127.0.0.1/ HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n' >&3
+          IFS=' ' read -r protocol status _ <&3
+          [[ "$${protocol}" == HTTP/* && "$${status}" == 403 ]]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+    logging:
+      # Proxy access logs can contain engine query URLs. Focused checks launch
+      # a disposable instance with visible logs instead.
+      driver: none
+
 networks:
   backend:
+    driver: bridge
+    internal: true
+  parser:
+    driver: bridge
+    internal: true
+  edge:
+    driver: bridge
+    internal: true
+  search:
+    driver: bridge
+    internal: true
+  search-proxy:
+    driver: bridge
+    internal: true
+  search-egress:
+    driver: bridge
+  ingress:
     driver: bridge
 
 volumes:
   postgres_data:
   mongars_data:
   ollama_data:
+  caddy_data:
+  caddy_config:
 
 secrets:
   postgres_password:
@@ -205,3 +507,5 @@ secrets:
     file: ${MONGARS_API_TOKEN_FILE:-./secrets/api_token.txt}
   approval_hmac_key:
     file: ${MONGARS_APPROVAL_HMAC_KEY_FILE:-./secrets/approval_hmac_key.txt}
+  searxng_secret:
+    file: ${MONGARS_SEARXNG_SECRET_FILE:-./secrets/searxng_secret.txt}

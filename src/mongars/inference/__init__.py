@@ -3,8 +3,6 @@
 from .base import (
     ChatMessage,
     ChatResponse,
-    EmbeddingDimensionError,
-    EmbeddingResponse,
     HealthStatus,
     InferenceBackend,
     InferenceConfigurationError,
@@ -21,8 +19,6 @@ from .ollama import OllamaBackend
 __all__ = [
     "ChatMessage",
     "ChatResponse",
-    "EmbeddingDimensionError",
-    "EmbeddingResponse",
     "HealthStatus",
     "InferenceBackend",
     "InferenceConfigurationError",

@@ -17,12 +17,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  scan:
+  secret-scan:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 10
 
     steps:
-      - name: Check out repository
+      - name: Check out repository history
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
@@ -32,25 +32,73 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build production image
-        run: docker build --tag mongars:security .
+  image-scan:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        image:
+          - name: mongars
+            ref: mongars:security
+            build: app
+          - name: caddy
+            ref: mongars-caddy:security
+            build: caddy
+          - name: postgres-pgvector
+            ref: pgvector/pgvector@sha256:9d2e61c7352b9e9f4798df5fd9a498f043f4cda1cdacc707de3d198650f4321e
+            build: pull
+          - name: ollama
+            ref: ollama/ollama@sha256:6345fbc18bd73a1e16404be681dbc6fd291a027cab43ed541abe78c4c81051b0
+            build: pull
+          - name: searxng
+            ref: docker.io/searxng/searxng@sha256:b8ca38ba06eea544d7555e88321e212ddc0d5c3c7de055419cfb2e5c6bf30812
+            build: pull
+          - name: search-egress-proxy
+            ref: ubuntu/squid@sha256:8a3baed477e2c282ab8aa5edad442f69873246964f225c5c2ae8364b6610963c
+            build: pull
 
-      - name: Scan production image
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Prepare deployed image
+        env:
+          IMAGE_BUILD: ${{ matrix.image.build }}
+          IMAGE_REF: ${{ matrix.image.ref }}
+        run: |
+          case "$IMAGE_BUILD" in
+            app)
+              docker build --tag "$IMAGE_REF" .
+              ;;
+            caddy)
+              docker build --file deploy/caddy/Dockerfile --tag "$IMAGE_REF" .
+              ;;
+            pull)
+              docker pull "$IMAGE_REF"
+              ;;
+            *)
+              echo "unknown image preparation mode: $IMAGE_BUILD" >&2
+              exit 1
+              ;;
+          esac
+
+      - name: Scan deployed image
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
-          image-ref: mongars:security
+          image-ref: ${{ matrix.image.ref }}
           format: table
           exit-code: "1"
           ignore-unfixed: true
           severity: HIGH,CRITICAL
           scanners: vuln
 
-      - name: Generate production image SBOM
+      - name: Generate deployed image SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
-          image: mongars:security
+          image: ${{ matrix.image.ref }}
           format: spdx-json
-          artifact-name: mongars-production-sbom.spdx.json
-          output-file: mongars-production-sbom.spdx.json
+          artifact-name: ${{ matrix.image.name }}-sbom.spdx.json
+          output-file: ${{ matrix.image.name }}-sbom.spdx.json
           upload-artifact: true
           upload-artifact-retention: 14

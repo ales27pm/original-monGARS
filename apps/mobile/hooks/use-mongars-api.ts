@@ -1,0 +1,334 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+
+import { ApiConfigurationError, isAbortError, type MongarsClient } from '@/lib/api';
+import { useMongars } from '@/providers/mongars-provider';
+import type {
+  ChatRequest,
+  ChatResponse,
+  DocumentUploadRequest,
+  DocumentUploadResponse,
+  MemoryNoteCreateRequest,
+  MemorySearchRequest,
+  MemorySearchResponse,
+  ReadinessResponse,
+  TaskDetailResponse,
+  TaskPayloadPageResponse,
+  TaskResponse,
+} from '@/types/mongars-api';
+
+type QueryOptions = {
+  auto?: boolean;
+};
+
+type TasksQueryOptions = QueryOptions & {
+  limit?: number;
+};
+
+export type QueryResult<T> = {
+  data: T | null;
+  error: Error | null;
+  isLoading: boolean;
+  refresh: () => Promise<T>;
+  cancel: () => void;
+};
+
+export type MutationResult<TInput, TData> = {
+  data: TData | null;
+  error: Error | null;
+  isPending: boolean;
+  mutate: (input: TInput) => Promise<TData>;
+  cancel: () => void;
+  reset: () => void;
+};
+
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error('The monGARS request failed.');
+}
+
+function requireClient(
+  client: MongarsClient | null,
+  configurationError: ApiConfigurationError | null,
+): MongarsClient {
+  if (!client) {
+    throw configurationError ?? new ApiConfigurationError('The monGARS API is not configured.');
+  }
+  return client;
+}
+
+function useAbortableQuery<T>(
+  loader: (signal: AbortSignal) => Promise<T>,
+  auto: boolean,
+): QueryResult<T> {
+  const [data, setData] = useState<T | null>(null);
+  const [error, setError] = useState<Error | null>(null);
+  const [isLoading, setIsLoading] = useState(auto);
+  const controllerRef = useRef<AbortController | null>(null);
+  const requestIdRef = useRef(0);
+  const mountedRef = useRef(true);
+
+  const cancel = useCallback(() => {
+    controllerRef.current?.abort();
+  }, []);
+
+  const refresh = useCallback(async () => {
+    controllerRef.current?.abort();
+    const controller = new AbortController();
+    const requestId = ++requestIdRef.current;
+    controllerRef.current = controller;
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const result = await loader(controller.signal);
+      if (mountedRef.current && requestId === requestIdRef.current) {
+        setData(result);
+      }
+      return result;
+    } catch (requestError) {
+      if (
+        mountedRef.current &&
+        requestId === requestIdRef.current &&
+        !isAbortError(requestError)
+      ) {
+        setError(toError(requestError));
+      }
+      throw requestError;
+    } finally {
+      if (mountedRef.current && requestId === requestIdRef.current) {
+        setIsLoading(false);
+      }
+    }
+  }, [loader]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    if (auto) {
+      refresh().catch(() => undefined);
+    } else {
+      setIsLoading(false);
+    }
+
+    return () => {
+      mountedRef.current = false;
+      controllerRef.current?.abort();
+    };
+  }, [auto, refresh]);
+
+  return { data, error, isLoading, refresh, cancel };
+}
+
+function useAbortableMutation<TInput, TData>(
+  executor: (input: TInput, signal: AbortSignal) => Promise<TData>,
+): MutationResult<TInput, TData> {
+  const [data, setData] = useState<TData | null>(null);
+  const [error, setError] = useState<Error | null>(null);
+  const [isPending, setIsPending] = useState(false);
+  const controllerRef = useRef<AbortController | null>(null);
+  const requestIdRef = useRef(0);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      controllerRef.current?.abort();
+    };
+  }, []);
+
+  const cancel = useCallback(() => {
+    controllerRef.current?.abort();
+  }, []);
+
+  const reset = useCallback(() => {
+    controllerRef.current?.abort();
+    requestIdRef.current += 1;
+    setData(null);
+    setError(null);
+    setIsPending(false);
+  }, []);
+
+  const mutate = useCallback(
+    async (input: TInput) => {
+      controllerRef.current?.abort();
+      const controller = new AbortController();
+      const requestId = ++requestIdRef.current;
+      controllerRef.current = controller;
+      setIsPending(true);
+      setError(null);
+
+      try {
+        const result = await executor(input, controller.signal);
+        if (mountedRef.current && requestId === requestIdRef.current) {
+          setData(result);
+        }
+        return result;
+      } catch (requestError) {
+        if (
+          mountedRef.current &&
+          requestId === requestIdRef.current &&
+          !isAbortError(requestError)
+        ) {
+          setError(toError(requestError));
+        }
+        throw requestError;
+      } finally {
+        if (mountedRef.current && requestId === requestIdRef.current) {
+          setIsPending(false);
+        }
+      }
+    },
+    [executor],
+  );
+
+  return { data, error, isPending, mutate, cancel, reset };
+}
+
+export function useReadiness(options: QueryOptions = {}): QueryResult<ReadinessResponse> {
+  const { client, configurationError } = useMongars();
+  const loader = useCallback(
+    (signal: AbortSignal) => requireClient(client, configurationError).readiness({ signal }),
+    [client, configurationError],
+  );
+  return useAbortableQuery(loader, options.auto ?? true);
+}
+
+export function useTasks(options: TasksQueryOptions = {}): QueryResult<TaskResponse[]> {
+  const { client, configurationError } = useMongars();
+  const limit = options.limit ?? 50;
+  const loader = useCallback(
+    (signal: AbortSignal) =>
+      requireClient(client, configurationError).listTasks(limit, { signal }),
+    [client, configurationError, limit],
+  );
+  return useAbortableQuery(loader, options.auto ?? true);
+}
+
+export function useTaskDetail(
+  taskId: string,
+  options: QueryOptions = {},
+): QueryResult<TaskDetailResponse> {
+  const { client, configurationError } = useMongars();
+  const loader = useCallback(
+    (signal: AbortSignal) =>
+      requireClient(client, configurationError).getTask(taskId, { signal }),
+    [client, configurationError, taskId],
+  );
+  return useAbortableQuery(loader, options.auto ?? true);
+}
+
+export function useTaskPayloadPage(
+  taskId: string,
+  page: number,
+  actionDigest: string | null,
+  pageCount: number,
+  pageSizeCharacters: number,
+  options: QueryOptions = {},
+): QueryResult<TaskPayloadPageResponse> {
+  const { client, configurationError } = useMongars();
+  const loader = useCallback(async (signal: AbortSignal) => {
+    if (!actionDigest) throw new Error('The protected review has no action digest.');
+    const payloadPage = await requireClient(client, configurationError).getTaskPayloadPage(
+      taskId,
+      page,
+      { signal },
+    );
+    if (
+      payloadPage.task_id !== taskId ||
+      payloadPage.action_digest !== actionDigest ||
+      payloadPage.format !== 'sorted-pretty-json-v1' ||
+      payloadPage.encoding !== 'utf-8' ||
+      payloadPage.page_index !== page ||
+      payloadPage.page_count !== pageCount ||
+      payloadPage.page_size_characters !== pageSizeCharacters ||
+      payloadPage.character_start !== page * pageSizeCharacters ||
+      payloadPage.character_end < payloadPage.character_start ||
+      payloadPage.character_end - payloadPage.character_start > pageSizeCharacters ||
+      payloadPage.content.length > pageSizeCharacters * 2
+    ) {
+      throw new Error('The payload page did not match the protected review digest.');
+    }
+    return payloadPage;
+  }, [
+    actionDigest,
+    client,
+    configurationError,
+    page,
+    pageCount,
+    pageSizeCharacters,
+    taskId,
+  ]);
+  return useAbortableQuery(loader, options.auto ?? true);
+}
+
+export function useChat(): MutationResult<ChatRequest, ChatResponse> {
+  const { client, configurationError } = useMongars();
+  const executor = useCallback(
+    (request: ChatRequest, signal: AbortSignal) =>
+      requireClient(client, configurationError).chat(request, { signal }),
+    [client, configurationError],
+  );
+  return useAbortableMutation(executor);
+}
+
+export function useMemorySearch(): MutationResult<
+  MemorySearchRequest,
+  MemorySearchResponse
+> {
+  const { client, configurationError } = useMongars();
+  const executor = useCallback(
+    (request: MemorySearchRequest, signal: AbortSignal) =>
+      requireClient(client, configurationError).searchMemory(request, { signal }),
+    [client, configurationError],
+  );
+  return useAbortableMutation(executor);
+}
+
+export function useCreateMemoryNote(): MutationResult<MemoryNoteCreateRequest, TaskResponse> {
+  const { client, configurationError } = useMongars();
+  const executor = useCallback(
+    (request: MemoryNoteCreateRequest, signal: AbortSignal) =>
+      requireClient(client, configurationError).createMemoryNote(request, { signal }),
+    [client, configurationError],
+  );
+  return useAbortableMutation(executor);
+}
+
+export function useDocumentUpload(): MutationResult<
+  DocumentUploadRequest,
+  DocumentUploadResponse
+> {
+  const { client, configurationError } = useMongars();
+  const executor = useCallback(
+    (request: DocumentUploadRequest, signal: AbortSignal) =>
+      requireClient(client, configurationError).uploadDocument(request, { signal }),
+    [client, configurationError],
+  );
+  return useAbortableMutation(executor);
+}
+
+export function useApproveTask(): MutationResult<
+  { taskId: string; actionDigest: string },
+  TaskResponse
+> {
+  const { client, configurationError } = useMongars();
+  const executor = useCallback(
+    (input: { taskId: string; actionDigest: string }, signal: AbortSignal) =>
+      requireClient(client, configurationError).approveTask(
+        input.taskId,
+        input.actionDigest,
+        { signal },
+      ),
+    [client, configurationError],
+  );
+  return useAbortableMutation(executor);
+}
+
+export function useCancelTask(): MutationResult<string, void> {
+  const { client, configurationError } = useMongars();
+  const executor = useCallback(
+    (taskId: string, signal: AbortSignal) =>
+      requireClient(client, configurationError).cancelTask(taskId, { signal }),
+    [client, configurationError],
+  );
+  return useAbortableMutation(executor);
+}

@@ -1,9 +1,7 @@
 name: ci
 
 on:
-  push:
-    branches:
-      - main
+  push: {}
   pull_request:
 
 permissions:
@@ -62,6 +60,7 @@ jobs:
       - name: Lint and type-check
         run: |
           shellcheck scripts/*.sh
+          shellcheck deploy/*/*.sh
           uv run ruff format --check .
           uv run ruff check .
           uv run mypy src
@@ -106,8 +105,16 @@ jobs:
           printf '%s\n' 'ci-only-password' > secrets/postgres_password.txt
           printf '%s\n' 'ci-api-token' > secrets/api_token.txt
           printf '%s\n' 'ci-approval-hmac-key' > secrets/approval_hmac_key.txt
+          printf '%s\n' 'ci-searxng-secret' > secrets/searxng_secret.txt
           chmod 0640 secrets/*.txt
           docker compose config --quiet
+          python3 scripts/check_deployment_contract.py
+
+      - name: Validate Caddy and bounded search egress
+        run: |
+          deploy/caddy/check.sh
+          deploy/egress-proxy/check.sh
+          deploy/searxng/check.sh
 
       - name: Build production image
         run: docker build --tag mongars:ci .
@@ -116,3 +123,47 @@ jobs:
         run: >-
           docker run --rm --entrypoint python mongars:ci
           -c 'import os, mongars; assert os.getuid() != 0'
+
+  mobile:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/mobile
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Install Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: apps/mobile/package-lock.json
+
+      - name: Install locked mobile dependencies
+        run: npm ci
+
+      - name: Lint mobile app
+        run: npm run lint
+
+      - name: Type-check mobile app
+        run: npm run typecheck
+
+      - name: Test mobile app
+        run: npm test
+
+      - name: Audit mobile dependencies
+        run: npm audit --audit-level=high
+
+  deployment-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Exercise HTTPS, authentication, and required web search
+        run: scripts/deployment_smoke.sh

@@ -7,11 +7,14 @@ from uuid import UUID
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import (
     ARRAY,
+    BigInteger,
+    Boolean,
     CheckConstraint,
     Computed,
     DateTime,
     Float,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     LargeBinary,
@@ -79,6 +82,9 @@ class MemoryChunk(Base):
     __table_args__ = (
         UniqueConstraint("document_id", "chunk_index", name="uq_memory_chunk_position"),
         Index("ix_memory_chunks_document", "document_id"),
+        # Compatibility index retained during the expand phase of migration 0004.
+        # New retrieval uses ``MemoryChunkEmbedding``; a later contract migration
+        # removes this after rollback is no longer supported.
         Index(
             "ix_memory_chunks_embedding_hnsw",
             "embedding",
@@ -100,14 +106,71 @@ class MemoryChunk(Base):
     token_count: Mapped[int | None] = mapped_column(Integer)
     char_count: Mapped[int] = mapped_column(Integer, nullable=False)
     section_path: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, default=list)
+    locator: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    legacy_embedding: Mapped[list[float] | None] = mapped_column(
+        "embedding",
+        Vector(768),
+        nullable=True,
+    )
+    legacy_embedding_model: Mapped[str | None] = mapped_column(
+        "embedding_model",
+        String(255),
+        nullable=True,
+    )
     plaintext: Mapped[str] = mapped_column(Text, nullable=False)
     search_vector: Mapped[str] = mapped_column(
         TSVECTOR,
         Computed("to_tsvector('simple'::regconfig, plaintext)", persisted=True),
         nullable=False,
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class MemoryChunkEmbedding(Base):
+    """One immutable semantic-space representation of a durable memory chunk."""
+
+    __tablename__ = "memory_chunk_embeddings"
+    __table_args__ = (
+        CheckConstraint("dimension = 768", name="ck_memory_chunk_embedding_dimension"),
+        CheckConstraint(
+            "normalization_policy IN ('none', 'l2')",
+            name="ck_memory_chunk_embedding_normalization",
+        ),
+        CheckConstraint("truncate = false", name="ck_memory_chunk_embedding_no_truncation"),
+        CheckConstraint(
+            "maximum_input_bytes > 0",
+            name="ck_memory_chunk_embedding_positive_input_limit",
+        ),
+        Index("ix_memory_chunk_embeddings_space", "embedding_space_id", "chunk_id"),
+        Index(
+            "ix_memory_chunk_embeddings_hnsw",
+            "embedding",
+            postgresql_using="hnsw",
+            postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+    )
+
+    chunk_id: Mapped[UUID] = mapped_column(
+        ForeignKey("memory_chunks.id", ondelete="CASCADE"), primary_key=True
+    )
+    embedding_space_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(50), nullable=False)
+    model_alias: Mapped[str] = mapped_column(String(255), nullable=False)
+    model_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    dimension: Mapped[int] = mapped_column(Integer, nullable=False)
+    normalization_policy: Mapped[str] = mapped_column(String(20), nullable=False)
+    document_instruction: Mapped[str] = mapped_column(Text, nullable=False)
+    query_instruction: Mapped[str] = mapped_column(Text, nullable=False)
+    clustering_instruction: Mapped[str] = mapped_column(Text, nullable=False)
+    classification_instruction: Mapped[str] = mapped_column(Text, nullable=False)
+    truncate: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    maximum_input_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
+    profile_version: Mapped[str] = mapped_column(String(100), nullable=False)
     embedding: Mapped[list[float]] = mapped_column(Vector(768), nullable=False)
-    embedding_model: Mapped[str] = mapped_column(String(255), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -173,6 +236,7 @@ class EpisodicEvent(Base):
 class TaskQueue(TimestampMixin, Base):
     __tablename__ = "task_queue"
     __table_args__ = (
+        UniqueConstraint("id", "owner_id", name="uq_task_queue_id_owner"),
         CheckConstraint(
             "risk_level IN ('read_only', 'local_mutation', 'external_side_effect')",
             name="ck_task_queue_risk_level",
@@ -248,6 +312,56 @@ class TaskQueue(TimestampMixin, Base):
     consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
+class DocumentStaging(Base):
+    """Bounded upload bytes awaiting an approved ``document.ingest`` task.
+
+    The task payload contains only immutable review metadata and the content digest;
+    raw bytes stay owner-scoped here and are never copied into task/event JSON.
+    """
+
+    __tablename__ = "document_staging"
+    __table_args__ = (
+        CheckConstraint("byte_size > 0", name="ck_document_staging_positive_size"),
+        CheckConstraint(
+            "byte_size <= 20000000",
+            name="ck_document_staging_max_size",
+        ),
+        CheckConstraint(
+            "octet_length(source_sha256) = 32",
+            name="ck_document_staging_sha256_length",
+        ),
+        CheckConstraint(
+            "octet_length(content) = byte_size",
+            name="ck_document_staging_content_size",
+        ),
+        ForeignKeyConstraint(
+            ("task_id", "owner_id"),
+            ("task_queue.id", "task_queue.owner_id"),
+            name="fk_document_staging_task_owner",
+            ondelete="CASCADE",
+        ),
+        Index("ix_document_staging_owner_created", "owner_id", "created_at"),
+        Index("ix_document_staging_expires", "expires_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid7)
+    owner_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    task_id: Mapped[UUID] = mapped_column(unique=True, nullable=False)
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    detected_mime_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_sha256: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False)
+    byte_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    content: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    source_timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class InferenceMetric(Base):
     """Small durable roll-up for local operations without an external metrics dependency."""
 
@@ -262,5 +376,31 @@ class InferenceMetric(Base):
     success: Mapped[bool] = mapped_column(nullable=False)
     trace_id: Mapped[str | None] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class RuntimeComponent(Base):
+    """Latest durable heartbeat for a worker-owned runtime capability."""
+
+    __tablename__ = "runtime_components"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('healthy', 'degraded', 'unhealthy')",
+            name="ck_runtime_component_status",
+        ),
+        Index("ix_runtime_components_type_seen", "component_type", text("last_seen_at DESC")),
+    )
+
+    component_id: Mapped[str] = mapped_column(String(100), primary_key=True)
+    instance_id: Mapped[UUID] = mapped_column(nullable=False)
+    component_type: Mapped[str] = mapped_column(String(50), nullable=False)
+    version: Mapped[str] = mapped_column(String(100), nullable=False)
+    git_sha: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    capabilities: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

@@ -8,6 +8,19 @@ readonly ci_database_user="mongars"
 readonly ci_database_password="ci-only-password"
 
 ci_container_id=""
+ci_database_probe_only="false"
+
+case "${1:-}" in
+  "")
+    ;;
+  --database-probe-only)
+    ci_database_probe_only="true"
+    ;;
+  *)
+    echo "usage: $0 [--database-probe-only]" >&2
+    exit 64
+    ;;
+esac
 
 cleanup_ci_database() {
   ci_exit_status=$?
@@ -97,12 +110,20 @@ export MONGARS_ENVIRONMENT="test"
 export MONGARS_DATABASE_URL="postgresql+psycopg://${ci_database_user}:${ci_database_password}@127.0.0.1:${ci_postgres_port}/${ci_database_name}"
 export MONGARS_TEST_DATABASE_URL="$MONGARS_DATABASE_URL"
 export MONGARS_OLLAMA_BASE_URL="http://127.0.0.1:11434"
+export MONGARS_WEB_SEARCH_ENABLED="false"
 
 echo "Running local CI against disposable PostgreSQL on 127.0.0.1:${ci_postgres_port}/${ci_database_name}"
+
+# This narrow diagnostic mode lets the container-ID and lifecycle regression test
+# exercise the real startup path without replacing every downstream CI tool.
+if [[ "$ci_database_probe_only" == "true" ]]; then
+  exit 0
+fi
 
 "$ci_uv" lock --check
 "$ci_uv" sync --frozen --extra dev --extra documents
 shellcheck scripts/*.sh
+shellcheck deploy/*/*.sh
 "$ci_uv" run ruff format --check .
 "$ci_uv" run ruff check .
 "$ci_uv" run mypy src
@@ -120,6 +141,19 @@ shellcheck scripts/*.sh
   --cov-report=term-missing \
   --cov-report=xml
 docker compose config --quiet
+python3 scripts/check_deployment_contract.py
 docker build --tag mongars:ci .
 docker run --rm --entrypoint python mongars:ci \
   -c 'import os, mongars; assert os.getuid() != 0'
+deploy/caddy/check.sh
+deploy/egress-proxy/check.sh
+deploy/searxng/check.sh
+(
+  cd apps/mobile
+  npm ci
+  npm run lint
+  npm run typecheck
+  npm test
+  npm audit --audit-level=high
+)
+scripts/deployment_smoke.sh

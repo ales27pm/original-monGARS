@@ -1,0 +1,42 @@
+use_default_settings:
+  engines:
+    remove:
+      - wikidata
+      - ahmia
+      - torch
+      - radio browser
+
+general:
+  debug: false
+  instance_name: "monGARS Search"
+  enable_metrics: false
+
+search:
+  autocomplete: ""
+  favicon_resolver: ""
+  formats:
+    - json
+
+server:
+  # This service is reachable only by trusted containers on the private network.
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  method: "GET"
+  # The container environment must override this with SEARXNG_SECRET.
+  secret_key: "replace-with-SEARXNG_SECRET"
+
+outgoing:
+  request_timeout: 5.0
+  max_request_timeout: 10.0
+  pool_connections: 20
+  pool_maxsize: 10
+  keepalive_expiry: 5.0
+  retries: 1
+  enable_http2: true
+  max_redirects: 5
+  # SearXNG has no direct external interface. Squid resolves and rejects
+  # private/link-local/metadata destinations before allowing public egress.
+  proxies:
+    all://:
+      - http://search-egress-proxy:3128

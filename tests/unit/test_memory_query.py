@@ -14,6 +14,7 @@ def test_semantic_candidates_order_by_raw_distance_before_similarity_projection(
         owner_id="owner",
         query_text="query",
         embedding=_unit_vector(),
+        embedding_space_id="a" * 64,
         top_k=8,
         hybrid=False,
     )
@@ -21,10 +22,14 @@ def test_semantic_candidates_order_by_raw_distance_before_similarity_projection(
     sql = str(statement.compile(dialect=postgresql.dialect()))
 
     cte, outer = sql.split(")\n SELECT", maxsplit=1)
-    assert "ORDER BY (memory_chunks.embedding <=>" in cte
+    assert "ORDER BY (memory_chunk_embeddings.embedding <=>" in cte
     assert " ASC" in cte
     assert "1.0 -" not in cte
     assert "semantic_candidates.distance" in outer
+    assert "memory_chunk_embeddings.embedding_space_id =" in cte
+    assert statement.compile(dialect=postgresql.dialect()).params["embedding_space_id_1"] == (
+        "a" * 64
+    )
 
 
 def test_hybrid_reranking_uses_stored_vector_on_bounded_ann_candidates() -> None:
@@ -32,6 +37,7 @@ def test_hybrid_reranking_uses_stored_vector_on_bounded_ann_candidates() -> None
         owner_id="owner",
         query_text="exact phrase",
         embedding=_unit_vector(),
+        embedding_space_id="a" * 64,
         top_k=8,
         hybrid=True,
     )

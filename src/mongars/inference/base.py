@@ -30,15 +30,6 @@ class ChatResponse:
 
 
 @dataclass(frozen=True, slots=True)
-class EmbeddingResponse:
-    """Normalized embedding batch with a verified, uniform dimension."""
-
-    embeddings: tuple[tuple[float, ...], ...]
-    model: str
-    dimension: int
-
-
-@dataclass(frozen=True, slots=True)
 class HealthStatus:
     """A non-throwing dependency health result suitable for readiness checks."""
 
@@ -116,28 +107,6 @@ class InferenceResponseError(InferenceError):
     code = "invalid_response"
 
 
-class EmbeddingDimensionError(InferenceResponseError):
-    code = "embedding_dimension_mismatch"
-
-    def __init__(
-        self,
-        *,
-        backend: str,
-        expected: int,
-        actual: int,
-        index: int,
-    ) -> None:
-        super().__init__(
-            (f"Embedding {index} has dimension {actual}; expected {expected}."),
-            backend=backend,
-            operation="embed",
-            retryable=False,
-        )
-        self.expected = expected
-        self.actual = actual
-        self.index = index
-
-
 @runtime_checkable
 class InferenceBackend(Protocol):
     """Async contract implemented by local and remote inference adapters."""
@@ -150,15 +119,6 @@ class InferenceBackend(Protocol):
         options: Mapping[str, JsonValue] | None = None,
     ) -> ChatResponse:
         """Generate one non-streaming assistant response."""
-
-    async def embed(
-        self,
-        inputs: Sequence[str],
-        *,
-        model: str | None = None,
-        expected_dimension: int | None = None,
-    ) -> EmbeddingResponse:
-        """Embed a non-empty batch and validate every returned vector."""
 
     async def health(self) -> HealthStatus:
         """Probe backend availability without raising an inference error."""

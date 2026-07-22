@@ -1,7 +1,7 @@
 .PHONY: sync format lint typecheck test check migrate compose-check ci-local
 
 sync:
-	uv sync --frozen --extra dev
+	uv sync --frozen --extra dev --extra documents
 
 format:
 	uv run ruff format .

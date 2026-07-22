@@ -1,0 +1,83 @@
+services:
+  api:
+    environment:
+      MONGARS_OLLAMA_BASE_URL: http://ollama:8090
+      MONGARS_WEB_SEARCH_ENABLED: "true"
+      MONGARS_WEB_SEARCH_BASE_URL: http://searxng:8090
+      MONGARS_TRUSTED_HOSTS: '["localhost","127.0.0.1"]'
+    depends_on:
+      ollama-mock:
+        condition: service_healthy
+      search-mock:
+        condition: service_healthy
+
+  worker:
+    environment:
+      MONGARS_OLLAMA_BASE_URL: http://ollama:8090
+    depends_on:
+      ollama-mock:
+        condition: service_healthy
+
+  ollama-mock:
+    image: ${MONGARS_IMAGE:-mongars:local}
+    user: "10001:10001"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    entrypoint: ["python", "/opt/mongars-ci/ci_runtime_mock.py"]
+    volumes:
+      - ./scripts/ci_runtime_mock.py:/opt/mongars-ci/ci_runtime_mock.py:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    networks:
+      backend:
+        aliases:
+          - ollama
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8090/health", timeout=2).read()'
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  search-mock:
+    image: ${MONGARS_IMAGE:-mongars:local}
+    user: "10001:10001"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    entrypoint: ["python", "/opt/mongars-ci/ci_runtime_mock.py"]
+    volumes:
+      - ./scripts/ci_runtime_mock.py:/opt/mongars-ci/ci_runtime_mock.py:ro
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    networks:
+      search:
+        aliases:
+          - searxng
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - 'import urllib.request; urllib.request.urlopen("http://127.0.0.1:8090/health", timeout=2).read()'
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  # Keep the real SearXNG container in this smoke for production startup and
+  # health validation, but reserve the allowed `searxng` API hostname on the
+  # search network for the deterministic fixture. The dedicated SearXNG check
+  # exercises the real API and public proxy path.
+  searxng:
+    networks: !override
+      - search-proxy

@@ -1,28 +1,48 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
+from types import MappingProxyType
+
 from fastapi import status
 from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 
-class RequestBodyLimitMiddleware:
-    """Reject HTTP request bodies that exceed a bounded in-memory envelope.
+class _RequestBodyTooLarge(Exception):
+    pass
 
-    ``Content-Length`` is an optimization, not a security boundary. The complete ASGI
-    request stream is counted before the downstream application is invoked, so chunked
-    requests and requests with an understated or missing length cannot bypass the limit.
+
+class RequestBodyLimitMiddleware:
+    """Count the live ASGI stream without buffering or replaying request bodies.
+
+    ``Content-Length`` is only a fast rejection path. A wrapped ``receive`` counts every
+    chunk consumed by Starlette, preserving UploadFile spooling and preventing chunked,
+    missing-length, or understated-length requests from bypassing the limit.
     """
 
-    def __init__(self, app: ASGIApp, *, max_bytes: int) -> None:
+    def __init__(
+        self,
+        app: ASGIApp,
+        *,
+        max_bytes: int,
+        path_limits: Mapping[str, int] | None = None,
+    ) -> None:
         if max_bytes < 1:
             raise ValueError("max_bytes must be positive")
         self.app = app
         self.max_bytes = max_bytes
+        normalized_path_limits = dict(path_limits or {})
+        if any(
+            not path.startswith("/") or limit < 1 for path, limit in normalized_path_limits.items()
+        ):
+            raise ValueError("path limits require absolute paths and positive byte limits")
+        self.path_limits = MappingProxyType(normalized_path_limits)
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        request_limit = self.path_limits.get(str(scope.get("path", "")), self.max_bytes)
 
         raw_lengths = [
             value.strip() for name, value in scope["headers"] if name.lower() == b"content-length"
@@ -48,44 +68,35 @@ class RequestBodyLimitMiddleware:
                     detail="invalid Content-Length header",
                 )
                 return
-            if declared_length > self.max_bytes:
+            if declared_length > request_limit:
                 await self._send_too_large(scope, receive, send)
                 return
 
-        body = bytearray()
-        disconnected = False
-        while True:
+        received_bytes = 0
+        response_started = False
+
+        async def limited_receive() -> Message:
+            nonlocal received_bytes
             message = await receive()
-            if message["type"] == "http.disconnect":
-                disconnected = True
-                break
-            if message["type"] != "http.request":
-                continue
-            chunk = message.get("body", b"")
-            if len(body) + len(chunk) > self.max_bytes:
-                await self._send_too_large(scope, receive, send)
-                return
-            body.extend(chunk)
-            if not message.get("more_body", False):
-                break
+            if message["type"] == "http.request":
+                chunk = message.get("body", b"")
+                received_bytes += len(chunk)
+                if received_bytes > request_limit:
+                    raise _RequestBodyTooLarge
+            return message
 
-        replayed = False
-        replay_body = bytes(body)
+        async def tracked_send(message: Message) -> None:
+            nonlocal response_started
+            if message["type"] == "http.response.start":
+                response_started = True
+            await send(message)
 
-        async def replay_receive() -> Message:
-            nonlocal replayed
-            if not replayed:
-                replayed = True
-                if disconnected:
-                    return {"type": "http.disconnect"}
-                return {
-                    "type": "http.request",
-                    "body": replay_body,
-                    "more_body": False,
-                }
-            return await receive()
-
-        await self.app(scope, replay_receive, send)
+        try:
+            await self.app(scope, limited_receive, tracked_send)
+        except _RequestBodyTooLarge:
+            if response_started:
+                raise RuntimeError("request body limit was exceeded after response start") from None
+            await self._send_too_large(scope, receive, send)
 
     async def _send_too_large(self, scope: Scope, receive: Receive, send: Send) -> None:
         await self._send_error(

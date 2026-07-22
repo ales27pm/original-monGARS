@@ -10,8 +10,7 @@ import pytest
 
 from mongars.inference import (
     ChatMessage,
-    EmbeddingDimensionError,
-    InferenceConfigurationError,
+    InferenceBackend,
     InferenceHTTPError,
     InferenceResponseError,
     InferenceTimeoutError,
@@ -21,6 +20,11 @@ from mongars.inference import (
 
 def run[T](coroutine: Coroutine[Any, Any, T]) -> T:
     return asyncio.run(coroutine)
+
+
+def test_general_inference_boundary_exposes_no_embedding_operation() -> None:
+    assert not hasattr(InferenceBackend, "embed")
+    assert not hasattr(OllamaBackend, "embed")
 
 
 def test_chat_uses_native_endpoint_and_normalizes_response() -> None:
@@ -40,7 +44,8 @@ def test_chat_uses_native_endpoint_and_normalizes_response() -> None:
                     "model": "qwen-chat",
                     "message": {
                         "role": "assistant",
-                        "content": "private reasoning</think>\n\nHello.",
+                        "content": "<think>private reasoning</think>\n\nHello.",
+                        "thinking": "This separate field must not become user-visible.",
                     },
                     "done": True,
                     "done_reason": "stop",
@@ -54,7 +59,6 @@ def test_chat_uses_native_endpoint_and_normalizes_response() -> None:
                 base_url="http://ollama:11434",
                 chat_model="qwen-chat",
                 embedding_model="nomic-embed",
-                embedding_dimension=3,
                 think=False,
                 client=client,
             )
@@ -72,19 +76,81 @@ def test_chat_uses_native_endpoint_and_normalizes_response() -> None:
     run(exercise())
 
 
-def test_embed_validates_configured_dimension_and_batch_count() -> None:
-    async def exercise() -> None:
-        def handler(request: httpx.Request) -> httpx.Response:
-            assert request.url.path == "/api/embed"
-            assert json.loads(request.content) == {
-                "model": "nomic-embed",
-                "input": ["alpha", "beta"],
-            }
+def test_owned_client_ignores_proxy_environment_and_redirects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    constructor_options: dict[str, object] = {}
+    requested_urls: list[str] = []
+
+    class _Client:
+        def __init__(self, **kwargs: object) -> None:
+            constructor_options.update(kwargs)
+
+        async def request(self, method: str, url: str, **_kwargs: object) -> httpx.Response:
+            assert method == "POST"
+            requested_urls.append(url)
             return httpx.Response(
                 200,
                 json={
-                    "model": "nomic-embed",
-                    "embeddings": [[1, 2.5, 3], [4, 5, 6]],
+                    "model": "chat",
+                    "message": {"role": "assistant", "content": "local answer"},
+                    "done": True,
+                    "done_reason": "stop",
+                },
+            )
+
+        async def aclose(self) -> None:
+            return None
+
+    monkeypatch.setenv("HTTP_PROXY", "http://attacker.invalid:8080")
+    monkeypatch.setenv("HTTPS_PROXY", "http://attacker.invalid:8080")
+    monkeypatch.setenv("NO_PROXY", "")
+    monkeypatch.setattr("mongars.inference.ollama.httpx.AsyncClient", _Client)
+
+    async def exercise() -> None:
+        backend = OllamaBackend(
+            base_url="http://ollama:11434",
+            chat_model="chat",
+            embedding_model="embed",
+        )
+        response = await backend.chat([ChatMessage(role="user", content="hello")])
+        await backend.aclose()
+        assert response.content == "local answer"
+
+    run(exercise())
+
+    assert constructor_options == {"trust_env": False, "follow_redirects": False}
+    assert requested_urls == ["http://ollama:11434/api/chat"]
+
+
+@pytest.mark.parametrize(
+    ("content", "error"),
+    [
+        ("<think>unfinished reasoning", "residual thinking marker"),
+        ("Answer.</think>", "residual thinking marker"),
+        ("Answer <think>hidden trace</think>", "residual thinking marker"),
+        ("<think>first</think><think>second</think>Answer.", "residual thinking marker"),
+        ("<think>only reasoning</think>\n\t", "empty content"),
+        (" \n\t", "empty content"),
+    ],
+)
+def test_chat_rejects_thinking_markers_and_empty_content(
+    content: str,
+    error: str,
+) -> None:
+    async def exercise() -> None:
+        def handler(_request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "model": "qwen-chat",
+                    "message": {
+                        "role": "assistant",
+                        "content": content,
+                        "thinking": "Never use this field as response content.",
+                    },
+                    "done": True,
+                    "done_reason": "stop",
                 },
             )
 
@@ -93,72 +159,37 @@ def test_embed_validates_configured_dimension_and_batch_count() -> None:
                 base_url="http://ollama:11434",
                 chat_model="qwen-chat",
                 embedding_model="nomic-embed",
-                embedding_dimension=3,
+                think=False,
                 client=client,
             )
-            result = await backend.embed(["alpha", "beta"])
-
-        assert result.dimension == 3
-        assert result.embeddings == ((1.0, 2.5, 3.0), (4.0, 5.0, 6.0))
+            with pytest.raises(InferenceResponseError, match=error):
+                await backend.chat([ChatMessage(role="user", content="hello")])
 
     run(exercise())
 
 
-def test_embed_call_dimension_overrides_configured_dimension() -> None:
+def test_chat_rejects_a_generation_truncated_by_length() -> None:
     async def exercise() -> None:
         def handler(_request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"embeddings": [[1, 2]]})
+            return httpx.Response(
+                200,
+                json={
+                    "model": "qwen-chat",
+                    "message": {"role": "assistant", "content": "A plausible partial answer"},
+                    "done": True,
+                    "done_reason": "length",
+                },
+            )
 
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
             backend = OllamaBackend(
                 base_url="http://ollama:11434",
-                chat_model="chat",
-                embedding_model="embed",
-                embedding_dimension=3,
+                chat_model="qwen-chat",
+                embedding_model="nomic-embed",
                 client=client,
             )
-            result = await backend.embed(["alpha"], expected_dimension=2)
-
-        assert result.dimension == 2
-
-    run(exercise())
-
-
-def test_embed_rejects_a_wrong_dimension() -> None:
-    async def exercise() -> None:
-        def handler(_request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"embeddings": [[1, 2]]})
-
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-            backend = OllamaBackend(
-                base_url="http://ollama:11434",
-                chat_model="chat",
-                embedding_model="embed",
-                embedding_dimension=3,
-                client=client,
-            )
-            with pytest.raises(EmbeddingDimensionError) as caught:
-                await backend.embed(["alpha"])
-
-        assert caught.value.expected == 3
-        assert caught.value.actual == 2
-        assert caught.value.index == 0
-
-    run(exercise())
-
-
-def test_embed_requires_dimension_from_config_or_caller() -> None:
-    async def exercise() -> None:
-        transport = httpx.MockTransport(lambda _: httpx.Response(500))
-        async with httpx.AsyncClient(transport=transport) as client:
-            backend = OllamaBackend(
-                base_url="http://ollama:11434",
-                chat_model="chat",
-                embedding_model="embed",
-                client=client,
-            )
-            with pytest.raises(InferenceConfigurationError):
-                await backend.embed(["alpha"])
+            with pytest.raises(InferenceResponseError, match="truncated"):
+                await backend.chat([ChatMessage(role="user", content="hello")])
 
     run(exercise())
 

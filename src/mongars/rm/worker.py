@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import logging
 import signal
 from contextlib import suppress
@@ -14,14 +15,29 @@ from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mongars.config import Settings, get_settings
+from mongars.db.models import DocumentStaging
 from mongars.db.session import Database
+from mongars.embeddings.errors import EmbeddingError
+from mongars.embeddings.ollama import OllamaEmbeddingProvider
+from mongars.embeddings.service import EmbeddingService
 from mongars.events.repository import EventRepository
 from mongars.inference.base import InferenceBackend
 from mongars.inference.ollama import OllamaBackend
+from mongars.ingestion.errors import IngestionError
+from mongars.ingestion.isolation import DocumentParser
+from mongars.ingestion.models import (
+    DocumentMediaType,
+    DocumentProvenance,
+    IngestionContext,
+    ValidatedUpload,
+)
+from mongars.ingestion.runtime import document_parser_from_settings
+from mongars.ingestion.staging import DocumentStagingRepository
 from mongars.logging import configure_logging
 from mongars.memory.repository import MemoryGovernanceConflict, MemoryRepository
-from mongars.memory.service import MemoryService
+from mongars.memory.service import IngestResult, MemoryService
 from mongars.rm.repository import TaskRepository
+from mongars.rm.runtime_heartbeat import WorkerRuntimeHeartbeat
 from mongars.rm.service import TaskIntegrityError, TaskService
 from mongars.security.policy import ActionClassification, ToolPolicy
 
@@ -55,15 +71,27 @@ class Worker:
         settings: Settings,
         database: Database,
         inference: InferenceBackend,
+        embeddings: EmbeddingService,
+        document_parser: DocumentParser | None = None,
     ) -> None:
         self._settings = settings
         self._database = database
         self._inference = inference
+        self._embeddings = embeddings
+        self._document_parser = document_parser or document_parser_from_settings(settings)
+        self._runtime_heartbeat = WorkerRuntimeHeartbeat(
+            settings=settings,
+            database=database,
+            embeddings=embeddings,
+            document_parser=self._document_parser,
+        )
         self._next_retention_sweep = 0.0
         self._policy = ToolPolicy(
             {
                 ("memory", "search"): ActionClassification.READ_ONLY,
                 ("memory", "note.create"): ActionClassification.LOCAL_MUTATION,
+                ("memory", "reindex"): ActionClassification.LOCAL_MUTATION,
+                ("document", "ingest"): ActionClassification.LOCAL_MUTATION,
             }
         )
 
@@ -84,10 +112,41 @@ class Worker:
                         summary=f"Expired {expired} retained memory documents",
                         payload={"document_count": expired},
                     )
+                expired_uploads = await DocumentStagingRepository(session).cleanup_stale(
+                    owner_id=self._settings.owner_id
+                )
+                for upload in expired_uploads:
+                    await EventRepository(session).record(
+                        owner_id=upload.owner_id,
+                        trace_id=upload.trace_id,
+                        actor="worker",
+                        event_type="document_ingest_failed",
+                        summary="Document ingestion approval expired",
+                        payload={
+                            "task_id": str(upload.task_id),
+                            "error_code": "approval_expired",
+                        },
+                    )
             recoveries = await repository.recover_expired_leases()
             events = EventRepository(session)
             for recovery in recoveries:
                 failed = recovery.status == "failed"
+                if failed and recovery.kind == "document.ingest":
+                    await DocumentStagingRepository(session).delete_for_task(
+                        owner_id=recovery.owner_id,
+                        task_id=recovery.task_id,
+                    )
+                    await events.record(
+                        owner_id=recovery.owner_id,
+                        trace_id=recovery.trace_id,
+                        actor="worker",
+                        event_type="document_ingest_failed",
+                        summary="Document ingestion failed after its final lease expired",
+                        payload={
+                            "task_id": str(recovery.task_id),
+                            "error_code": "lease_exhausted",
+                        },
+                    )
                 await events.record(
                     owner_id=recovery.owner_id,
                     trace_id=recovery.trace_id,
@@ -131,6 +190,20 @@ class Worker:
                 execution_token,
                 str(exc),
                 terminal=True,
+            )
+        except IngestionError as exc:
+            await self._record_failure(
+                task_id,
+                execution_token,
+                exc.code,
+                terminal=not exc.retryable,
+            )
+        except EmbeddingError as exc:
+            await self._record_failure(
+                task_id,
+                execution_token,
+                exc.code,
+                terminal=not exc.retryable,
             )
         except TaskLeaseLost:
             logger.warning(
@@ -245,7 +318,7 @@ class Worker:
         memory_without_session = MemoryService(
             settings=self._settings,
             repository=None,
-            inference=self._inference,
+            embeddings=self._embeddings,
         )
 
         if claim.kind == "memory.search":
@@ -258,7 +331,7 @@ class Worker:
                 memory = MemoryService(
                     settings=self._settings,
                     repository=MemoryRepository(session),
-                    inference=self._inference,
+                    embeddings=self._embeddings,
                 )
                 hits = await memory.search_prepared(
                     owner_id=claim.owner_id,
@@ -275,6 +348,7 @@ class Worker:
                             "title": hit.title,
                             "source_uri": hit.source_uri,
                             "text": hit.text,
+                            "locator": hit.locator,
                         }
                         for hit in hits
                     ]
@@ -290,6 +364,7 @@ class Worker:
                 retention_class=str(claim.payload["retention_class"]),
                 metadata={"task_id": str(claim.task_id), "trace_id": claim.trace_id},
             )
+            embedding_space = await memory_without_session.resolve_embedding_space()
 
             # A short lookup transaction avoids paying for embeddings on an idempotent
             # retry. No database session remains open while the GPU call runs.
@@ -303,8 +378,11 @@ class Worker:
                 existing = await MemoryService(
                     settings=self._settings,
                     repository=MemoryRepository(session),
-                    inference=self._inference,
-                ).resolve_existing_ingest(prepared_ingest)
+                    embeddings=self._embeddings,
+                ).resolve_existing_ingest(
+                    prepared_ingest,
+                    embedding_space=embedding_space,
+                )
                 if existing is not None:
                     result = {
                         "document_id": str(existing.document.id),
@@ -329,7 +407,7 @@ class Worker:
                 ingest = await MemoryService(
                     settings=self._settings,
                     repository=MemoryRepository(session),
-                    inference=self._inference,
+                    embeddings=self._embeddings,
                 ).persist_prepared_ingest(embedded)
                 result = {
                     "document_id": str(ingest.document.id),
@@ -339,10 +417,257 @@ class Worker:
                 await self._finalize_local_mutation(session, claim, result)
             return ExecutionOutcome(result=result, finalized=True)
 
+        if claim.kind == "memory.reindex":
+            return await self._reindex_memory(claim, lease_lost, memory_without_session)
+
+        if claim.kind == "document.ingest":
+            return await self._ingest_document(claim, lease_lost, memory_without_session)
+
         # No external-side-effect executor is enabled in this release. Before one is
         # added, it must reserve an idempotency key in a durable effect ledger/outbox
         # while holding the owned-attempt lock, then reconcile that ledger on retries.
         raise TaskIntegrityError(f"worker has no executor for {claim.kind}")
+
+    async def _reindex_memory(
+        self,
+        claim: ExecutionClaim,
+        lease_lost: asyncio.Event,
+        memory_without_session: MemoryService,
+    ) -> ExecutionOutcome:
+        """Shadow-reindex legacy chunks without removing their prior vectors."""
+
+        embedding_space = await memory_without_session.resolve_embedding_space()
+        document_id = _optional_payload_uuid(claim.payload, "document_id")
+        batch_size = int(claim.payload["batch_size"])
+        processed_sources = 0
+        processed_chunks = 0
+
+        while True:
+            async with self._database.session_factory() as session, session.begin():
+                owned = await TaskRepository(session).lock_owned_execution(
+                    task_id=claim.task_id,
+                    execution_token=claim.execution_token,
+                )
+                if not owned:
+                    raise TaskLeaseLost("task lease was lost during memory reindex")
+                repository = MemoryRepository(session)
+                chunks = await repository.list_reindex_chunks(
+                    owner_id=claim.owner_id,
+                    embedding_space_id=embedding_space.space_id,
+                    limit=batch_size,
+                    document_id=document_id,
+                )
+                if not chunks:
+                    inventory = await repository.embedding_inventory(
+                        owner_id=claim.owner_id,
+                        embedding_space_id=embedding_space.space_id,
+                    )
+                    result = {
+                        "embedding_space_id": embedding_space.space_id,
+                        "model_alias": embedding_space.model_alias,
+                        "model_digest": embedding_space.model_digest,
+                        "reindexed_source_chunk_count": processed_sources,
+                        "reindexed_chunk_count": processed_chunks,
+                        "compatible_chunk_count": inventory.compatible_chunk_count,
+                        "legacy_chunk_count": inventory.legacy_chunk_count,
+                        "reindex_required": inventory.reindex_required,
+                    }
+                    await EventRepository(session).record(
+                        owner_id=claim.owner_id,
+                        trace_id=claim.trace_id,
+                        actor="worker",
+                        event_type="memory_reindexed",
+                        summary=f"Reindexed {processed_chunks} memory chunks",
+                        payload={
+                            "task_id": str(claim.task_id),
+                            "embedding_space_id": embedding_space.space_id,
+                            "reindexed_source_chunk_count": processed_sources,
+                            "reindexed_chunk_count": processed_chunks,
+                            "legacy_chunk_count": inventory.legacy_chunk_count,
+                        },
+                    )
+                    await self._finalize_local_mutation(session, claim, result)
+                    return ExecutionOutcome(result=result, finalized=True)
+
+            if lease_lost.is_set():
+                raise TaskLeaseLost("task lease was lost before memory reindex embedding")
+            embedded = await memory_without_session.embed_reindex_chunks(chunks)
+            if embedded.embedding_space != embedding_space:
+                raise TaskIntegrityError("embedding space changed during memory reindex")
+            if lease_lost.is_set():
+                raise TaskLeaseLost("task lease was lost during memory reindex embedding")
+
+            async with self._database.session_factory() as session, session.begin():
+                owned = await TaskRepository(session).lock_owned_execution(
+                    task_id=claim.task_id,
+                    execution_token=claim.execution_token,
+                )
+                if not owned:
+                    raise TaskLeaseLost("task lease was lost before reindex persistence")
+                applied = await MemoryRepository(session).apply_reindex_replacements(
+                    owner_id=claim.owner_id,
+                    replacements=list(embedded.replacements),
+                    embedding_space=embedding_space,
+                )
+                processed_sources += applied.source_chunk_count
+                processed_chunks += applied.active_chunk_count
+
+    async def _ingest_document(
+        self,
+        claim: ExecutionClaim,
+        lease_lost: asyncio.Event,
+        memory_without_session: MemoryService,
+    ) -> ExecutionOutcome:
+        """Execute an approved staged document in short transactional phases."""
+
+        staging_id = _payload_uuid(claim.payload, "staging_id")
+        async with self._database.session_factory() as session, session.begin():
+            owned = await TaskRepository(session).lock_owned_execution(
+                task_id=claim.task_id,
+                execution_token=claim.execution_token,
+            )
+            if not owned:
+                raise TaskLeaseLost("task lease was lost before staging validation")
+            staged = await DocumentStagingRepository(session).get_for_execution(
+                staging_id=staging_id,
+                owner_id=claim.owner_id,
+                task_id=claim.task_id,
+                for_update=True,
+            )
+            if staged is None:
+                raise TaskIntegrityError("approved document staging object is missing")
+            upload = _validated_staged_upload(claim, staged)
+
+        if lease_lost.is_set():
+            raise TaskLeaseLost("task lease was lost before document parsing")
+        extracted = await self._document_parser.extract(upload)
+        context = IngestionContext(
+            owner_id=claim.owner_id,
+            ingestion_task_id=claim.task_id,
+            sensitivity=str(claim.payload["sensitivity"]),
+            retention_class=str(claim.payload["retention_class"]),
+            source_timestamp=_payload_datetime(claim.payload, "source_timestamp"),
+            received_at=_payload_datetime(claim.payload, "received_at"),
+            source_time_basis="user_supplied",
+        )
+        provenance = DocumentProvenance(
+            sha256=upload.content_sha256,
+            original_filename=upload.original_filename,
+            validated_mime_type=upload.validated_mime_type.value,
+            byte_size=upload.byte_size,
+            extracted_character_count=len(extracted.text),
+            page_count=extracted.page_count,
+            section_count=extracted.section_count,
+            parser_name=extracted.parser_name,
+            parser_version=extracted.parser_version,
+            ingestion_task_id=context.ingestion_task_id,
+            owner_id=context.owner_id,
+            sensitivity=context.sensitivity,
+            retention_class=context.retention_class,
+            source_timestamp=context.source_timestamp,
+            received_at=context.received_at,
+            source_time_basis=context.source_time_basis,
+        )
+        if lease_lost.is_set():
+            raise TaskLeaseLost("task lease was lost during document parsing")
+
+        prepared_ingest = memory_without_session.prepare_ingest(
+            owner_id=claim.owner_id,
+            text=extracted.text,
+            source_type="document",
+            title=_optional_string(claim.payload.get("title")),
+            mime_type=upload.validated_mime_type.value,
+            sensitivity=str(claim.payload["sensitivity"]),
+            retention_class=str(claim.payload["retention_class"]),
+            metadata=provenance.as_metadata(),
+            segments=extracted.segments,
+            source_sha256=bytes.fromhex(upload.content_sha256),
+        )
+        embedding_space = await memory_without_session.resolve_embedding_space()
+
+        # Resolve an idempotent retry before paying for another GPU call. The stage,
+        # provenance observation, task completion, and autobiographical events commit
+        # atomically if the document already exists.
+        async with self._database.session_factory() as session, session.begin():
+            owned = await TaskRepository(session).lock_owned_execution(
+                task_id=claim.task_id,
+                execution_token=claim.execution_token,
+            )
+            if not owned:
+                raise TaskLeaseLost("task lease was lost before duplicate resolution")
+            existing = await MemoryService(
+                settings=self._settings,
+                repository=MemoryRepository(session),
+                embeddings=self._embeddings,
+            ).resolve_existing_ingest(
+                prepared_ingest,
+                embedding_space=embedding_space,
+            )
+            if existing is not None:
+                result = _document_ingest_result(existing, provenance.as_metadata())
+                await self._finalize_document_ingest(
+                    session,
+                    claim,
+                    staging_id=staging_id,
+                    result=result,
+                )
+                return ExecutionOutcome(result=result, finalized=True)
+
+        embedded = await memory_without_session.embed_prepared_ingest(prepared_ingest)
+        if lease_lost.is_set():
+            raise TaskLeaseLost("task lease was lost during document embedding")
+        async with self._database.session_factory() as session, session.begin():
+            owned = await TaskRepository(session).lock_owned_execution(
+                task_id=claim.task_id,
+                execution_token=claim.execution_token,
+            )
+            if not owned:
+                raise TaskLeaseLost("task lease was lost before document persistence")
+            ingest = await MemoryService(
+                settings=self._settings,
+                repository=MemoryRepository(session),
+                embeddings=self._embeddings,
+            ).persist_prepared_ingest(embedded)
+            result = _document_ingest_result(ingest, provenance.as_metadata())
+            await self._finalize_document_ingest(
+                session,
+                claim,
+                staging_id=staging_id,
+                result=result,
+            )
+        return ExecutionOutcome(result=result, finalized=True)
+
+    async def _finalize_document_ingest(
+        self,
+        session: AsyncSession,
+        claim: ExecutionClaim,
+        *,
+        staging_id: UUID,
+        result: dict[str, Any],
+    ) -> None:
+        deleted = await DocumentStagingRepository(session).delete_for_execution(
+            staging_id=staging_id,
+            owner_id=claim.owner_id,
+            task_id=claim.task_id,
+        )
+        if not deleted:
+            raise TaskIntegrityError("document staging object disappeared before finalization")
+        await EventRepository(session).record(
+            owner_id=claim.owner_id,
+            trace_id=claim.trace_id,
+            actor="worker",
+            event_type="document_ingested",
+            summary="Ingested an approved document",
+            payload={
+                "task_id": str(claim.task_id),
+                "document_id": result["document_id"],
+                "created": result["created"],
+                "chunk_count": result["chunk_count"],
+                "mime_type": result["provenance"]["validated_mime_type"],
+                "source_sha256": result["provenance"]["sha256"],
+            },
+        )
+        await self._finalize_local_mutation(session, claim, result)
 
     async def _finalize_local_mutation(
         self,
@@ -414,6 +739,22 @@ class Worker:
                     extra={"task_id": str(task_id)},
                 )
                 return
+            if transition.status == "failed" and transition.kind == "document.ingest":
+                await DocumentStagingRepository(session).delete_for_task(
+                    owner_id=transition.owner_id,
+                    task_id=transition.task_id,
+                )
+                await EventRepository(session).record(
+                    owner_id=transition.owner_id,
+                    trace_id=transition.trace_id,
+                    actor="worker",
+                    event_type="document_ingest_failed",
+                    summary="Document ingestion failed",
+                    payload={
+                        "task_id": str(transition.task_id),
+                        "error_code": error[:100],
+                    },
+                )
             await EventRepository(session).record(
                 owner_id=transition.owner_id,
                 trace_id=transition.trace_id,
@@ -424,15 +765,103 @@ class Worker:
             )
 
     async def run_forever(self, stop: asyncio.Event) -> None:
-        while not stop.is_set():
-            processed = await self.run_once()
-            if not processed:
-                with suppress(TimeoutError):
-                    await asyncio.wait_for(stop.wait(), timeout=self._settings.worker_poll_seconds)
+        runtime_heartbeat = asyncio.create_task(
+            self._runtime_heartbeat.run(stop),
+            name="worker-runtime-heartbeat",
+        )
+        try:
+            while not stop.is_set():
+                processed = await self.run_once()
+                if not processed:
+                    with suppress(TimeoutError):
+                        await asyncio.wait_for(
+                            stop.wait(),
+                            timeout=self._settings.worker_poll_seconds,
+                        )
+        finally:
+            runtime_heartbeat.cancel()
+            with suppress(asyncio.CancelledError):
+                await runtime_heartbeat
 
 
 def _optional_string(value: object) -> str | None:
     return value if isinstance(value, str) else None
+
+
+def _payload_uuid(payload: dict[str, Any], key: str) -> UUID:
+    value = payload.get(key)
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError) as exc:
+        raise TaskIntegrityError(f"document task {key} is invalid") from exc
+
+
+def _optional_payload_uuid(payload: dict[str, Any], key: str) -> UUID | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError) as exc:
+        raise TaskIntegrityError(f"task {key} is invalid") from exc
+
+
+def _payload_datetime(payload: dict[str, Any], key: str) -> datetime:
+    value = payload.get(key)
+    if not isinstance(value, str):
+        raise TaskIntegrityError(f"document task {key} is invalid")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise TaskIntegrityError(f"document task {key} is invalid") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise TaskIntegrityError(f"document task {key} is invalid")
+    return parsed.astimezone(UTC)
+
+
+def _validated_staged_upload(
+    claim: ExecutionClaim,
+    staged: DocumentStaging,
+) -> ValidatedUpload:
+    digest = hashlib.sha256(staged.content).hexdigest()
+    expected_timestamp = _payload_datetime(claim.payload, "source_timestamp")
+    expected_received_at = _payload_datetime(claim.payload, "received_at")
+    actual_timestamp = staged.source_timestamp.astimezone(UTC)
+    actual_received_at = staged.received_at.astimezone(UTC)
+    if (
+        claim.payload.get("original_filename") != staged.original_filename
+        or claim.payload.get("source_sha256") != staged.source_sha256.hex()
+        or claim.payload.get("detected_mime_type") != staged.detected_mime_type
+        or claim.payload.get("byte_size") != staged.byte_size
+        or expected_timestamp != actual_timestamp
+        or expected_received_at != actual_received_at
+        or claim.payload.get("source_time_basis") != "user_supplied"
+        or digest != staged.source_sha256.hex()
+    ):
+        raise TaskIntegrityError("approved document metadata does not match staged content")
+    try:
+        media_type = DocumentMediaType(staged.detected_mime_type)
+    except ValueError as exc:
+        raise TaskIntegrityError("staged document media type is invalid") from exc
+    return ValidatedUpload(
+        original_filename=staged.original_filename,
+        validated_mime_type=media_type,
+        content_sha256=digest,
+        byte_size=staged.byte_size,
+        content=bytes(staged.content),
+    )
+
+
+def _document_ingest_result(
+    ingest: IngestResult,
+    provenance: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "document_id": str(ingest.document.id),
+        "created": ingest.created,
+        "chunk_count": ingest.chunk_count,
+        "provenance": provenance,
+    }
 
 
 async def _async_main() -> None:
@@ -443,12 +872,31 @@ async def _async_main() -> None:
         base_url=settings.ollama_base_url,
         chat_model=settings.ollama_chat_model,
         embedding_model=settings.ollama_embedding_model,
-        embedding_dimension=settings.embedding_dimensions,
         think=settings.ollama_think,
         timeout=settings.inference_timeout_seconds,
         health_timeout=settings.inference_health_timeout_seconds,
     )
-    worker = Worker(settings=settings, database=database, inference=inference)
+    embeddings = EmbeddingService(
+        provider=OllamaEmbeddingProvider(
+            base_url=settings.ollama_base_url,
+            model=settings.ollama_embedding_model,
+            dimension=settings.embedding_dimensions,
+            timeout=settings.inference_timeout_seconds,
+            max_input_bytes=settings.embedding_max_input_bytes,
+        ),
+        expected_dimension=settings.embedding_dimensions,
+        batch_size=settings.embedding_batch_size,
+        max_text_bytes=settings.embedding_max_input_bytes,
+        expected_model_digest=settings.ollama_embedding_model_digest,
+    )
+    document_parser = document_parser_from_settings(settings)
+    worker = Worker(
+        settings=settings,
+        database=database,
+        inference=inference,
+        embeddings=embeddings,
+        document_parser=document_parser,
+    )
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for signum in (signal.SIGINT, signal.SIGTERM):
@@ -457,6 +905,8 @@ async def _async_main() -> None:
     try:
         await worker.run_forever(stop)
     finally:
+        await document_parser.aclose()
+        await embeddings.aclose()
         await inference.aclose()
         await database.close()
 
