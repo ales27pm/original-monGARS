@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 
 WEB_STATIC_ROOT = Path(__file__).resolve().parents[2] / "web" / "static"
 
@@ -11,6 +11,7 @@ _ASSET_MEDIA_TYPES = {
     "app.css": "text/css",
     "app.js": "text/javascript",
 }
+_RECOVERY_SCRIPT_NAME = "runtime-recovery.js"
 _NO_STORE_HEADERS = {"Cache-Control": "no-store"}
 _INDEX_HEADERS = {
     **_NO_STORE_HEADERS,
@@ -39,6 +40,13 @@ def _contained_file(static_root: Path, relative_name: str) -> Path | None:
     return candidate if candidate.is_file() else None
 
 
+def _read_utf8(path: Path) -> str | None:
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+
+
 def create_web_router(*, static_root: Path = WEB_STATIC_ROOT) -> APIRouter:
     """Create the bundled UI routes without exposing the package filesystem."""
 
@@ -55,7 +63,7 @@ def create_web_router(*, static_root: Path = WEB_STATIC_ROOT) -> APIRouter:
         return FileResponse(index, media_type="text/html", headers=_INDEX_HEADERS)
 
     @router.get("/assets/{asset_name:path}")
-    async def web_asset(asset_name: str) -> FileResponse:
+    async def web_asset(asset_name: str) -> Response:
         media_type = _ASSET_MEDIA_TYPES.get(asset_name)
         if media_type is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
@@ -63,6 +71,20 @@ def create_web_router(*, static_root: Path = WEB_STATIC_ROOT) -> APIRouter:
         asset = _contained_file(static_root, asset_name)
         if asset is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+
+        if asset_name == "app.js":
+            recovery = _contained_file(static_root, _RECOVERY_SCRIPT_NAME)
+            if recovery is not None:
+                application_source = _read_utf8(asset)
+                recovery_source = _read_utf8(recovery)
+                if application_source is None or recovery_source is None:
+                    raise HTTPException(status_code=status.HTTP_404_NOT_FOUND)
+                return Response(
+                    content=f"{application_source}\n;\n{recovery_source}",
+                    media_type=media_type,
+                    headers=_NO_STORE_HEADERS,
+                )
+
         return FileResponse(asset, media_type=media_type, headers=_NO_STORE_HEADERS)
 
     return router
