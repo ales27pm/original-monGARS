@@ -24,7 +24,9 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+  "bandit>=1.8,<2",
   "mypy>=1.18,<2",
+  "pip-audit>=2.9,<3",
   "pytest>=8.4,<10",
   "pytest-asyncio>=1.2,<2",
   "pytest-cov>=7,<8",
@@ -47,6 +49,7 @@ addopts = "-ra --strict-config --strict-markers"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
+  "inference: requires an explicitly enabled real Ollama runtime",
   "integration: requires a live PostgreSQL service",
 ]
 
@@ -71,3 +74,8 @@ warn_unused_configs = true
 [tool.coverage.run]
 branch = true
 source = ["mongars"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+skip_covered = true

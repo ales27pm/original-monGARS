@@ -31,7 +31,7 @@ digest again immediately before the database mutation.
 
 ## Prerequisites
 
-- Python 3.12 for local development
+- Python 3.12 and `uv` 0.11.30 for local development
 - Docker Engine with the Compose plugin
 - NVIDIA driver and NVIDIA Container Toolkit for the optional Ollama GPU profile
 - An RTX 2070 or similar CUDA GPU is sufficient for a quantized 3B–8B model at a conservative
@@ -41,7 +41,7 @@ Verify the host before enabling the GPU profile:
 
 ```bash
 nvidia-smi
-docker run --rm --gpus all ubuntu nvidia-smi
+docker run --rm --gpus all nvidia/cuda:12.6.3-base-ubuntu24.04 nvidia-smi
 ```
 
 ## Production-style Compose startup
@@ -119,7 +119,7 @@ Install the exact locked environment with `uv`:
 
 ```bash
 uv python install 3.12
-uv sync --frozen --extra dev
+uv sync --frozen --extra dev --extra documents
 ```
 
 Use the development override to publish PostgreSQL only on loopback:
@@ -134,18 +134,42 @@ uv run uvicorn mongars.main:app --reload
 uv run mongars-worker
 ```
 
-Run the full validation gate:
+Run the full validation gate with one command:
 
 ```bash
-uv lock --check
-uv run ruff format --check .
-uv run ruff check .
-uv run mypy src
-uv run pytest -q
-docker compose config --quiet
+make ci-local
 ```
 
-Integration tests use `MONGARS_TEST_DATABASE_URL` and are skipped when it is absent.
+`ci-local` ignores caller-provided database URLs, provisions a pinned pgvector container on a
+Docker-assigned loopback port, runs migrations and every test/security/package gate, builds the
+production image, verifies its non-root user, and removes the disposable database on exit. The
+suite enforces 80% branch coverage; the current baseline is above that threshold. Direct
+integration-test invocations still require `MONGARS_TEST_DATABASE_URL` and skip when it is absent.
+
+### Runtime and inference smoke tests
+
+After starting the production-like Compose stack, exercise the actual API, approval, worker,
+memory, authentication, and readiness paths. The cleanup option deletes only artifacts bearing
+the unique IDs created by that smoke run:
+
+```bash
+uv run python scripts/runtime_smoke.py --cleanup-with-compose
+```
+
+Real model execution remains opt-in and is not part of standard CI. Expose Ollama on loopback
+only for the duration of the test, then restore the production topology:
+
+```bash
+docker compose -f compose.yaml -f compose.inference-test.yaml --profile gpu up -d --wait ollama
+MONGARS_RUN_INFERENCE_TESTS=1 \
+MONGARS_OLLAMA_BASE_URL=http://127.0.0.1:11434 \
+  uv run pytest -q tests/inference
+docker compose --profile gpu up -d --wait
+```
+
+The main CI workflow pins actions by commit SHA and runs Bandit, pip-audit, split unit/database
+tests, coverage, migration, Compose, and image gates. The separate supply-chain workflow adds
+Gitleaks, Trivy HIGH/CRITICAL image scanning, and an SPDX production-image SBOM.
 
 ## HTTP API
 

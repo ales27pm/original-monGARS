@@ -1,0 +1,6 @@
+# Opt-in local override for real Ollama adapter tests. The production Compose file keeps
+# Ollama internal; this override exposes it on loopback only.
+services:
+  ollama:
+    ports:
+      - 127.0.0.1:${MONGARS_OLLAMA_TEST_PORT:-11434}:11434

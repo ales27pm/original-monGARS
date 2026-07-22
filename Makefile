@@ -1,4 +1,4 @@
-.PHONY: sync format lint typecheck test check migrate compose-check
+.PHONY: sync format lint typecheck test check migrate compose-check ci-local
 
 sync:
 	uv sync --frozen --extra dev
@@ -24,3 +24,6 @@ migrate:
 
 compose-check:
 	docker compose config --quiet
+
+ci-local:
+	bash scripts/ci-local.sh
