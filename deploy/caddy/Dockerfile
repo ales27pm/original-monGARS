@@ -1,4 +1,4 @@
-FROM caddy@sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648
+FROM caddy@sha256:844f60b64e4724a5aa8245e019dace0d3f199f7433ce6c57676cb30a920dbad9
 
 # The upstream binary carries cap_net_bind_service. monGARS listens only on
 # unprivileged container ports, so remove the file capability and run without
