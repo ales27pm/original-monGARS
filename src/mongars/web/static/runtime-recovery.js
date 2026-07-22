@@ -7,9 +7,13 @@
 
   const state = {
     activeTaskId: "",
+    defaultSummaryText: "",
+    managedStatusLabel: "",
+    managedSummaryText: "",
     queueing: false,
     readiness: null,
-    summaryText: "",
+    recoveryError: "",
+    refreshing: false,
   };
 
   function apiToken() {
@@ -26,12 +30,12 @@
       || ["localhost", "127.0.0.1", "::1"].includes(window.location.hostname);
   }
 
-  async function parseResponse(response) {
+  async function parseResponse(response, { allowUnavailable = false } = {}) {
     const contentType = response.headers.get("content-type") || "";
     const payload = contentType.includes("application/json")
       ? await response.json()
       : await response.text();
-    if (response.ok || response.status === 503) return payload;
+    if (response.ok || (allowUnavailable && response.status === 503)) return payload;
     const detail = payload && typeof payload === "object" ? payload.detail : null;
     const message = typeof detail === "string"
       ? detail
@@ -42,16 +46,17 @@
   }
 
   async function request(path, options = {}) {
+    const { allowUnavailable = false, ...requestOptions } = options;
     const token = apiToken();
     if (!token) throw new Error("Connect with the API token first.");
-    const headers = new Headers(options.headers || {});
+    const headers = new Headers(requestOptions.headers || {});
     headers.set("Authorization", `Bearer ${token}`);
-    if (typeof options.body === "string" && !headers.has("Content-Type")) {
+    if (typeof requestOptions.body === "string" && !headers.has("Content-Type")) {
       headers.set("Content-Type", "application/json");
     }
-    const response = await fetch(path, { ...options, headers });
+    const response = await fetch(path, { ...requestOptions, headers });
     if (response.status === 401) throw new Error("The API token was rejected.");
-    return parseResponse(response);
+    return parseResponse(response, { allowUnavailable });
   }
 
   function openTasks() {
@@ -89,20 +94,44 @@
     if (!(summary instanceof HTMLElement)) return;
     if (text) {
       summary.textContent = text;
-      state.summaryText = text;
-    } else if (state.summaryText && summary.textContent === state.summaryText) {
-      summary.textContent = "Enter a query to search embedded notes and documents.";
-      state.summaryText = "";
+      state.managedSummaryText = text;
+      return;
+    }
+    if (state.managedSummaryText && summary.textContent === state.managedSummaryText) {
+      summary.textContent = state.defaultSummaryText;
+    }
+    state.managedSummaryText = "";
+  }
+
+  function setStatus(kind, label) {
+    for (const id of ["global-status-dot", "sidebar-status-dot"]) {
+      const dot = document.getElementById(id);
+      if (!(dot instanceof HTMLElement)) continue;
+      dot.classList.remove("is-ready", "is-down");
+      if (kind === "ready") dot.classList.add("is-ready");
+      if (kind === "down") dot.classList.add("is-down");
+    }
+    for (const id of ["global-status-label", "sidebar-status-label"]) {
+      const element = document.getElementById(id);
+      if (element instanceof HTMLElement) element.textContent = label;
     }
   }
 
-  function setStatusLabels(label) {
-    for (const id of ["global-status-label", "sidebar-status-label"]) {
-      const element = document.getElementById(id);
-      if (element instanceof HTMLElement && element.textContent !== label) {
-        element.textContent = label;
-      }
+  function setManagedStatus(kind, label) {
+    setStatus(kind, label);
+    state.managedStatusLabel = label;
+  }
+
+  function clearManagedStatus() {
+    if (!state.managedStatusLabel) return;
+    if (!apiToken()) {
+      setStatus("checking", "Connect to inspect");
+    } else if (state.readiness?.status === "ready") {
+      setStatus("ready", "System ready");
+    } else {
+      setStatus("down", "Needs attention");
     }
+    state.managedStatusLabel = "";
   }
 
   function embeddingDependency(readiness) {
@@ -135,11 +164,12 @@
       const countText = legacyCount === null
         ? "Legacy memory chunks"
         : `${legacyCount.toLocaleString()} legacy memory ${legacyCount === 1 ? "chunk" : "chunks"}`;
-      setStatusLabels("Memory reindex required");
+      setManagedStatus("down", "Memory reindex required");
       setManagedSummary(
-        state.activeTaskId
-          ? `${countText} need the active embedding space. Review the queued memory reindex task.`
-          : `${countText} need the active embedding space. Queue a protected reindex, then review it in Tasks.`,
+        state.recoveryError
+          || (state.activeTaskId
+            ? `${countText} need the active embedding space. Review the queued memory reindex task.`
+            : `${countText} need the active embedding space. Queue a protected reindex, then review it in Tasks.`),
       );
       if (button) {
         button.hidden = false;
@@ -154,9 +184,14 @@
     }
 
     state.activeTaskId = "";
+    state.recoveryError = "";
     if (button) button.hidden = true;
     setManagedSummary("");
-    if (parser && parser.healthy === false) setStatusLabels("Parser unavailable");
+    if (parser && parser.healthy === false) {
+      setManagedStatus("down", "Parser unavailable");
+    } else {
+      clearManagedStatus();
+    }
   }
 
   async function findActiveReindexTask() {
@@ -170,29 +205,34 @@
   }
 
   async function refreshRecoveryState() {
+    if (state.refreshing || state.queueing) return;
     if (!apiToken() || !isSecureTransport()) {
       state.activeTaskId = "";
       state.readiness = null;
+      state.recoveryError = "";
       updateRecoverySurface();
       return;
     }
     if (document.visibilityState === "hidden") return;
+
+    state.refreshing = true;
     try {
-      state.readiness = await request("/v1/readyz");
-      if (reindexRequired(state.readiness)) {
-        state.activeTaskId = await findActiveReindexTask();
-      } else {
-        state.activeTaskId = "";
-      }
+      state.readiness = await request("/v1/readyz", { allowUnavailable: true });
+      state.activeTaskId = reindexRequired(state.readiness)
+        ? await findActiveReindexTask()
+        : "";
       updateRecoverySurface();
     } catch {
       // The primary application owns authentication and generic connection errors.
+    } finally {
+      state.refreshing = false;
     }
   }
 
   async function queueReindex() {
     if (state.queueing) return;
     state.queueing = true;
+    state.recoveryError = "";
     updateRecoverySurface();
     try {
       const existingTaskId = await findActiveReindexTask();
@@ -212,13 +252,9 @@
       updateRecoverySurface();
       openTasks();
     } catch (error) {
-      const summary = document.getElementById("memory-summary");
-      if (summary instanceof HTMLElement) {
-        summary.textContent = error instanceof Error
-          ? error.message
-          : "Could not queue the memory reindex task.";
-        state.summaryText = summary.textContent;
-      }
+      state.recoveryError = error instanceof Error
+        ? error.message
+        : "Could not queue the memory reindex task.";
     } finally {
       state.queueing = false;
       updateRecoverySurface();
@@ -226,6 +262,8 @@
   }
 
   function start() {
+    const summary = document.getElementById("memory-summary");
+    state.defaultSummaryText = summary instanceof HTMLElement ? summary.textContent || "" : "";
     recoveryButton();
     void refreshRecoveryState();
     window.setInterval(() => void refreshRecoveryState(), POLL_INTERVAL_MS);
