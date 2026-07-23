@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-import math
-import re
 from dataclasses import dataclass
 from typing import Literal
+
+from mongars.orchestrator._cognitive_validation import (
+    validate_sha256_digest,
+    validate_unit_interval,
+)
 
 
 type PersonalityDimension = Literal[
@@ -23,7 +26,6 @@ _PERSONALITY_DIMENSIONS = frozenset(
 )
 _PERSONALITY_SOURCES = frozenset({"approved_profile", "default", "explicit_feedback"})
 _PROFILE_SCHEMA = "personality-v1"
-_PROFILE_DIGEST = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,11 +40,15 @@ class PersonalityPreference:
     def __post_init__(self) -> None:
         if self.dimension not in _PERSONALITY_DIMENSIONS:
             raise ValueError("unsupported personality dimension")
-        object.__setattr__(self, "value", _bounded_score(self.value, field="value"))
+        object.__setattr__(
+            self,
+            "value",
+            validate_unit_interval(self.value, field="personality value"),
+        )
         object.__setattr__(
             self,
             "confidence",
-            _bounded_score(self.confidence, field="confidence"),
+            validate_unit_interval(self.confidence, field="personality confidence"),
         )
         if (
             isinstance(self.evidence_count, bool)
@@ -102,10 +108,11 @@ class PersonalitySnapshot:
                 raise ValueError(
                     "reviewed personality requires a positive revision and preferences"
                 )
-            if not isinstance(self.profile_digest, str) or _PROFILE_DIGEST.fullmatch(
-                self.profile_digest
-            ) is None:
-                raise ValueError("reviewed personality requires a lowercase SHA-256 digest")
+            digest = validate_sha256_digest(
+                self.profile_digest,
+                field="reviewed personality profile_digest",
+            )
+            object.__setattr__(self, "profile_digest", digest)
 
     @classmethod
     def default(cls) -> PersonalitySnapshot:
@@ -124,17 +131,6 @@ class PersonalitySnapshot:
         if self.profile_digest is not None:
             payload["profile_digest"] = self.profile_digest
         return payload
-
-
-def _bounded_score(value: object, *, field: str) -> float:
-    if (
-        isinstance(value, bool)
-        or not isinstance(value, (int, float))
-        or not math.isfinite(value)
-        or not 0.0 <= float(value) <= 1.0
-    ):
-        raise ValueError(f"personality {field} must be finite and between 0 and 1")
-    return float(value)
 
 
 __all__ = [
