@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 
 from mongars.adaptation.repository import PersonalityRevision
 from mongars.db.models import MemoryDocument, TaskQueue
@@ -68,7 +68,7 @@ class HelpfulnessFeedbackRequest(ApiModel):
     kind: Literal["helpfulness"]
     feedback_id: UUID
     response_trace_id: str = Field(pattern=r"^trc_[0-9a-f]{32}$")
-    helpful: bool
+    helpful: StrictBool
 
 
 class CorrectionFeedbackRequest(ApiModel):
