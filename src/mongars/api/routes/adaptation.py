@@ -16,6 +16,7 @@ from mongars.adaptation.feedback import (
     PreferenceFeedback,
 )
 from mongars.adaptation.mimicry import (
+    ProfileDeltaProposal,
     profile_delta_proposal_from_payload,
     propose_profile_delta,
 )
@@ -206,6 +207,45 @@ async def _preference_task(
     trace_id: str,
 ) -> TaskQueue:
     task_repository = TaskRepository(session)
+    dedupe_key = f"personality.profile.apply:{feedback.feedback_id}"
+    existing = await _existing_preference_task(
+        task_repository=task_repository,
+        session=session,
+        owner_id=owner_id,
+        feedback=feedback,
+        receipt_task_id=receipt_task_id,
+        dedupe_key=dedupe_key,
+    )
+    if existing is not None:
+        return existing
+
+    proposal = await _preference_proposal(
+        repository=repository,
+        owner_id=owner_id,
+        feedback=feedback,
+    )
+    return await _create_preference_task(
+        task_repository=task_repository,
+        session=session,
+        settings=settings,
+        policy=policy,
+        owner_id=owner_id,
+        feedback=feedback,
+        proposal=proposal,
+        dedupe_key=dedupe_key,
+        trace_id=trace_id,
+    )
+
+
+async def _existing_preference_task(
+    *,
+    task_repository: TaskRepository,
+    session: AsyncSession,
+    owner_id: str,
+    feedback: PreferenceFeedback,
+    receipt_task_id: UUID | None,
+    dedupe_key: str,
+) -> TaskQueue | None:
     if receipt_task_id is not None:
         task = await task_repository.get_for_owner(
             task_id=receipt_task_id,
@@ -219,16 +259,22 @@ async def _preference_task(
         _verify_feedback_task(task, feedback)
         return task
 
-    dedupe_key = f"personality.profile.apply:{feedback.feedback_id}"
-    existing = await _task_by_dedupe_key(
+    task = await _task_by_dedupe_key(
         session=session,
         owner_id=owner_id,
         dedupe_key=dedupe_key,
     )
-    if existing is not None:
-        _verify_feedback_task(existing, feedback)
-        return existing
+    if task is not None:
+        _verify_feedback_task(task, feedback)
+    return task
 
+
+async def _preference_proposal(
+    *,
+    repository: PersonalityRepository,
+    owner_id: str,
+    feedback: PreferenceFeedback,
+) -> ProfileDeltaProposal:
     try:
         current = await repository.current_snapshot(owner_id=owner_id)
         proposal = propose_profile_delta(current, feedback)
@@ -242,13 +288,28 @@ async def _preference_task(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="direct preference feedback did not produce a proposal",
         )
+    return proposal
 
+
+async def _create_preference_task(
+    *,
+    task_repository: TaskRepository,
+    session: AsyncSession,
+    settings: Settings,
+    policy: ToolPolicy,
+    owner_id: str,
+    feedback: PreferenceFeedback,
+    proposal: ProfileDeltaProposal,
+    dedupe_key: str,
+    trace_id: str,
+) -> TaskQueue:
     service = TaskService(
         settings=settings,
         repository=task_repository,
         events=EventRepository(session),
         policy=policy,
     )
+    task: TaskQueue
     created = False
     try:
         async with session.begin_nested():
@@ -262,17 +323,18 @@ async def _preference_task(
             )
             created = True
     except IntegrityError:
-        task = await _task_by_dedupe_key(
+        existing = await _task_by_dedupe_key(
             session=session,
             owner_id=owner_id,
             dedupe_key=dedupe_key,
         )
-        if task is None:
+        if existing is None:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="duplicate personality proposal could not be resolved",
             )
-        _verify_feedback_task(task, feedback)
+        _verify_feedback_task(existing, feedback)
+        task = existing
 
     if created:
         await EventRepository(session).record(
