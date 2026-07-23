@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Callable
 from uuid import uuid4
 
 import pytest
@@ -11,7 +12,7 @@ from mongars.adaptation.mimicry import (
     profile_delta_proposal_from_payload,
     propose_profile_delta,
 )
-from mongars.api.schemas import PreferenceFeedbackRequest
+from mongars.api.schemas import HelpfulnessFeedbackRequest, PreferenceFeedbackRequest
 from mongars.rm.contracts import normalize_task_payload
 
 
@@ -50,11 +51,11 @@ def test_profile_apply_task_round_trips_through_schema_and_domain_contract() -> 
     ],
 )
 def test_profile_apply_task_rejects_noncanonical_or_tampered_payloads(
-    mutation: object,
+    mutation: Callable[[dict[str, object]], None],
 ) -> None:
     payload = _proposal_payload()
     mutated = copy.deepcopy(payload)
-    mutation(mutated)  # type: ignore[operator]
+    mutation(mutated)
 
     with pytest.raises(ValidationError):
         normalize_task_payload("personality.profile.apply", mutated)
@@ -82,6 +83,14 @@ def test_profile_apply_task_rejects_boolean_numeric_substitutes() -> None:
         normalize_task_payload("personality.profile.apply", payload)
 
 
+def test_profile_apply_task_rejects_nonboolean_conflict() -> None:
+    payload = _proposal_payload()
+    payload["conflict"] = 0
+
+    with pytest.raises(ValidationError):
+        normalize_task_payload("personality.profile.apply", payload)
+
+
 def test_preference_feedback_request_rejects_boolean_desired_value() -> None:
     with pytest.raises(ValidationError):
         PreferenceFeedbackRequest(
@@ -89,4 +98,14 @@ def test_preference_feedback_request_rejects_boolean_desired_value() -> None:
             feedback_id=uuid4(),
             dimension="brevity",
             desired_value=True,
+        )
+
+
+def test_helpfulness_feedback_request_rejects_integer_boolean_substitutes() -> None:
+    with pytest.raises(ValidationError):
+        HelpfulnessFeedbackRequest(
+            kind="helpfulness",
+            feedback_id=uuid4(),
+            response_trace_id="trc_" + ("a" * 32),
+            helpful=1,
         )
