@@ -12,3 +12,13 @@ services:
       timeout: 3s
       retries: 12
       start_period: 5s
+
+  worker:
+    # Keep the reviewed core worker and add the approval-gated Mimétisme executor.
+    # This command mirrors compose.yaml while selecting the extended runtime module.
+    command:
+      - |
+        export MONGARS_DATABASE_URL="$$(python -c 'import os; from pathlib import Path; from urllib.parse import quote; user=quote(os.environ["POSTGRES_USER"], safe=""); password=quote(Path("/run/secrets/postgres_password").read_text().strip(), safe=""); database=quote(os.environ["POSTGRES_DB"], safe=""); print(f"postgresql+psycopg://{user}:{password}@postgres:5432/{database}")')"
+        export MONGARS_API_TOKEN="$$(cat /run/secrets/api_token)"
+        export MONGARS_APPROVAL_HMAC_KEY="$$(cat /run/secrets/approval_hmac_key)"
+        exec python -m mongars.rm.adaptation_worker
