@@ -30,7 +30,7 @@ from mongars.rm.worker import (
     TaskLeaseLost,
     Worker,
 )
-from mongars.security.policy import ActionClassification, ToolPolicy
+from mongars.security.runtime_policy import build_control_plane_policy
 
 
 class AdaptationWorker(Worker):
@@ -52,15 +52,7 @@ class AdaptationWorker(Worker):
             embeddings=embeddings,
             document_parser=document_parser,
         )
-        self._policy = ToolPolicy(
-            {
-                ("memory", "search"): ActionClassification.READ_ONLY,
-                ("memory", "note.create"): ActionClassification.LOCAL_MUTATION,
-                ("memory", "reindex"): ActionClassification.LOCAL_MUTATION,
-                ("document", "ingest"): ActionClassification.LOCAL_MUTATION,
-                ("personality", "profile.apply"): ActionClassification.LOCAL_MUTATION,
-            }
-        )
+        self._policy = build_control_plane_policy()
 
     async def _perform_execution(
         self,
@@ -161,7 +153,8 @@ async def _async_main() -> None:
     try:
         await worker.run_forever(stop)
     finally:
-        await document_parser.aclose()
+        if document_parser is not None:
+            await document_parser.aclose()
         await embeddings.aclose()
         await inference.aclose()
         await database.close()
