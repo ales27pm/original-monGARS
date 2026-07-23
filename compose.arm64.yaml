@@ -1,0 +1,3 @@
+services:
+  ollama:
+    image: ${MONGARS_OLLAMA_IMAGE_ARM64:-${MONGARS_OLLAMA_IMAGE}}

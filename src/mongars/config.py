@@ -60,6 +60,34 @@ class Settings(BaseSettings):
     inference_backend: str = "ollama"
     ollama_base_url: str = "http://127.0.0.1:11434"
     ollama_chat_model: str = "qwen3:4b-instruct"
+    model_evolution_enabled: bool = False
+    model_evolution_scoring_policy_version: str = Field(default="v1", min_length=1, max_length=64)
+    model_evolution_benchmarking_policy_version: str = Field(default="v1", min_length=1, max_length=64)
+    model_evolution_minimum_sample_size: int = Field(
+        default=1_000,
+        ge=100,
+        le=1_000_000,
+    )
+    model_evolution_promotion_quality_threshold: float = Field(
+        default=0.90,
+        ge=0.0,
+        le=1.0,
+    )
+    model_evolution_rollback_quality_threshold: float = Field(
+        default=0.80,
+        ge=0.0,
+        le=1.0,
+    )
+    model_evolution_active_chat_alias: str = Field(default="qwen3:4b-instruct", min_length=1, max_length=255)
+    model_evolution_active_chat_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    model_evolution_active_generation: int = Field(default=1, ge=1, le=2_147_483_647)
+    model_evolution_prior_generation_anchor: str = Field(default="bootstrap", min_length=1, max_length=128)
+    model_evolution_last_rollback_target_alias: str | None = Field(default=None, max_length=255)
+    model_evolution_last_rollback_target_digest: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    executor_security_review_approved: bool = False
     ollama_embedding_model: str = "nomic-embed-text"
     ollama_embedding_model_digest: str = _REVIEWED_EMBEDDING_MODEL_DIGEST
     ollama_think: bool = False
@@ -78,6 +106,7 @@ class Settings(BaseSettings):
     allow_remote_inference: bool = False
 
     web_search_enabled: bool = False
+    p2p_readiness_enabled: bool = False
     web_search_base_url: str = "http://127.0.0.1:8080"
     web_search_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
     web_search_max_query_chars: int = Field(default=500, ge=1, le=2_000)
@@ -130,6 +159,16 @@ class Settings(BaseSettings):
     worker_runtime_stale_seconds: int = Field(default=45, ge=10, le=900)
     runtime_git_sha: str = Field(default="unknown", min_length=1, max_length=64)
     runtime_version: str = Field(default="0.1.0", min_length=1, max_length=100)
+    evolution_scheduler_enabled: bool = False
+    evolution_scheduler_allow_network: bool = False
+    evolution_scheduler_idle_window_seconds: int = Field(default=600, ge=60, le=86_400)
+    evolution_scheduler_cpu_percent_cap: int = Field(default=30, ge=1, le=100)
+    evolution_scheduler_memory_megabytes_cap: int = Field(default=2048, ge=128, le=65536)
+    evolution_scheduler_wall_clock_seconds: int = Field(default=45, ge=5, le=300)
+    evolution_scheduler_database_row_budget: int = Field(default=500, ge=1, le=100_000)
+    evolution_scheduler_proposal_count_budget: int = Field(default=25, ge=1, le=1000)
+    evolution_scheduler_storage_budget_bytes: int = Field(default=20_000_000, ge=1_024, le=1_000_000_000)
+    evolution_scheduler_cooldown_minutes: int = Field(default=30, ge=1, le=1440)
     retention_sweep_seconds: int = Field(default=300, ge=10, le=86_400)
     approval_ttl_seconds: int = Field(default=900, ge=30, le=86_400)
 
@@ -181,6 +220,16 @@ class Settings(BaseSettings):
         except ValueError as exc:
             raise ValueError("ollama_embedding_model_digest must be a SHA-256 digest") from exc
 
+    @field_validator("model_evolution_active_chat_alias", "model_evolution_last_rollback_target_alias")
+    @classmethod
+    def trim_evolution_alias(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("model evolution alias must be a non-empty trimmed string when present")
+        return normalized
+
     @model_validator(mode="after")
     def validate_security_boundaries(self) -> Settings:
         if self.inference_backend != "ollama":
@@ -214,6 +263,22 @@ class Settings(BaseSettings):
             raise ValueError("the current pgvector schema requires 768-dimensional embeddings")
         if self.ollama_embedding_model != _REVIEWED_EMBEDDING_MODEL:
             raise ValueError("this release requires the reviewed nomic-embed-text embedding model")
+        if (
+            self.model_evolution_last_rollback_target_alias is not None
+            and self.model_evolution_last_rollback_target_digest is None
+        ):
+            raise ValueError(
+                "model_evolution_last_rollback_target_digest is required when "
+                "model_evolution_last_rollback_target_alias is set"
+            )
+        if (
+            self.model_evolution_last_rollback_target_alias is None
+            and self.model_evolution_last_rollback_target_digest is not None
+        ):
+            raise ValueError(
+                "model_evolution_last_rollback_target_alias is required when "
+                "model_evolution_last_rollback_target_digest is set"
+            )
         if self.document_parser_base_url is not None:
             parser_url = urlparse(self.document_parser_base_url)
             parser_is_local = parser_url.hostname in _LOCAL_PARSER_HOSTS

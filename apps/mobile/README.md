@@ -113,6 +113,14 @@ npm test
 npx --yes expo-doctor@latest
 ```
 
+When any native dependency changes (including `expo-*`, audio, or speech packages), rebuild at least
+one pinned development client profile before shipping to a device:
+
+```bash
+npm run build:development:ios
+npm run start:dev-client:lan
+```
+
 The development profile is reproducible: `expo-dev-client` is held on the Expo SDK 54-compatible
 6.0.x line, EAS CLI is pinned to 21.0.3, and the iOS builder uses the `sdk-54` image.
 

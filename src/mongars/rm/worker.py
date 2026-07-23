@@ -13,6 +13,7 @@ from typing import Any
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
+from pydantic import ValidationError
 
 from mongars.config import Settings, get_settings
 from mongars.db.models import DocumentStaging
@@ -20,6 +21,7 @@ from mongars.db.session import Database
 from mongars.embeddings.errors import EmbeddingError
 from mongars.embeddings.ollama import OllamaEmbeddingProvider
 from mongars.embeddings.service import EmbeddingService
+from mongars.evolution.governance import ModelGovernanceError, ModelGovernanceService
 from mongars.events.repository import EventRepository
 from mongars.inference.base import InferenceBackend
 from mongars.inference.ollama import OllamaBackend
@@ -34,6 +36,9 @@ from mongars.ingestion.models import (
 from mongars.ingestion.runtime import document_parser_from_settings
 from mongars.ingestion.staging import DocumentStagingRepository
 from mongars.logging import configure_logging
+from mongars.adaptation.repository import PersonalityProfileConflict, PersonalityProfileDataError
+from mongars.adaptation.repository import PersonalityRepository
+from mongars.rm.contracts import normalize_profile_apply_payload
 from mongars.memory.repository import MemoryGovernanceConflict, MemoryRepository
 from mongars.memory.service import IngestResult, MemoryService
 from mongars.rm.repository import TaskRepository
@@ -65,6 +70,14 @@ class TaskLeaseLost(RuntimeError):
 
 
 class Worker:
+    _EXECUTOR_SECURITY_REVIEW_REQUIRED_KINDS: frozenset[str] = frozenset(
+        {
+            "evolution.proposal.generate",
+            "evolution.proposal.execute",
+            "execution.sandbox.echo",
+        }
+    )
+
     def __init__(
         self,
         *,
@@ -92,6 +105,16 @@ class Worker:
                 ("memory", "note.create"): ActionClassification.LOCAL_MUTATION,
                 ("memory", "reindex"): ActionClassification.LOCAL_MUTATION,
                 ("document", "ingest"): ActionClassification.LOCAL_MUTATION,
+                ("personality", "profile.apply"): ActionClassification.LOCAL_MUTATION,
+                ("model", "candidate.register"): ActionClassification.LOCAL_MUTATION,
+                ("model", "benchmark.suite.create"): ActionClassification.LOCAL_MUTATION,
+                ("model", "benchmark.run"): ActionClassification.LOCAL_MUTATION,
+                ("model", "promotion.propose"): ActionClassification.LOCAL_MUTATION,
+                ("model", "activation.apply"): ActionClassification.LOCAL_MUTATION,
+                ("model", "rollback.apply"): ActionClassification.LOCAL_MUTATION,
+                ("evolution", "proposal.generate"): ActionClassification.READ_ONLY,
+                ("evolution", "proposal.execute"): ActionClassification.LOCAL_MUTATION,
+                ("execution", "sandbox.echo"): ActionClassification.LOCAL_MUTATION,
             }
         )
 
@@ -191,6 +214,13 @@ class Worker:
                 str(exc),
                 terminal=True,
             )
+        except (PersonalityProfileConflict, PersonalityProfileDataError) as exc:
+            await self._record_failure(
+                task_id,
+                execution_token,
+                str(exc),
+                terminal=True,
+            )
         except IngestionError as exc:
             await self._record_failure(
                 task_id,
@@ -205,6 +235,8 @@ class Worker:
                 exc.code,
                 terminal=not exc.retryable,
             )
+        except ModelGovernanceError as exc:
+            await self._record_failure(task_id, execution_token, str(exc), terminal=True)
         except TaskLeaseLost:
             logger.warning(
                 "task_execution_abandoned_after_lease_loss",
@@ -315,11 +347,65 @@ class Worker:
         claim: ExecutionClaim,
         lease_lost: asyncio.Event,
     ) -> ExecutionOutcome:
+        if (
+            not self._settings.executor_security_review_approved
+            and claim.kind in self._EXECUTOR_SECURITY_REVIEW_REQUIRED_KINDS
+        ):
+            raise TaskIntegrityError(
+                f"execution blocked until security review approves {claim.kind}"
+            )
+
         memory_without_session = MemoryService(
             settings=self._settings,
             repository=None,
             embeddings=self._embeddings,
         )
+
+        if claim.kind == "evolution.proposal.generate":
+            proposals = [str(item) for item in claim.payload["proposals"]]
+            normalized = tuple(dict.fromkeys(proposals))
+            source = "".join(normalized)
+            generated_digest = hashlib.sha256(source.encode("utf-8")).hexdigest()
+            return ExecutionOutcome(
+                result={
+                    "operation": "evolution.proposal.generate",
+                    "proposal_count": len(normalized),
+                    "proposal_ids": list(normalized),
+                    "proposal_digest": generated_digest,
+                }
+            )
+
+        if claim.kind == "evolution.proposal.execute":
+            proposal_ids = [str(item) for item in claim.payload["proposal_ids"]]
+            normalized = tuple(dict.fromkeys(proposal_ids))
+            execution_seed = "|".join(normalized)
+            execution_trace = hashlib.sha256(
+                f"{claim.owner_id}|{execution_seed}".encode("utf-8")
+            ).hexdigest()
+            return ExecutionOutcome(
+                result={
+                    "operation": "evolution.proposal.execute",
+                    "executed_count": len(normalized),
+                    "operator_note": claim.payload.get("operator_note"),
+                    "execution_trace": execution_trace,
+                }
+            )
+
+        if claim.kind == "execution.sandbox.echo":
+            input_text = str(claim.payload["input_text"])
+            operation = str(claim.payload["operation"])
+            if operation == "reverse":
+                output_text = input_text[::-1]
+            else:
+                output_text = hashlib.sha256(input_text.encode("utf-8")).hexdigest()
+            return ExecutionOutcome(
+                result={
+                    "operation": "execution.sandbox.echo",
+                    "operation_name": operation,
+                    "operation_input_length": len(input_text),
+                    "operation_output": output_text,
+                }
+            )
 
         if claim.kind == "memory.search":
             prepared_search = await memory_without_session.prepare_search(
@@ -422,6 +508,128 @@ class Worker:
 
         if claim.kind == "document.ingest":
             return await self._ingest_document(claim, lease_lost, memory_without_session)
+
+        if claim.kind == "model.candidate.register":
+            async with self._database.session_factory() as session, session.begin():
+                owned = await TaskRepository(session).lock_owned_execution(
+                    task_id=claim.task_id,
+                    execution_token=claim.execution_token,
+                )
+                if not owned:
+                    raise TaskLeaseLost("task lease was lost before model candidate registration")
+                service = ModelGovernanceService(session=session, settings=self._settings)
+                result = await service.register_candidate(
+                    owner_id=claim.owner_id,
+                    payload=claim.payload,
+                )
+                await self._finalize_local_mutation(session, claim, result)
+                return ExecutionOutcome(result=result, finalized=True)
+
+        if claim.kind == "model.benchmark.suite.create":
+            async with self._database.session_factory() as session, session.begin():
+                owned = await TaskRepository(session).lock_owned_execution(
+                    task_id=claim.task_id,
+                    execution_token=claim.execution_token,
+                )
+                if not owned:
+                    raise TaskLeaseLost("task lease was lost before benchmark suite registration")
+                service = ModelGovernanceService(session=session, settings=self._settings)
+                result = await service.create_benchmark_suite(
+                    owner_id=claim.owner_id,
+                    payload=claim.payload,
+                )
+                await self._finalize_local_mutation(session, claim, result)
+                return ExecutionOutcome(result=result, finalized=True)
+
+        if claim.kind == "model.benchmark.run":
+            async with self._database.session_factory() as session, session.begin():
+                owned = await TaskRepository(session).lock_owned_execution(
+                    task_id=claim.task_id,
+                    execution_token=claim.execution_token,
+                )
+                if not owned:
+                    raise TaskLeaseLost("task lease was lost before benchmark run persistence")
+                service = ModelGovernanceService(session=session, settings=self._settings)
+                result = await service.record_benchmark_run(
+                    owner_id=claim.owner_id,
+                    payload=claim.payload,
+                )
+                await self._finalize_local_mutation(session, claim, result)
+                return ExecutionOutcome(result=result, finalized=True)
+
+        if claim.kind == "model.promotion.propose":
+            async with self._database.session_factory() as session, session.begin():
+                owned = await TaskRepository(session).lock_owned_execution(
+                    task_id=claim.task_id,
+                    execution_token=claim.execution_token,
+                )
+                if not owned:
+                    raise TaskLeaseLost("task lease was lost before promotion proposal creation")
+                service = ModelGovernanceService(session=session, settings=self._settings)
+                result = await service.propose_promotion(
+                    owner_id=claim.owner_id,
+                    payload=claim.payload,
+                )
+                await self._finalize_local_mutation(session, claim, result)
+                return ExecutionOutcome(result=result, finalized=True)
+
+        if claim.kind == "model.activation.apply":
+            async with self._database.session_factory() as session, session.begin():
+                owned = await TaskRepository(session).lock_owned_execution(
+                    task_id=claim.task_id,
+                    execution_token=claim.execution_token,
+                )
+                if not owned:
+                    raise TaskLeaseLost("task lease was lost before activation application")
+                service = ModelGovernanceService(session=session, settings=self._settings)
+                result = await service.apply_activation(
+                    owner_id=claim.owner_id,
+                    payload=claim.payload,
+                )
+                await self._finalize_local_mutation(session, claim, result)
+                return ExecutionOutcome(result=result, finalized=True)
+
+        if claim.kind == "model.rollback.apply":
+            async with self._database.session_factory() as session, session.begin():
+                owned = await TaskRepository(session).lock_owned_execution(
+                    task_id=claim.task_id,
+                    execution_token=claim.execution_token,
+                )
+                if not owned:
+                    raise TaskLeaseLost("task lease was lost before rollback application")
+                service = ModelGovernanceService(session=session, settings=self._settings)
+                result = await service.apply_rollback(
+                    owner_id=claim.owner_id,
+                    payload=claim.payload,
+                )
+                await self._finalize_local_mutation(session, claim, result)
+                return ExecutionOutcome(result=result, finalized=True)
+
+        if claim.kind == "personality.profile.apply":
+            try:
+                proposal = normalize_profile_apply_payload(claim.payload)
+            except (ValidationError, TypeError, ValueError) as exc:
+                raise TaskIntegrityError("personality profile apply payload is invalid") from exc
+            async with self._database.session_factory() as session, session.begin():
+                owned = await TaskRepository(session).lock_owned_execution(
+                    task_id=claim.task_id,
+                    execution_token=claim.execution_token,
+                )
+                if not owned:
+                    raise TaskLeaseLost("task lease was lost before personality application")
+                application = await PersonalityRepository(session).apply_proposal(
+                    owner_id=claim.owner_id,
+                    proposal=proposal,
+                    task_id=claim.task_id,
+                )
+                result = {
+                    "applied": application.applied,
+                    "feedback_id": str(proposal.feedback_id),
+                    "revision": application.snapshot.revision,
+                    "profile_digest": application.snapshot.profile_digest,
+                }
+                await self._finalize_local_mutation(session, claim, result)
+                return ExecutionOutcome(result=result, finalized=True)
 
         # No external-side-effect executor is enabled in this release. Before one is
         # added, it must reserve an idempotency key in a durable effect ledger/outbox

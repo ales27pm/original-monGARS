@@ -406,3 +406,66 @@ if [[ "$https_user" == "0" ]]; then
 fi
 
 echo "HTTPS auth, required search, and approved document-ingestion deployment smoke passed"
+
+artifacts_directory="$repository_root/artifacts"
+artifacts_evidence_path="$artifacts_directory/deployment-smoke-evidence.json"
+mkdir -m 0700 -p "$artifacts_directory"
+MONGARS_DEPLOYMENT_SMOKE_EVIDENCE_PATH="$artifacts_evidence_path" \
+  http_port="$http_port" \
+  https_port="$https_port" \
+  api_port="$api_port" \
+  project_name="$project_name" \
+  repository_root="$repository_root" \
+  python3 - <<'PY'
+import json
+import os
+import platform
+from datetime import datetime, timezone
+
+evidence_path = os.environ["MONGARS_DEPLOYMENT_SMOKE_EVIDENCE_PATH"]
+with open(evidence_path, "w", encoding="utf-8") as handle:
+    json.dump(
+        {
+            "check": "deployment-smoke",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "platform": platform.platform(),
+            "runner": os.getenv("RUNNER_NAME", os.getenv("RUNNER_OS", "local")),
+            "git_sha": os.getenv("GITHUB_SHA", "local"),
+            "ports": {
+                "http": int(os.environ["http_port"]),
+                "https": int(os.environ["https_port"]),
+                "api": int(os.environ["api_port"]),
+            },
+            "project_name": os.environ["project_name"],
+            "project_root": os.environ["repository_root"],
+            "checks": [
+                "plaintext-ca",
+                "plaintext-healthz-boundary",
+                "api-workstation-liveness",
+                "https-healthz",
+                "https-readyz-auth-boundary",
+                "https-readyz-authenticated",
+                "readyz-embedding-metadata",
+                "required-chat-web-search",
+                "document-ingest-approval-path",
+                "document-approval-and-reindex-readyz",
+            ],
+            "ollama_context_length": int(os.getenv("MONGARS_OLLAMA_CONTEXT_LENGTH", "4096")),
+            "chat_model": os.getenv("MONGARS_OLLAMA_CHAT_MODEL", "qwen3:4b-instruct"),
+            "embedding_model": os.getenv("MONGARS_OLLAMA_EMBEDDING_MODEL", "nomic-embed-text"),
+            "parser_max_concurrency": 2,
+            "api_approval_limits": {
+                "global_upload_concurrency": int(
+                    os.getenv("MONGARS_MAX_CONCURRENT_DOCUMENT_UPLOADS", "2")
+                ),
+                "per_owner_upload_concurrency": int(
+                    os.getenv("MONGARS_MAX_CONCURRENT_DOCUMENT_UPLOADS_PER_OWNER", "1")
+                ),
+            },
+            "model": "qwen3:4b-instruct (chat) + nomic-embed-text (embedding)",
+        },
+        handle,
+        indent=2,
+        sort_keys=True,
+    )
+PY

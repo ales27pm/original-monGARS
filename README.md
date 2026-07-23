@@ -60,6 +60,40 @@ nvidia-smi
 docker run --rm --gpus all nvidia/cuda:12.6.3-base-ubuntu24.04 nvidia-smi
 ```
 
+For ARM64/Jetson targets, keep the GPU path disabled and use the ARM/Jetson profile overrides instead:
+
+```bash
+docker compose -f compose.yaml -f compose.arm64.yaml --profile arm64 build
+docker compose -f compose.yaml -f compose.arm64.yaml --profile arm64 up -d postgres ollama
+
+# Jetson example (set MONGARS_OLLAMA_IMAGE_JETSON for your device image first)
+docker compose -f compose.yaml -f compose.jetson.yaml --profile jetson build
+docker compose -f compose.yaml -f compose.jetson.yaml --profile jetson up -d postgres ollama
+```
+
+### Hardware profiles and support envelope
+
+The supplied compose stack defines three explicit deployment profiles:
+
+- `gpu`: CUDA-enabled desktop/server builds using NVIDIA runtime devices.
+- `arm64`: CPU-only ARM64 builds that override only the Ollama image.
+- `jetson`: Jetson-class ARM64 builds with explicit Jetson image selection.
+
+The defaults in this branch are intentionally conservative and shared across CPU-only profiles:
+
+| Profile | Host memory / CPU target | GPU requirement | Ollama context | Default models | Concurrency ceilings |
+|---|---:|---|---|---|---|
+| `gpu` | API/worker 1GiB each, parser 768MiB; compose defaults | one GPU via `deploy.resources.reservations.devices` | `MONGARS_OLLAMA_CONTEXT_LENGTH=4096` | `qwen3:4b-instruct`, `nomic-embed-text` | API: 1 process (`uvicorn --workers 1`); parser: `--limit-concurrency 2`; parser memory/worker are single-process |
+| `arm64` | Same as base compose defaults; no explicit GPU reservations | none by default | `MONGARS_OLLAMA_CONTEXT_LENGTH=4096` | `qwen3:4b-instruct`, `nomic-embed-text` | Same service ceilings as `gpu`, with `MONGARS_OLLAMA_IMAGE_ARM64` controlling image |
+| `jetson` | Same as base compose defaults with runtime-specific image override | NVIDIA Jetson runtime assumptions | `MONGARS_OLLAMA_CONTEXT_LENGTH=4096` | `qwen3:4b-instruct`, `nomic-embed-text` | Same service ceilings as `gpu`, with `MONGARS_OLLAMA_IMAGE_JETSON` controlling image |
+
+For each support claim, keep reproducible artifacts in CI:
+
+- `artifacts/arm64-profile-validation.json` (ARM64 and Jetson compose validation + image build + unit tests)
+- `artifacts/deployment-smoke-evidence.json` (HTTPS auth, required search, and approved ingestion smoke trace)
+
+Use these files when updating deployment profile support statements for a new hardware class.
+
 ## Production-style Compose startup
 
 Create local configuration and secret files. The `secrets/` directory is ignored by Git.
@@ -476,6 +510,40 @@ The relevant dependency keys are `worker` (`status`, `component_id`, `instance_i
 `embedding_space` (`status`, `space_id`, `model_alias`, `model_digest`, `dimension`,
 `worker_space_id`, all three corpus counts, `reindex_required`, and `error_code`). A completely
 empty owner corpus is compatible and does not require reindexing.
+
+For day-to-day operations, use the status helper to collect a bounded snapshot in one command:
+
+```bash
+read -r MONGARS_TOKEN < secrets/api_token.txt
+MONGARS_STATUS_API_TOKEN="$MONGARS_TOKEN" scripts/mongars-status.sh
+
+# Machine-readable output
+MONGARS_STATUS_API_TOKEN="$MONGARS_TOKEN" scripts/mongars-status.sh --json
+```
+
+The helper reports worker/embedding/parser readiness, active embedding identity, corpus compatibility,
+compose state, task-queue pressure, and local disk pressure without echoing tokens, queries,
+or task payloads.
+
+Credential rotation is separate from destructive reset. Rotate tokens/HMACs in place without restart:
+
+```bash
+scripts/rotate-credentials.sh \
+  --api-token-file ./secrets/api_token.txt \
+  --approval-hmac-key-file ./secrets/approval_hmac_key.txt
+```
+
+Then restart API/worker to load new secrets:
+
+```bash
+docker compose --profile gpu up -d --force-recreate api worker
+```
+
+Destructive deployment reset is a separate command and requires explicit confirmation:
+
+```bash
+scripts/reset-deployment.sh --confirm
+```
 
 Document and Neurons resource controls are startup-validated together:
 

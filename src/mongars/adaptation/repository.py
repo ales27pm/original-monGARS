@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import select, text
+from sqlalchemy import delete, select, text
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -144,12 +145,38 @@ class PersonalityRepository:
             )
         return _feedback_receipt(existing, created=False)
 
+    async def feedback(
+        self,
+        *,
+        owner_id: str,
+        feedback_id: UUID,
+    ) -> ExplicitFeedback | None:
+        owner = _validate_owner_id(owner_id)
+        if not isinstance(feedback_id, UUID):
+            raise TypeError("feedback_id must be a UUID")
+        record = await self._get_feedback(
+            owner_id=owner,
+            feedback_id=feedback_id,
+            for_update=False,
+        )
+        if record is None:
+            return None
+        return _feedback_from_record(record)
+
     async def current_snapshot(self, *, owner_id: str) -> PersonalitySnapshot:
         owner = _validate_owner_id(owner_id)
-        record = cast(
-            PersonalityProfileRecord | None,
-            await self._session.get(PersonalityProfileRecord, owner),
-        )
+        if hasattr(self._session, "get"):
+            record = cast(
+                PersonalityProfileRecord | None,
+                await self._session.get(PersonalityProfileRecord, owner),
+            )
+        else:
+            records = await self._scalars_all(
+                select(PersonalityProfileRecord).where(
+                    PersonalityProfileRecord.owner_id == owner
+                )
+            )
+            record = records[0] if records else None
         return _snapshot_from_record(record)
 
     async def revision_history(
@@ -169,6 +196,40 @@ class PersonalityRepository:
         )
         records = list((await self._session.scalars(statement)).all())
         return tuple(_revision_from_record(record) for record in records)
+
+    async def export_profile(
+        self,
+        *,
+        owner_id: str,
+    ) -> tuple[PersonalitySnapshot, tuple[PersonalityRevision, ...]]:
+        owner = _validate_owner_id(owner_id)
+        current = await self.current_snapshot(owner_id=owner)
+        history = await self.revision_history(owner_id=owner, limit=100)
+        return current, history
+
+    async def reset_profile(self, *, owner_id: str) -> PersonalitySnapshot:
+        owner = _validate_owner_id(owner_id)
+        await self._lock_owner(owner)
+        await self._session.execute(
+            delete(PersonalityProfileRevisionRecord).where(
+                PersonalityProfileRevisionRecord.owner_id == owner
+            )
+        )
+        await self._session.execute(
+            delete(PersonalityProfileRecord).where(
+                PersonalityProfileRecord.owner_id == owner
+            )
+        )
+        await self._session.flush()
+        return PersonalitySnapshot.default()
+
+    async def delete_profile(self, *, owner_id: str) -> None:
+        owner = _validate_owner_id(owner_id)
+        await self.reset_profile(owner_id=owner)
+        await self._session.execute(
+            delete(ExplicitFeedbackRecord).where(ExplicitFeedbackRecord.owner_id == owner)
+        )
+        await self._session.flush()
 
     async def apply_proposal(
         self,
@@ -345,6 +406,15 @@ class PersonalityRepository:
             {"owner_id": owner_id},
         )
 
+    async def _scalars_all(self, statement: Any) -> list[PersonalityProfileRecord]:
+        result = self._session.scalars(statement)
+        if isinstance(result, Awaitable):
+            result = await result
+        records = result.all()
+        if isinstance(records, Awaitable):
+            records = await records
+        return list(records)
+
 
 def _validate_owner_id(value: object) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
@@ -391,6 +461,81 @@ def _preference_feedback_from_record(
     if feedback.feedback_digest != record.feedback_digest:
         raise PersonalityProfileDataError(
             "persisted preference feedback digest does not match its payload"
+        )
+    return feedback
+
+
+def _feedback_from_record(record: ExplicitFeedbackRecord) -> ExplicitFeedback:
+    if not isinstance(record.payload, dict) or record.payload.get("feedback_id") != str(record.feedback_id):
+        raise PersonalityProfileDataError("persisted feedback payload is invalid")
+    kind = record.payload.get("kind")
+    if kind == "preference":
+        return _preference_feedback_from_record(record)
+    if kind == "helpfulness":
+        return _helpfulness_feedback_from_record(record)
+    if kind == "correction":
+        return _correction_feedback_from_record(record)
+    raise PersonalityProfileDataError("persisted feedback payload has an unknown kind")
+
+
+def _helpfulness_feedback_from_record(
+    record: ExplicitFeedbackRecord,
+) -> HelpfulnessFeedback:
+    payload = record.payload
+    required = {"feedback_id", "helpful", "kind"}
+    optional = {"response_trace_id"}
+    if not isinstance(payload, dict) or not required <= set(payload):
+        raise PersonalityProfileDataError("persisted helpfulness feedback payload is incomplete")
+    if set(payload) - required - optional:
+        raise PersonalityProfileDataError(
+            "persisted helpfulness feedback payload has invalid fields"
+        )
+    if payload.get("kind") != "helpfulness":
+        raise PersonalityProfileDataError("persisted feedback kind does not match its payload")
+    if payload.get("feedback_id") != str(record.feedback_id):
+        raise PersonalityProfileDataError("persisted feedback UUID does not match its key")
+    try:
+        feedback = HelpfulnessFeedback(
+            feedback_id=record.feedback_id,
+            response_trace_id=cast(str | None, payload.get("response_trace_id")),
+            helpful=cast(bool, payload["helpful"]),
+        )
+    except (TypeError, ValueError) as exc:
+        raise PersonalityProfileDataError("persisted helpfulness feedback is invalid") from exc
+    if feedback.feedback_digest != record.feedback_digest:
+        raise PersonalityProfileDataError(
+            "persisted helpfulness feedback digest does not match its payload"
+        )
+    return feedback
+
+
+def _correction_feedback_from_record(
+    record: ExplicitFeedbackRecord,
+) -> CorrectionFeedback:
+    payload = record.payload
+    required = {"feedback_id", "correction_text", "kind"}
+    optional = {"response_trace_id"}
+    if not isinstance(payload, dict) or not required <= set(payload):
+        raise PersonalityProfileDataError("persisted correction feedback payload is incomplete")
+    if set(payload) - required - optional:
+        raise PersonalityProfileDataError(
+            "persisted correction feedback payload has invalid fields"
+        )
+    if payload.get("kind") != "correction":
+        raise PersonalityProfileDataError("persisted feedback kind does not match its payload")
+    if payload.get("feedback_id") != str(record.feedback_id):
+        raise PersonalityProfileDataError("persisted feedback UUID does not match its key")
+    try:
+        feedback = CorrectionFeedback(
+            feedback_id=record.feedback_id,
+            response_trace_id=cast(str, payload.get("response_trace_id")),
+            correction_text=cast(str, payload["correction_text"]),
+        )
+    except (TypeError, ValueError) as exc:
+        raise PersonalityProfileDataError("persisted correction feedback is invalid") from exc
+    if feedback.feedback_digest != record.feedback_digest:
+        raise PersonalityProfileDataError(
+            "persisted correction feedback digest does not match its payload"
         )
     return feedback
 

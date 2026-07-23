@@ -191,6 +191,43 @@ async def test_heartbeat_probes_before_transaction_and_upserts_canonical_capabil
             "model_digest": "a" * 64,
             "dimension": 768,
         },
+        "evolution_scheduler": {
+            "enabled": False,
+            "status": "disabled",
+            "reason": "disabled_by_default",
+            "can_run": False,
+            "budgets": {
+                "cpu_percent": 30,
+                "memory_megabytes": 2048,
+                "wall_clock_seconds": 45,
+                "database_row_budget": 500,
+                "proposal_count_budget": 25,
+                "storage_bytes": 20_000_000,
+                "proposal_cooldown_minutes": 30,
+                "allow_network": False,
+            },
+        },
+        "model_governance": {
+            "enabled": False,
+            "status": "disabled",
+            "healthy": True,
+            "reason": "disabled_by_default",
+            "candidate_registry": {
+                "active_alias": None,
+                "active_digest": None,
+                "active_generation": None,
+                "prior_generation_anchor": None,
+                "rollback_target_alias": None,
+                "rollback_target_digest": None,
+            },
+            "benchmarks": {
+                "scoring_policy_version": None,
+                "benchmarking_policy_version": None,
+                "minimum_sample_size": None,
+                "promotion_quality_threshold": None,
+                "rollback_quality_threshold": None,
+            },
+        },
     }
 
 
@@ -218,6 +255,43 @@ async def test_probe_failures_publish_degraded_shape_without_leaking_details(
             "model_alias": None,
             "model_digest": None,
             "dimension": None,
+        },
+        "evolution_scheduler": {
+            "enabled": False,
+            "status": "disabled",
+            "reason": "disabled_by_default",
+            "can_run": False,
+            "budgets": {
+                "cpu_percent": 30,
+                "memory_megabytes": 2048,
+                "wall_clock_seconds": 45,
+                "database_row_budget": 500,
+                "proposal_count_budget": 25,
+                "storage_bytes": 20_000_000,
+                "proposal_cooldown_minutes": 30,
+                "allow_network": False,
+            },
+        },
+        "model_governance": {
+            "enabled": False,
+            "status": "disabled",
+            "healthy": True,
+            "reason": "disabled_by_default",
+            "candidate_registry": {
+                "active_alias": None,
+                "active_digest": None,
+                "active_generation": None,
+                "prior_generation_anchor": None,
+                "rollback_target_alias": None,
+                "rollback_target_digest": None,
+            },
+            "benchmarks": {
+                "scoring_policy_version": None,
+                "benchmarking_policy_version": None,
+                "minimum_sample_size": None,
+                "promotion_quality_threshold": None,
+                "rollback_quality_threshold": None,
+            },
         },
     }
     assert "secret token" not in caplog.text

@@ -11,6 +11,7 @@ from mongars.config import Settings
 from mongars.db.session import Database
 from mongars.embeddings.service import EmbeddingService
 from mongars.inference.base import InferenceBackend
+from mongars.evolution.governance import ModelGovernanceService
 from mongars.runtime import (
     DurableRuntimeReadiness,
     RuntimeHeartbeatRepository,
@@ -101,11 +102,35 @@ async def readyz(request: Request, _principal: PrincipalDependency) -> JSONRespo
         except Exception as exc:  # readiness must normalize dependency failures
             return unavailable_runtime_readiness(error_code=type(exc).__name__)
 
-    database_status, inference_status, web_search_status, runtime_status = await asyncio.gather(
+    async def p2p_probe() -> dict[str, bool | None | str]:
+        if not settings.p2p_readiness_enabled:
+            return {"healthy": True, "error_code": None}
+        if getattr(request.app.state, "p2p", None) is None:
+            return {
+                "healthy": False,
+                "error_code": "not_configured",
+            }
+        return {"healthy": True, "error_code": None}
+
+    async def model_governance_probe() -> dict[str, Any]:
+        if not settings.model_evolution_enabled:
+            return _model_governance_dependency(settings=settings)
+        try:
+            async with database.session_factory() as session:
+                return await ModelGovernanceService(
+                    session=session, settings=settings
+                ).dependency_payload(settings.owner_id)
+        except Exception:
+            return _model_governance_dependency(settings=settings)
+
+    database_status, inference_status, web_search_status, runtime_status, p2p_status, model_governance_status, executor_security_status = await asyncio.gather(
         database_probe(),
         inference.health(),
         web_search_probe(),
         durable_runtime_probe(),
+        p2p_probe(),
+        model_governance_probe(),
+        asyncio.to_thread(_executor_security_dependency, settings=settings),
     )
     body = {
         "status": "ready"
@@ -115,6 +140,9 @@ async def readyz(request: Request, _principal: PrincipalDependency) -> JSONRespo
             and web_search_status.healthy
             and (not settings.web_search_enabled or web_search_status.enabled)
             and runtime_status.healthy
+            and model_governance_status["healthy"]
+            and executor_security_status["healthy"]
+            and (not settings.p2p_readiness_enabled or p2p_status["healthy"])
         )
         else "not_ready",
         "dependencies": {
@@ -192,9 +220,193 @@ async def readyz(request: Request, _principal: PrincipalDependency) -> JSONRespo
                 "reindex_required": runtime_status.embedding_space.reindex_required,
                 "error_code": runtime_status.embedding_space.error_code,
             },
+            "evolution_scheduler": _evolution_scheduler_dependency(
+                worker_capabilities=runtime_status.worker.capabilities,
+                settings=settings,
+            ),
+            "p2p": {
+                "enabled": settings.p2p_readiness_enabled,
+                "healthy": p2p_status["healthy"],
+                "error_code": p2p_status["error_code"],
+            },
+            "model_governance": {
+                "enabled": model_governance_status["enabled"],
+                "status": model_governance_status["status"],
+                "healthy": model_governance_status["healthy"],
+                "reason": model_governance_status["reason"],
+                "candidate_registry": model_governance_status["candidate_registry"],
+                "benchmarks": model_governance_status["benchmarks"],
+            },
+            "executor_security": {
+                "enabled": executor_security_status["enabled"],
+                "status": executor_security_status["status"],
+                "healthy": executor_security_status["healthy"],
+                "reason": executor_security_status["reason"],
+                "approved_kinds": executor_security_status["approved_kinds"],
+                "requires_approval": executor_security_status["requires_approval"],
+            },
         },
     }
     response_status = (
         status.HTTP_200_OK if body["status"] == "ready" else status.HTTP_503_SERVICE_UNAVAILABLE
     )
     return JSONResponse(status_code=response_status, content=body)
+
+
+def _evolution_scheduler_dependency(
+    *,
+    worker_capabilities: dict[str, Any],
+    settings: Settings,
+) -> dict[str, Any]:
+    if not settings.evolution_scheduler_enabled:
+        return {
+            "enabled": False,
+            "status": "disabled",
+            "healthy": True,
+            "reason": "disabled_by_default",
+            "can_run": False,
+            "budgets": {
+                "cpu_percent": settings.evolution_scheduler_cpu_percent_cap,
+                "memory_megabytes": settings.evolution_scheduler_memory_megabytes_cap,
+                "wall_clock_seconds": settings.evolution_scheduler_wall_clock_seconds,
+                "database_row_budget": settings.evolution_scheduler_database_row_budget,
+                "proposal_count_budget": settings.evolution_scheduler_proposal_count_budget,
+                "storage_bytes": settings.evolution_scheduler_storage_budget_bytes,
+                "proposal_cooldown_minutes": settings.evolution_scheduler_cooldown_minutes,
+                "allow_network": settings.evolution_scheduler_allow_network,
+            },
+        }
+
+    if not worker_capabilities:
+        return {
+            "enabled": settings.evolution_scheduler_enabled,
+            "status": "unknown",
+            "healthy": True,
+            "reason": "runtime_capability_not_available",
+            "can_run": False,
+            "budgets": {
+                "cpu_percent": settings.evolution_scheduler_cpu_percent_cap,
+                "memory_megabytes": settings.evolution_scheduler_memory_megabytes_cap,
+                "wall_clock_seconds": settings.evolution_scheduler_wall_clock_seconds,
+                "database_row_budget": settings.evolution_scheduler_database_row_budget,
+                "proposal_count_budget": settings.evolution_scheduler_proposal_count_budget,
+                "storage_bytes": settings.evolution_scheduler_storage_budget_bytes,
+                "proposal_cooldown_minutes": settings.evolution_scheduler_cooldown_minutes,
+                "allow_network": settings.evolution_scheduler_allow_network,
+            },
+        }
+
+    scheduler = worker_capabilities.get("evolution_scheduler")
+    if not isinstance(scheduler, dict):
+        return {
+            "enabled": settings.evolution_scheduler_enabled,
+            "status": "unavailable",
+            "healthy": True,
+            "reason": "scheduler_capability_missing",
+            "can_run": False,
+            "budgets": {
+                "cpu_percent": settings.evolution_scheduler_cpu_percent_cap,
+                "memory_megabytes": settings.evolution_scheduler_memory_megabytes_cap,
+                "wall_clock_seconds": settings.evolution_scheduler_wall_clock_seconds,
+                "database_row_budget": settings.evolution_scheduler_database_row_budget,
+                "proposal_count_budget": settings.evolution_scheduler_proposal_count_budget,
+                "storage_bytes": settings.evolution_scheduler_storage_budget_bytes,
+                "proposal_cooldown_minutes": settings.evolution_scheduler_cooldown_minutes,
+                "allow_network": settings.evolution_scheduler_allow_network,
+            },
+        }
+    return {
+        "enabled": bool(scheduler.get("enabled")),
+        "status": scheduler.get("status", "unknown"),
+        "healthy": not settings.evolution_scheduler_enabled or scheduler.get("status") != "blocked",
+        "reason": scheduler.get("reason"),
+        "can_run": bool(scheduler.get("can_run", False)),
+        "budgets": scheduler.get("budgets")
+        if isinstance(scheduler.get("budgets"), dict)
+        else {},
+    }
+
+
+def _model_governance_dependency(
+    *,
+    settings: Settings,
+) -> dict[str, Any]:
+    if not settings.model_evolution_enabled:
+        return {
+            "enabled": False,
+            "status": "disabled",
+            "healthy": True,
+            "reason": "disabled_by_default",
+            "candidate_registry": {
+                "active_alias": None,
+                "active_digest": None,
+                "active_generation": None,
+                "prior_generation_anchor": None,
+                "rollback_target_alias": None,
+                "rollback_target_digest": None,
+            },
+            "benchmarks": {
+                "scoring_policy_version": None,
+                "benchmarking_policy_version": None,
+                "minimum_sample_size": None,
+                "promotion_quality_threshold": None,
+                "rollback_quality_threshold": None,
+            },
+        }
+
+    active_alias = settings.model_evolution_active_chat_alias
+    active_digest = settings.model_evolution_active_chat_digest
+    ready = bool(active_alias and active_digest)
+    return {
+        "enabled": True,
+        "status": "ready" if ready else "blocked",
+        "healthy": ready,
+        "reason": None if ready else "active_model_not_fully_configured",
+        "candidate_registry": {
+            "active_alias": active_alias,
+            "active_digest": active_digest,
+            "active_generation": settings.model_evolution_active_generation,
+            "prior_generation_anchor": settings.model_evolution_prior_generation_anchor,
+            "rollback_target_alias": settings.model_evolution_last_rollback_target_alias,
+            "rollback_target_digest": settings.model_evolution_last_rollback_target_digest,
+        },
+        "benchmarks": {
+            "scoring_policy_version": settings.model_evolution_scoring_policy_version,
+            "benchmarking_policy_version": settings.model_evolution_benchmarking_policy_version,
+            "minimum_sample_size": settings.model_evolution_minimum_sample_size,
+            "promotion_quality_threshold": settings.model_evolution_promotion_quality_threshold,
+            "rollback_quality_threshold": settings.model_evolution_rollback_quality_threshold,
+        },
+    }
+
+
+def _executor_security_dependency(
+    *,
+    settings: Settings,
+) -> dict[str, Any]:
+    if not settings.executor_security_review_approved:
+        return {
+            "enabled": False,
+            "status": "disabled_by_default",
+            "healthy": True,
+            "reason": "executor security review not yet approved",
+            "approved_kinds": (
+                "evolution.proposal.generate",
+                "evolution.proposal.execute",
+                "execution.sandbox.echo",
+            ),
+            "requires_approval": True,
+        }
+
+    return {
+        "enabled": True,
+        "status": "ready",
+        "healthy": True,
+        "reason": None,
+        "approved_kinds": (
+            "evolution.proposal.generate",
+            "evolution.proposal.execute",
+            "execution.sandbox.echo",
+        ),
+        "requires_approval": True,
+    }

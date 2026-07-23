@@ -52,6 +52,7 @@ class EmbeddingCoverage:
 class WorkerReadiness:
     healthy: bool
     status: str
+    capabilities: dict[str, Any] | None = None
     component_id: str | None = None
     instance_id: UUID | None = None
     version: str | None = None
@@ -273,6 +274,7 @@ def _worker_readiness(
     return WorkerReadiness(
         healthy=healthy,
         status=status,
+        capabilities=dict(worker.capabilities) if worker is not None else {},
         component_id=worker.component_id,
         instance_id=worker.instance_id,
         version=worker.version,

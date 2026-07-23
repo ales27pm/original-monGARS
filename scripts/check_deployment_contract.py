@@ -272,11 +272,43 @@ def validate_network_isolation(model: dict[str, object]) -> None:
     )
 
 
+def validate_profile_consistency(compose_text: str, model: dict[str, object]) -> None:
+    services = model.get("services")
+    require(isinstance(services, dict), "Compose model has no services object")
+    ollama_service = services.get("ollama")
+    require(isinstance(ollama_service, dict), "Compose model missing ollama service")
+    profiles = ollama_service.get("profiles")
+    require(isinstance(profiles, list), "Compose ollama profiles missing or malformed")
+    require(
+        set(profiles) >= {"gpu", "arm64", "jetson"},
+        f"ollama profiles changed unexpectedly: {profiles}",
+    )
+
+    environment = parse_dotenv(read_text(".env.example"))
+    required_overrides = (
+        "MONGARS_OLLAMA_IMAGE_ARM64",
+        "MONGARS_OLLAMA_IMAGE_JETSON",
+    )
+    for variable in required_overrides:
+        require(
+            variable in environment,
+            f"environment override missing for {variable}",
+        )
+
+    arm64_match = re.search(r"MONGARS_OLLAMA_IMAGE_ARM64", compose_text)
+    jetson_match = re.search(r"MONGARS_OLLAMA_IMAGE_JETSON", compose_text)
+    require(
+        arm64_match is not None and jetson_match is not None,
+        "compose overlays must expose ARM64/Jetson image override variables",
+    )
+
+
 def main() -> int:
     try:
         model = compose_model()
         validate_image_parity(model)
         validate_network_isolation(model)
+        validate_profile_consistency(read_text("compose.yaml"), model)
     except (ContractError, json.JSONDecodeError) as error:
         print(f"deployment contract check failed: {error}", file=sys.stderr)
         return 1

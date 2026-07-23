@@ -18,6 +18,7 @@ from mongars.ids import uuid7
 from mongars.inference.base import ChatMessage, InferenceBackend, InferenceResponseError
 from mongars.memory.repository import MemoryHit, MemoryRepository
 from mongars.memory.service import MemoryService
+from mongars.evolution.governance import ModelGovernanceService
 from mongars.orchestrator.cognitive_context import serialize_cognitive_context
 from mongars.orchestrator.emotion import AffectSignal
 from mongars.orchestrator.personality import PersonalitySnapshot
@@ -163,6 +164,13 @@ class Cortex:
             raise PermissionError("a local inference endpoint is required")
         if web_search_mode not in {"off", "auto", "required"}:
             raise ValueError("unsupported web-search mode")
+
+        try:
+            model_alias, _ = await ModelGovernanceService(
+                self._session, self._settings
+            ).resolve_active_chat_model(owner_id)
+        except Exception:
+            model_alias = self._settings.ollama_chat_model
 
         web_search_requested = web_search_mode == "required" or (
             web_search_mode == "auto" and explicit_web_search_requested(normalized)
@@ -318,6 +326,7 @@ class Cortex:
         }
         response = await self._inference.chat(
             envelope.messages,
+            model=model_alias,
             options=inference_options,
         )
         if envelope.included_web_results and _web_grounding_violation(
@@ -344,6 +353,7 @@ class Cortex:
                 )
             response = await self._inference.chat(
                 retry_envelope.messages,
+                model=model_alias,
                 options=inference_options,
             )
             envelope = retry_envelope

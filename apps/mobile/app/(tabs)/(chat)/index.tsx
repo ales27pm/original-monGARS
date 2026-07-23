@@ -1,5 +1,5 @@
 import * as Haptics from 'expo-haptics';
-import { useState } from 'react';
+import { useEffect, useReducer, useState } from 'react';
 import { Alert, Linking, Pressable, Text, TextInput, View } from 'react-native';
 
 import { BrandMark } from '@/components/brand-mark';
@@ -11,6 +11,13 @@ import { useAppTheme } from '@/hooks/use-app-theme';
 import { useChat } from '@/hooks/use-mongars-api';
 import { useMongars } from '@/providers/mongars-provider';
 import type { ChatRequest } from '@/types/mongars-api';
+import {
+  canTransition,
+  nextLabel,
+  nextVoiceState,
+  type VoiceLoopEvent,
+  type VoiceLoopState,
+} from '@/lib/voice-state-machine';
 
 const suggestions = ['Summarize my day', 'Search project memory', 'Show active tasks'];
 
@@ -25,11 +32,22 @@ type ChatDisplayMessage = {
 const webSearchModes = ['off', 'auto', 'required'] as const;
 type WebSearchMode = NonNullable<ChatRequest['web_search']>;
 
+const VOICE_LIMITS = {
+  maxUtteranceSeconds: 30,
+  maxUploadBytes: 1_000_000,
+  sttProvider: 'local adapter (not yet implemented)',
+  sttModelDigest: 'pending',
+};
+
 const webSearchModeLabels: Record<WebSearchMode, string> = {
   off: 'Off',
   auto: 'Auto',
   required: 'Required',
 };
+
+function voiceReducer(state: VoiceLoopState, event: VoiceLoopEvent): VoiceLoopState {
+  return nextVoiceState(state, event);
+}
 
 function normalizeWebSource(source: unknown): { label: string; url: string } | null {
   if (!source || typeof source !== 'object') return null;
@@ -76,6 +94,61 @@ function ConnectedChatScreen() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatDisplayMessage[]>([]);
   const [webSearchMode, setWebSearchMode] = useState<WebSearchMode>('auto');
+  const [voiceState, dispatchVoiceEvent] = useReducer(voiceReducer, 'idle');
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [continuousVoiceLoop, setContinuousVoiceLoop] = useState(false);
+
+  function dispatchVoiceAction(event: VoiceLoopEvent): void {
+    if (!canTransition(voiceState, event)) {
+      setVoiceError(`Cannot transition ${voiceState} with ${event}`);
+      return;
+    }
+    setVoiceError(null);
+    dispatchVoiceEvent(event);
+  }
+
+  const voiceVisual: string =
+    voiceState === 'listening'
+      ? '▁ ▂ ▂ ▄ ▅ █ █ ▃ ▁'
+      : voiceState === 'finalizing'
+        ? '⏺ finalizing transcription'
+        : voiceState === 'thinking'
+          ? '… awaiting model response'
+          : voiceState === 'speaking'
+            ? '♪ ♪ ♫ ♪'
+            : '—';
+
+  const primaryVoiceEvent: VoiceLoopEvent = (() => {
+    if (voiceState === 'idle') {
+      return 'start_push_to_talk';
+    }
+    if (voiceState === 'requesting_permission') {
+      return 'permission_granted';
+    }
+    if (voiceState === 'listening') {
+      return 'stop_recording';
+    }
+    if (voiceState === 'finalizing') {
+      return 'transcription_complete';
+    }
+    if (voiceState === 'thinking') {
+      return 'speak_complete';
+    }
+    if (voiceState === 'speaking') {
+      return continuousVoiceLoop ? 'auto_restart' : 'tts_stopped';
+    }
+    return 'speak_complete';
+  })();
+
+  useEffect(() => {
+    if (!continuousVoiceLoop || voiceState !== 'speaking') return;
+    const handle = setTimeout(() => {
+      dispatchVoiceAction('auto_restart');
+    }, 0);
+    return () => {
+      clearTimeout(handle);
+    };
+  }, [continuousVoiceLoop, voiceState]);
 
   async function submitMessage() {
     const text = draft.trim();
@@ -141,6 +214,104 @@ function ConnectedChatScreen() {
             label={chat.isPending ? 'Thinking' : hasToken ? 'Connected' : 'Token needed'}
             tone={chat.isPending ? 'primary' : hasToken ? 'positive' : 'warning'}
           />
+        </View>
+        <View
+          style={{
+            borderTopWidth: 1,
+            borderColor: theme.border,
+            marginTop: 12,
+            paddingTop: 12,
+            gap: 6,
+          }}
+        >
+          <Text selectable style={{ color: theme.textSecondary, fontSize: 11, fontWeight: '700' }}>
+            VOICE LOOP (SAFE FOUNDATION)
+          </Text>
+          <Text selectable style={{ color: theme.text, fontSize: 12 }}>
+            State: {nextLabel(voiceState)}
+          </Text>
+          <View style={{ flexDirection: 'row', gap: 8 }}>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => dispatchVoiceAction(primaryVoiceEvent)}
+              style={({ pressed }) => ({
+                backgroundColor: theme.surface,
+                borderColor: theme.border,
+                borderRadius: 999,
+                borderWidth: 1,
+                paddingHorizontal: 10,
+                paddingVertical: 7,
+                opacity: pressed ? 0.75 : 1,
+              })}
+            >
+              <Text
+                selectable
+                style={{ color: theme.text, fontSize: 11, fontWeight: '700' }}
+              >
+                {voiceState === 'idle'
+                  ? 'Request permission'
+                  : voiceState === 'requesting_permission'
+                    ? 'Grant permission'
+                    : voiceState === 'listening'
+                      ? 'Stop recording'
+                      : voiceState === 'finalizing'
+                        ? 'Finalize transcript'
+                        : voiceState === 'thinking'
+                          ? 'Start speaking'
+                          : voiceState === 'speaking'
+                            ? 'Stop TTS'
+                            : 'Cancel'}
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => setContinuousVoiceLoop((enabled) => !enabled)}
+              style={({ pressed }) => ({
+                backgroundColor: theme.surface,
+                borderColor: theme.border,
+                borderRadius: 999,
+                borderWidth: 1,
+                paddingHorizontal: 10,
+                paddingVertical: 7,
+                opacity: pressed ? 0.75 : 1,
+              })}
+            >
+              <Text selectable style={{ color: theme.text, fontSize: 11, fontWeight: '700' }}>
+                Continuous loop: {continuousVoiceLoop ? 'On' : 'Off'}
+              </Text>
+            </Pressable>
+            <Pressable
+              accessibilityRole="button"
+              onPress={() => dispatchVoiceAction('cancel')}
+              style={({ pressed }) => ({
+                backgroundColor: theme.surfaceMuted,
+                borderColor: theme.border,
+                borderRadius: 999,
+                borderWidth: 1,
+                paddingHorizontal: 10,
+                paddingVertical: 7,
+                opacity: pressed ? 0.75 : 1,
+              })}
+            >
+              <Text selectable style={{ color: theme.textTertiary, fontSize: 11, fontWeight: '700' }}>
+                Cancel
+              </Text>
+            </Pressable>
+          </View>
+          <Text selectable accessibilityRole="text" style={{ color: theme.textTertiary, fontSize: 11 }}>
+            Waveform fallback: {voiceVisual}
+          </Text>
+          <Text selectable style={{ color: theme.textTertiary, fontSize: 11 }}>
+            Audio retention: no raw audio is persisted by default; explicit export is required.
+          </Text>
+          <Text selectable style={{ color: theme.textTertiary, fontSize: 11 }}>
+            STT identity: {VOICE_LIMITS.sttProvider} · digest: {VOICE_LIMITS.sttModelDigest}
+          </Text>
+          <Text selectable style={{ color: theme.textTertiary, fontSize: 11 }}>
+            Request limits: {VOICE_LIMITS.maxUtteranceSeconds}s max utterance,{' '}
+            {VOICE_LIMITS.maxUploadBytes} max upload bytes
+          </Text>
+          {voiceError ? <Text style={{ color: theme.warning, fontSize: 11 }}>{voiceError}</Text> : null}
         </View>
       </SurfaceCard>
 

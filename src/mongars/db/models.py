@@ -404,3 +404,268 @@ class RuntimeComponent(Base):
     last_seen_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
+
+
+class ModelCandidate(Base):
+    """Registered chat-model candidates for governance operations."""
+
+    __tablename__ = "model_candidates"
+    __table_args__ = (
+        CheckConstraint(
+            "candidate_alias ~ '^.{1,255}$'",
+            name="ck_model_candidate_alias",
+        ),
+        CheckConstraint(
+            "candidate_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_model_candidate_digest",
+        ),
+        CheckConstraint(
+            "scoring_policy_version ~ '^.{1,64}$'",
+            name="ck_model_candidate_scoring_policy",
+        ),
+        CheckConstraint(
+            "requested_by ~ '^.{1,128}$'",
+            name="ck_model_candidate_requester",
+        ),
+        Index("ix_model_candidates_owner", "owner_id"),
+        Index("ix_model_candidates_last_seen", "last_seen_at"),
+    )
+
+    owner_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    candidate_alias: Mapped[str] = mapped_column(String(255), primary_key=True)
+    candidate_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    scoring_policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    requested_by: Mapped[str] = mapped_column(String(128), nullable=False)
+    last_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ModelBenchmarkSuite(Base):
+    """One benchmark suite definition used to validate proposed models."""
+
+    __tablename__ = "model_benchmark_suites"
+    __table_args__ = (
+        CheckConstraint(
+            "suite_version ~ '^.{1,32}$'",
+            name="ck_model_benchmark_suite_version",
+        ),
+        CheckConstraint(
+            "scoring_policy_version ~ '^.{1,32}$'",
+            name="ck_model_benchmark_suite_policy_version",
+        ),
+        CheckConstraint("minimum_sample_size BETWEEN 1 AND 1000000", name="ck_model_benchmark_suite_min_sample"),
+        CheckConstraint(
+            "regression_tolerance BETWEEN 0.0 AND 1.0",
+            name="ck_model_benchmark_suite_regression_tolerance",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(target_metrics) = 'array'",
+            name="ck_model_benchmark_suite_metrics_array",
+        ),
+        CheckConstraint(
+            "jsonb_array_length(target_metrics) > 0",
+            name="ck_model_benchmark_suite_metrics_nonempty",
+        ),
+        Index("ix_model_benchmark_suites_owner", "owner_id"),
+        Index("ix_model_benchmark_suites_version", "suite_version"),
+    )
+
+    owner_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    suite_id: Mapped[UUID] = mapped_column(primary_key=True)
+    suite_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    scoring_policy_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    target_metrics: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+    minimum_sample_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    regression_tolerance: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ModelBenchmarkRun(Base):
+    """Benchmark result for one candidate model proposal."""
+
+    __tablename__ = "model_benchmark_runs"
+    __table_args__ = (
+        CheckConstraint("sample_size BETWEEN 1 AND 1000000", name="ck_model_benchmark_runs_sample_size"),
+        CheckConstraint("quality_score BETWEEN 0.0 AND 1.0", name="ck_model_benchmark_runs_quality"),
+        CheckConstraint("latency_ms_p95 >= 0.0", name="ck_model_benchmark_runs_latency_nonnegative"),
+        CheckConstraint("memory_mb_p95 >= 0.0", name="ck_model_benchmark_runs_memory_nonnegative"),
+        CheckConstraint("context_overlap BETWEEN 0.0 AND 1.0", name="ck_model_benchmark_runs_overlap_range"),
+        CheckConstraint("failure_rate BETWEEN 0.0 AND 1.0", name="ck_model_benchmark_runs_failure_range"),
+        CheckConstraint("raw_measurements_count >= 0", name="ck_model_benchmark_runs_measurements_nonnegative"),
+        CheckConstraint(
+            "hardware_profile IS NOT NULL",
+            name="ck_model_benchmark_runs_hardware_profile",
+        ),
+        Index("ix_model_benchmark_runs_suite", "owner_id", "suite_id"),
+        Index("ix_model_benchmark_runs_candidate", "owner_id", "candidate_alias"),
+    )
+
+    owner_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    run_id: Mapped[UUID] = mapped_column(primary_key=True)
+    suite_id: Mapped[UUID] = mapped_column(nullable=False)
+    suite_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    candidate_alias: Mapped[str] = mapped_column(String(255), nullable=False)
+    candidate_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    sample_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    quality_score: Mapped[float] = mapped_column(Float, nullable=False)
+    latency_ms_p95: Mapped[float] = mapped_column(Float, nullable=False)
+    memory_mb_p95: Mapped[float] = mapped_column(Float, nullable=False)
+    context_overlap: Mapped[float] = mapped_column(Float, nullable=False)
+    failure_rate: Mapped[float] = mapped_column(Float, nullable=False)
+    hardware_profile: Mapped[str] = mapped_column(String(255), nullable=False)
+    raw_measurements_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ModelPromotionProposal(Base):
+    """Promotion decision emitted from governance policy execution."""
+
+    __tablename__ = "model_promotion_proposals"
+    __table_args__ = (
+        CheckConstraint(
+            "suite_version ~ '^.{1,32}$'",
+            name="ck_model_promotion_suite_version",
+        ),
+        CheckConstraint(
+            "minimum_sample_size >= 1",
+            name="ck_model_promotion_min_sample",
+        ),
+        CheckConstraint(
+            "decision_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_model_promotion_decision_digest",
+        ),
+        CheckConstraint(
+            "decision_reason IS NOT NULL AND length(decision_reason) > 0",
+            name="ck_model_promotion_decision_reason",
+        ),
+        CheckConstraint(
+            "incumbent_digest IS NOT NULL",
+            name="ck_model_promotion_incumbent_digest",
+        ),
+        Index("ix_model_promotion_owner", "owner_id"),
+    )
+
+    owner_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    run_id: Mapped[UUID] = mapped_column(primary_key=True)
+    suite_id: Mapped[UUID] = mapped_column(nullable=False)
+    suite_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    benchmark_run_id: Mapped[UUID] = mapped_column(nullable=False)
+    candidate_alias: Mapped[str] = mapped_column(String(255), nullable=False)
+    candidate_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    incumbent_alias: Mapped[str] = mapped_column(String(255), nullable=False)
+    incumbent_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    minimum_sample_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ModelGovernanceState(Base):
+    """Durable runtime state for the current active chat model governance state."""
+
+    __tablename__ = "model_governance_state"
+    __table_args__ = (
+        CheckConstraint(
+            "active_generation > 0",
+            name="ck_model_governance_state_active_generation_positive",
+        ),
+        CheckConstraint(
+            "minimum_sample_size BETWEEN 1 AND 1000000",
+            name="ck_model_governance_state_min_sample",
+        ),
+        CheckConstraint(
+            "promotion_quality_threshold BETWEEN 0.0 AND 1.0",
+            name="ck_model_governance_state_promotion_quality_threshold",
+        ),
+        CheckConstraint(
+            "rollback_quality_threshold BETWEEN 0.0 AND 1.0",
+            name="ck_model_governance_state_rollback_quality_threshold",
+        ),
+    )
+
+    owner_id: Mapped[str] = mapped_column(String(255), primary_key=True)
+    active_chat_alias: Mapped[str | None] = mapped_column(String(255))
+    active_chat_digest: Mapped[str | None] = mapped_column(String(64))
+    active_generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    prior_generation_anchor: Mapped[str] = mapped_column(String(128), nullable=False)
+    rollback_target_alias: Mapped[str | None] = mapped_column(String(255))
+    rollback_target_digest: Mapped[str | None] = mapped_column(String(64))
+    scoring_policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    benchmarking_policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    minimum_sample_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    promotion_quality_threshold: Mapped[float] = mapped_column(Float, nullable=False)
+    rollback_quality_threshold: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ModelActivationHistory(Base):
+    """Durable audit trail for model activation and rollback actions."""
+
+    __tablename__ = "model_activation_history"
+    __table_args__ = (
+        CheckConstraint(
+            "action_scope = 'chat_model'",
+            name="ck_model_activation_scope_chat",
+        ),
+        CheckConstraint(
+            "action_type IN ('activation', 'rollback')",
+            name="ck_model_activation_action_type",
+        ),
+        CheckConstraint(
+            "from_alias IS NOT NULL AND to_alias IS NOT NULL",
+            name="ck_model_activation_aliases_present",
+        ),
+        CheckConstraint(
+            "from_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_model_activation_from_digest",
+        ),
+        CheckConstraint(
+            "to_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_model_activation_to_digest",
+        ),
+        CheckConstraint(
+            "applied_generation > 0",
+            name="ck_model_activation_applied_generation",
+        ),
+        CheckConstraint(
+            "previous_generation > 0",
+            name="ck_model_activation_previous_generation",
+        ),
+        CheckConstraint(
+            "from_digest IS NOT NULL",
+            name="ck_model_activation_from_digest_required",
+        ),
+        Index("ix_model_activation_owner_created", "owner_id", text("created_at DESC")),
+    )
+
+    history_id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid7)
+    owner_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    action_scope: Mapped[str] = mapped_column(String(50), nullable=False)
+    action_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    from_alias: Mapped[str] = mapped_column(String(255), nullable=False)
+    from_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    to_alias: Mapped[str] = mapped_column(String(255), nullable=False)
+    to_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    applied_generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    previous_generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    prior_generation_anchor: Mapped[str] = mapped_column(String(128), nullable=False)
+    reason: Mapped[str] = mapped_column(Text)
+    source_run_id: Mapped[UUID] = mapped_column(nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )

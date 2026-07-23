@@ -13,11 +13,16 @@ from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import Insert, insert
 
 from mongars.config import Settings
+from mongars.evolution.governance import (
+    ModelGovernanceService,
+    model_governance_dependency_payload,
+)
 from mongars.db.models import RuntimeComponent
 from mongars.db.session import Database
 from mongars.embeddings.models import EmbeddingSpace
 from mongars.embeddings.service import EmbeddingService
 from mongars.ingestion.isolation import DocumentParser, ParserHealth
+from mongars.evolution.scheduler import describe_scheduler_state
 from mongars.runtime import RuntimeReportedStatus
 
 logger = logging.getLogger(__name__)
@@ -32,6 +37,12 @@ class WorkerRuntimeObservation:
 
     parser: ParserHealth
     embedding_space: EmbeddingSpace | None
+    model_governance: dict[str, Any]
+    scheduler_enabled: bool
+    scheduler_status: str
+    scheduler_reason: str
+    scheduler_can_run: bool
+    scheduler_budgets: dict[str, int | float]
 
     @property
     def status(self) -> RuntimeReportedStatus:
@@ -52,6 +63,14 @@ class WorkerRuntimeObservation:
                 "model_alias": space.model_alias if space is not None else None,
                 "model_digest": space.model_digest if space is not None else None,
                 "dimension": space.dimension if space is not None else None,
+            },
+            "model_governance": self.model_governance,
+            "evolution_scheduler": {
+                "enabled": self.scheduler_enabled,
+                "status": self.scheduler_status,
+                "reason": self.scheduler_reason,
+                "can_run": self.scheduler_can_run,
+                "budgets": self.scheduler_budgets,
             },
         }
 
@@ -82,9 +101,20 @@ class WorkerRuntimeHeartbeat:
             self._probe_parser(),
             self._probe_embedding_space(),
         )
+        scheduler = describe_scheduler_state(
+            settings=self._settings,
+            is_idle=False,
+        )
+        model_governance = await self._probe_model_governance()
         observation = WorkerRuntimeObservation(
             parser=parser,
             embedding_space=embedding_space,
+            model_governance=model_governance,
+            scheduler_enabled=scheduler.enabled,
+            scheduler_status=scheduler.status,
+            scheduler_reason=scheduler.reason,
+            scheduler_can_run=scheduler.can_run,
+            scheduler_budgets=scheduler.budgets.to_payload(),
         )
         try:
             statement = _heartbeat_upsert(
@@ -151,6 +181,30 @@ class WorkerRuntimeHeartbeat:
                 extra={"error_type": type(exc).__name__},
             )
             return None
+
+    async def _probe_model_governance(self) -> dict[str, Any]:
+        if not self._settings.model_evolution_enabled:
+            return model_governance_dependency_payload(
+                settings=self._settings,
+                state=None,
+            )
+        try:
+            async with self._model_governance_session() as session:
+                return await ModelGovernanceService(
+                    session=session, settings=self._settings
+                ).dependency_payload(self._settings.owner_id)
+        except Exception as exc:
+            logger.warning(
+                "worker_runtime_model_governance_probe_failed",
+                extra={"error_type": type(exc).__name__},
+            )
+            return model_governance_dependency_payload(settings=self._settings, state=None)
+
+    def _model_governance_session(self):
+        session_factory = self._database.session_factory
+        if hasattr(session_factory, "begin"):
+            return session_factory.begin()
+        return session_factory()
 
 
 def _canonical_parser_health(health: ParserHealth) -> ParserHealth:

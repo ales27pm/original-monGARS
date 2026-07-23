@@ -311,6 +311,11 @@ async def test_readiness_reports_healthy_non_query_web_probe() -> None:
     assert embedding_status["compatible_chunk_count"] == 0
     assert embedding_status["legacy_chunk_count"] == 0
     assert embedding_status["reindex_required"] is False
+    assert payload["dependencies"]["p2p"] == {
+        "enabled": False,
+        "healthy": True,
+        "error_code": None,
+    }
 
 
 @pytest.mark.asyncio
@@ -348,3 +353,337 @@ async def test_readiness_resolves_embedding_identity_before_opening_database_ses
 
     assert readiness.status_code == 200
     assert events == ["resolve_embedding_space", "database_session"]
+
+
+@pytest.mark.asyncio
+async def test_readiness_requires_enabled_p2p_to_be_configured() -> None:
+    inference = ReadinessInference(
+        HealthStatus(
+            backend="ollama",
+            backend_reachable=True,
+            chat_model_ready=True,
+            embedding_model_ready=True,
+            latency_ms=1.0,
+        )
+    )
+    database, embeddings = _healthy_runtime()
+    application = FastAPI()
+    settings = Settings(
+        environment=Environment.TEST,
+        api_token=SecretStr(_AUTH_VALUE),
+        web_search_enabled=False,
+        p2p_readiness_enabled=True,
+    )
+    _configure_auth(application, settings)
+    application.state.database = database
+    application.state.inference = inference
+    application.state.embeddings = embeddings
+    application.include_router(health.router)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application),
+        base_url="http://testserver",
+    ) as client:
+        readiness = await client.get("/v1/readyz", headers=_AUTH_HEADERS)
+
+    assert readiness.status_code == 503
+    assert readiness.json()["status"] == "not_ready"
+    assert readiness.json()["dependencies"]["p2p"] == {
+        "enabled": True,
+        "healthy": False,
+        "error_code": "not_configured",
+    }
+
+
+@pytest.mark.asyncio
+async def test_readiness_reports_disabled_evolution_scheduler_dependency() -> None:
+    inference = ReadinessInference(
+        HealthStatus(
+            backend="ollama",
+            backend_reachable=True,
+            chat_model_ready=True,
+            embedding_model_ready=True,
+            latency_ms=1.0,
+        )
+    )
+    application = FastAPI()
+    settings = Settings(
+        environment=Environment.TEST,
+        api_token=SecretStr(_AUTH_VALUE),
+        web_search_enabled=False,
+    )
+    _configure_auth(application, settings)
+    application.state.database = HealthyDatabase()
+    application.state.inference = inference
+    application.state.embeddings = None
+    application.include_router(health.router)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application),
+        base_url="http://testserver",
+    ) as client:
+        readiness = await client.get("/v1/readyz", headers=_AUTH_HEADERS)
+
+    assert readiness.status_code == 503
+    assert readiness.json()["dependencies"]["evolution_scheduler"] == {
+        "enabled": False,
+        "status": "disabled",
+        "healthy": True,
+        "reason": "disabled_by_default",
+        "can_run": False,
+        "budgets": {
+            "cpu_percent": 30,
+            "memory_megabytes": 2048,
+            "wall_clock_seconds": 45,
+            "database_row_budget": 500,
+            "proposal_count_budget": 25,
+            "storage_bytes": 20_000_000,
+            "proposal_cooldown_minutes": 30,
+            "allow_network": False,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_readiness_reports_disabled_model_governance_dependency() -> None:
+    inference = ReadinessInference(
+        HealthStatus(
+            backend="ollama",
+            backend_reachable=True,
+            chat_model_ready=True,
+            embedding_model_ready=True,
+            latency_ms=1.0,
+        )
+    )
+    database, embeddings = _healthy_runtime()
+    application = FastAPI()
+    settings = Settings(
+        environment=Environment.TEST,
+        api_token=SecretStr(_AUTH_VALUE),
+        web_search_enabled=False,
+        model_evolution_enabled=False,
+    )
+    _configure_auth(application, settings)
+    application.state.database = database
+    application.state.inference = inference
+    application.state.embeddings = embeddings
+    application.include_router(health.router)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application),
+        base_url="http://testserver",
+    ) as client:
+        readiness = await client.get("/v1/readyz", headers=_AUTH_HEADERS)
+
+    assert readiness.status_code == 200
+    assert readiness.json()["dependencies"]["model_governance"] == {
+        "enabled": False,
+        "status": "disabled",
+        "healthy": True,
+        "reason": "disabled_by_default",
+        "candidate_registry": {
+            "active_alias": None,
+            "active_digest": None,
+            "active_generation": None,
+            "prior_generation_anchor": None,
+            "rollback_target_alias": None,
+            "rollback_target_digest": None,
+        },
+        "benchmarks": {
+            "scoring_policy_version": None,
+            "benchmarking_policy_version": None,
+            "minimum_sample_size": None,
+            "promotion_quality_threshold": None,
+            "rollback_quality_threshold": None,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_readiness_reports_blocked_model_governance_when_active_digest_is_missing() -> None:
+    inference = ReadinessInference(
+        HealthStatus(
+            backend="ollama",
+            backend_reachable=True,
+            chat_model_ready=True,
+            embedding_model_ready=True,
+            latency_ms=1.0,
+        )
+    )
+    database, embeddings = _healthy_runtime()
+    application = FastAPI()
+    settings = Settings(
+        environment=Environment.TEST,
+        api_token=SecretStr(_AUTH_VALUE),
+        web_search_enabled=False,
+        model_evolution_enabled=True,
+        model_evolution_active_chat_digest=None,
+    )
+    _configure_auth(application, settings)
+    application.state.database = database
+    application.state.inference = inference
+    application.state.embeddings = embeddings
+    application.include_router(health.router)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application),
+        base_url="http://testserver",
+    ) as client:
+        readiness = await client.get("/v1/readyz", headers=_AUTH_HEADERS)
+
+    assert readiness.status_code == 503
+    assert readiness.json()["status"] == "not_ready"
+    governance = readiness.json()["dependencies"]["model_governance"]
+    assert governance["enabled"] is True
+    assert governance["status"] == "blocked"
+    assert governance["healthy"] is False
+    assert governance["reason"] == "active_model_not_fully_configured"
+    assert governance["candidate_registry"]["active_alias"] == "qwen3:4b-instruct"
+    assert governance["candidate_registry"]["active_generation"] == 1
+
+
+@pytest.mark.asyncio
+async def test_readiness_reports_ready_model_governance_with_full_configuration() -> None:
+    inference = ReadinessInference(
+        HealthStatus(
+            backend="ollama",
+            backend_reachable=True,
+            chat_model_ready=True,
+            embedding_model_ready=True,
+            latency_ms=1.0,
+        )
+    )
+    database, embeddings = _healthy_runtime()
+    application = FastAPI()
+    settings = Settings(
+        environment=Environment.TEST,
+        api_token=SecretStr(_AUTH_VALUE),
+        web_search_enabled=False,
+        model_evolution_enabled=True,
+        model_evolution_active_chat_digest="f" * 64,
+        model_evolution_scoring_policy_version="bench-v2",
+        model_evolution_benchmarking_policy_version="suite-v1",
+        model_evolution_minimum_sample_size=500,
+        model_evolution_promotion_quality_threshold=0.91,
+        model_evolution_rollback_quality_threshold=0.81,
+        model_evolution_last_rollback_target_alias="rollback-candidate",
+        model_evolution_last_rollback_target_digest="e" * 64,
+    )
+    _configure_auth(application, settings)
+    application.state.database = database
+    application.state.inference = inference
+    application.state.embeddings = embeddings
+    application.include_router(health.router)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application),
+        base_url="http://testserver",
+    ) as client:
+        readiness = await client.get("/v1/readyz", headers=_AUTH_HEADERS)
+
+    assert readiness.status_code == 200
+    governance = readiness.json()["dependencies"]["model_governance"]
+    assert governance["enabled"] is True
+    assert governance["status"] == "ready"
+    assert governance["healthy"] is True
+    assert governance["reason"] is None
+    assert governance["candidate_registry"]["active_alias"] == "qwen3:4b-instruct"
+    assert governance["candidate_registry"]["active_digest"] == "f" * 64
+    assert governance["candidate_registry"]["active_generation"] == 1
+    assert governance["candidate_registry"]["rollback_target_alias"] == "rollback-candidate"
+    assert governance["candidate_registry"]["rollback_target_digest"] == "e" * 64
+    assert governance["benchmarks"]["scoring_policy_version"] == "bench-v2"
+    assert governance["benchmarks"]["benchmarking_policy_version"] == "suite-v1"
+
+
+@pytest.mark.asyncio
+async def test_readiness_reports_disabled_executor_security_dependency() -> None:
+    inference = ReadinessInference(
+        HealthStatus(
+            backend="ollama",
+            backend_reachable=True,
+            chat_model_ready=True,
+            embedding_model_ready=True,
+            latency_ms=1.0,
+        )
+    )
+    database, embeddings = _healthy_runtime()
+    application = FastAPI()
+    settings = Settings(
+        environment=Environment.TEST,
+        api_token=SecretStr(_AUTH_VALUE),
+        web_search_enabled=False,
+    )
+    _configure_auth(application, settings)
+    application.state.database = database
+    application.state.inference = inference
+    application.state.embeddings = embeddings
+    application.include_router(health.router)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application),
+        base_url="http://testserver",
+    ) as client:
+        readiness = await client.get("/v1/readyz", headers=_AUTH_HEADERS)
+
+    assert readiness.status_code == 200
+    assert readiness.json()["status"] == "ready"
+    assert readiness.json()["dependencies"]["executor_security"] == {
+        "enabled": False,
+        "status": "disabled_by_default",
+        "healthy": True,
+        "reason": "executor security review not yet approved",
+        "approved_kinds": [
+            "evolution.proposal.generate",
+            "evolution.proposal.execute",
+            "execution.sandbox.echo",
+        ],
+        "requires_approval": True,
+    }
+
+
+@pytest.mark.asyncio
+async def test_readiness_reports_enabled_executor_security_dependency_after_review() -> None:
+    inference = ReadinessInference(
+        HealthStatus(
+            backend="ollama",
+            backend_reachable=True,
+            chat_model_ready=True,
+            embedding_model_ready=True,
+            latency_ms=1.0,
+        )
+    )
+    database, embeddings = _healthy_runtime()
+    application = FastAPI()
+    settings = Settings(
+        environment=Environment.TEST,
+        api_token=SecretStr(_AUTH_VALUE),
+        web_search_enabled=False,
+        executor_security_review_approved=True,
+    )
+    _configure_auth(application, settings)
+    application.state.database = database
+    application.state.inference = inference
+    application.state.embeddings = embeddings
+    application.include_router(health.router)
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=application),
+        base_url="http://testserver",
+    ) as client:
+        readiness = await client.get("/v1/readyz", headers=_AUTH_HEADERS)
+
+    assert readiness.status_code == 200
+    assert readiness.json()["status"] == "ready"
+    assert readiness.json()["dependencies"]["executor_security"] == {
+        "enabled": True,
+        "status": "ready",
+        "healthy": True,
+        "reason": None,
+        "approved_kinds": [
+            "evolution.proposal.generate",
+            "evolution.proposal.execute",
+            "execution.sandbox.echo",
+        ],
+        "requires_approval": True,
+    }

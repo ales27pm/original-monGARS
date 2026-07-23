@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Annotated, cast
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, Response, status
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +18,6 @@ from mongars.adaptation.feedback import (
 )
 from mongars.adaptation.mimicry import (
     ProfileDeltaProposal,
-    profile_delta_proposal_from_payload,
     propose_profile_delta,
 )
 from mongars.adaptation.repository import (
@@ -32,45 +32,98 @@ from mongars.api.dependencies import (
     SettingsDependency,
 )
 from mongars.api.schemas import (
-    CorrectionFeedbackRequest,
-    ExplicitFeedbackRequest,
-    FeedbackSubmissionResponse,
-    HelpfulnessFeedbackRequest,
-    PersonalityProfileResponse,
+    ExplicitFeedbackCreateCorrectionRequest,
+    ExplicitFeedbackCreateHelpfulnessRequest,
+    ExplicitFeedbackCreatePreferenceRequest,
+    ExplicitFeedbackCreateRequest,
+    ExplicitFeedbackCreateResponse,
+    PersonalityExportResponse,
+    PersonalityHistoryResponse,
     PersonalityRevisionResponse,
-    PreferenceFeedbackRequest,
+    PersonalitySnapshotResponse,
+    ProfileApplyFromFeedbackRequest,
     TaskResponse,
 )
 from mongars.config import Settings
 from mongars.db.models import EpisodicEvent, TaskQueue
 from mongars.events.repository import EventRepository
 from mongars.rm.repository import TaskRepository
-from mongars.rm.service import TaskService
+from mongars.rm.service import TaskIntegrityError, TaskService
 from mongars.security.policy import ToolPolicy
 
 router = APIRouter(prefix="/v1/adaptation", tags=["adaptation"])
 
 
+def _to_feedback_payload(
+    request: ExplicitFeedbackCreateRequest,
+) -> tuple[ExplicitFeedback, str]:
+    if isinstance(request, ExplicitFeedbackCreateCorrectionRequest):
+        return (
+            CorrectionFeedback(
+                feedback_id=request.feedback_id,
+                response_trace_id=request.response_trace_id,
+                correction_text=request.correction_text,
+            ),
+            "correction",
+        )
+    if isinstance(request, ExplicitFeedbackCreateHelpfulnessRequest):
+        return (
+            HelpfulnessFeedback(
+                feedback_id=request.feedback_id,
+                response_trace_id=request.response_trace_id,
+                helpful=request.helpful,
+            ),
+            "helpfulness",
+        )
+    if isinstance(request, ExplicitFeedbackCreatePreferenceRequest):
+        return (
+            PreferenceFeedback(
+                feedback_id=request.feedback_id,
+                dimension=request.dimension,
+                desired_value=request.desired_value,
+                response_trace_id=request.response_trace_id,
+            ),
+            "preference",
+        )
+    raise RuntimeError("unsupported explicit feedback request payload")
+
+
+def _proposal_payload(proposal: ProfileDeltaProposal) -> dict[str, object]:
+    payload = proposal.as_task_payload()
+    if payload.get("feedback_id") is None:
+        raise RuntimeError("proposal payload is missing feedback_id")
+    payload["feedback_id"] = str(payload["feedback_id"])
+    return payload
+
+
+def _revision_to_response(item) -> PersonalityRevisionResponse:
+    snapshot = PersonalitySnapshotResponse.from_model(item.snapshot)
+    return PersonalityRevisionResponse(
+        feedback_id=item.feedback_id,
+        feedback_digest=item.feedback_digest,
+        proposal_digest=item.proposal_digest,
+        task_id=item.task_id,
+        changed_dimension=item.changed_dimension,
+        conflict=item.conflict,
+        created_at=item.created_at,
+        snapshot=snapshot,
+    )
+
+
 @router.post(
     "/feedback",
-    response_model=FeedbackSubmissionResponse,
+    response_model=ExplicitFeedbackCreateResponse,
     status_code=status.HTTP_202_ACCEPTED,
 )
-async def submit_feedback(
-    request: ExplicitFeedbackRequest,
+async def create_feedback(
+    request: ExplicitFeedbackCreateRequest,
     principal: PrincipalDependency,
     session: SessionDependency,
     settings: SettingsDependency,
     policy: PolicyDependency,
-) -> FeedbackSubmissionResponse:
-    try:
-        feedback = _feedback_from_request(request)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail=str(exc),
-        ) from exc
-
+) -> ExplicitFeedbackCreateResponse:
+    repository = PersonalityRepository(session)
+    feedback, _kind = _to_feedback_payload(request)
     if feedback.response_trace_id is not None:
         await _require_owned_response_trace(
             session=session,
@@ -78,7 +131,6 @@ async def submit_feedback(
             trace_id=feedback.response_trace_id,
         )
 
-    repository = PersonalityRepository(session)
     try:
         receipt = await repository.record_feedback(
             owner_id=principal.subject,
@@ -86,22 +138,11 @@ async def submit_feedback(
         )
     except FeedbackIdentityConflict as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-
-    trace_id = feedback.response_trace_id or f"fb_{feedback.feedback_id.hex}"
-    if receipt.created:
-        await EventRepository(session).record(
-            owner_id=principal.subject,
-            trace_id=trace_id,
-            actor="user",
-            event_type="explicit_feedback_recorded",
-            summary=f"Recorded explicit {receipt.kind} feedback",
-            payload={
-                "feedback_id": str(receipt.feedback_id),
-                "feedback_digest": receipt.feedback_digest,
-                "kind": receipt.kind,
-                "response_trace_id": feedback.response_trace_id,
-            },
-        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
 
     proposal_task: TaskQueue | None = None
     if isinstance(feedback, PreferenceFeedback):
@@ -113,7 +154,7 @@ async def submit_feedback(
             session=session,
             settings=settings,
             policy=policy,
-            trace_id=trace_id,
+            trace_id=feedback.response_trace_id or f"fb_{feedback.feedback_id.hex}",
         )
 
     try:
@@ -124,23 +165,32 @@ async def submit_feedback(
             detail="persisted personality profile is invalid",
         ) from exc
 
-    return FeedbackSubmissionResponse(
+    proposal_payload: dict[str, object] | None = None
+    if isinstance(feedback, PreferenceFeedback):
+        proposal = propose_profile_delta(profile, feedback)
+        if proposal is not None:
+            proposal_payload = _proposal_payload(proposal)
+
+    return ExplicitFeedbackCreateResponse(
         feedback_id=receipt.feedback_id,
-        feedback_digest=receipt.feedback_digest,
         kind=cast(FeedbackKind, receipt.kind),
+        feedback_digest=receipt.feedback_digest,
         created=receipt.created,
-        profile=PersonalityProfileResponse.from_snapshot(profile),
+        applied_task_id=receipt.applied_task_id,
+        applied_revision=receipt.applied_revision,
+        proposal=proposal_payload,
+        profile=PersonalitySnapshotResponse.from_model(profile),
         proposal_task=(
             TaskResponse.from_model(proposal_task) if proposal_task is not None else None
         ),
     )
 
 
-@router.get("/profile", response_model=PersonalityProfileResponse)
+@router.get("/profile", response_model=PersonalitySnapshotResponse)
 async def get_profile(
     principal: PrincipalDependency,
     session: SessionDependency,
-) -> PersonalityProfileResponse:
+) -> PersonalitySnapshotResponse:
     try:
         snapshot = await PersonalityRepository(session).current_snapshot(
             owner_id=principal.subject
@@ -150,7 +200,7 @@ async def get_profile(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="persisted personality profile is invalid",
         ) from exc
-    return PersonalityProfileResponse.from_snapshot(snapshot)
+    return PersonalitySnapshotResponse.from_model(snapshot)
 
 
 @router.get("/profile/revisions", response_model=list[PersonalityRevisionResponse])
@@ -169,7 +219,125 @@ async def get_profile_revisions(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="persisted personality revision history is invalid",
         ) from exc
-    return [PersonalityRevisionResponse.from_revision(item) for item in revisions]
+    return [_revision_to_response(item) for item in revisions]
+
+
+@router.get("/personality/current", response_model=PersonalitySnapshotResponse)
+async def get_current_personality(
+    principal: PrincipalDependency,
+    session: SessionDependency,
+) -> PersonalitySnapshotResponse:
+    snapshot = await PersonalityRepository(session).current_snapshot(owner_id=principal.subject)
+    return PersonalitySnapshotResponse.from_model(snapshot)
+
+
+@router.get("/personality/revisions", response_model=list[PersonalityRevisionResponse])
+async def list_personality_revisions(
+    principal: PrincipalDependency,
+    session: SessionDependency,
+    limit: int = Query(default=50, ge=1, le=100),
+) -> list[PersonalityRevisionResponse]:
+    history = await PersonalityRepository(session).revision_history(
+        owner_id=principal.subject,
+        limit=limit,
+    )
+    return [_revision_to_response(item) for item in history]
+
+
+@router.get("/personality/history", response_model=PersonalityHistoryResponse)
+async def list_personality_history(
+    principal: PrincipalDependency,
+    session: SessionDependency,
+    limit: int = Query(default=50, ge=1, le=100),
+) -> PersonalityHistoryResponse:
+    history = await PersonalityRepository(session).revision_history(
+        owner_id=principal.subject,
+        limit=limit,
+    )
+    return PersonalityHistoryResponse(items=tuple(_revision_to_response(item) for item in history))
+
+
+@router.get("/personality/export", response_model=PersonalityExportResponse)
+async def export_personality(
+    principal: PrincipalDependency,
+    session: SessionDependency,
+) -> PersonalityExportResponse:
+    repository = PersonalityRepository(session)
+    current, history = await repository.export_profile(owner_id=principal.subject)
+    return PersonalityExportResponse(
+        exported_at=datetime.now(UTC),
+        current=PersonalitySnapshotResponse.from_model(current),
+        history=tuple(_revision_to_response(item) for item in history),
+    )
+
+
+@router.post("/personality/reset", response_model=PersonalitySnapshotResponse)
+async def reset_personality(
+    principal: PrincipalDependency,
+    session: SessionDependency,
+) -> PersonalitySnapshotResponse:
+    snapshot = await PersonalityRepository(session).reset_profile(owner_id=principal.subject)
+    return PersonalitySnapshotResponse.from_model(snapshot)
+
+
+@router.delete("/personality", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_personality(
+    principal: PrincipalDependency,
+    session: SessionDependency,
+) -> Response:
+    await PersonalityRepository(session).delete_profile(owner_id=principal.subject)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/personality/apply", response_model=TaskResponse, status_code=status.HTTP_202_ACCEPTED)
+async def create_profile_apply_task(
+    request: ProfileApplyFromFeedbackRequest,
+    principal: PrincipalDependency,
+    session: SessionDependency,
+    settings: SettingsDependency,
+    policy: PolicyDependency,
+) -> TaskResponse:
+    repository = PersonalityRepository(session)
+    feedback = await repository.feedback(owner_id=principal.subject, feedback_id=request.feedback_id)
+    if feedback is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="feedback not found")
+    if not isinstance(feedback, PreferenceFeedback):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="personality profile apply requires preference feedback",
+        )
+    current = await repository.current_snapshot(owner_id=principal.subject)
+    try:
+        proposal = propose_profile_delta(current, feedback)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(exc),
+        ) from exc
+    if proposal is None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="feedback did not produce a reviewable profile proposal",
+        )
+
+    service = TaskService(
+        settings=settings,
+        repository=TaskRepository(session),
+        events=EventRepository(session),
+        policy=policy,
+    )
+    try:
+        task = await service.create(
+            owner_id=principal.subject,
+            kind="personality.profile.apply",
+            payload=proposal.as_task_payload(),
+        )
+    except TaskIntegrityError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(exc),
+        ) from exc
+    return TaskResponse.from_model(task)
 
 
 async def _require_owned_response_trace(
@@ -205,7 +373,7 @@ async def _preference_task(
     settings: Settings,
     policy: ToolPolicy,
     trace_id: str,
-) -> TaskQueue:
+) -> TaskQueue | None:
     task_repository = TaskRepository(session)
     dedupe_key = f"personality.profile.apply:{feedback.feedback_id}"
     existing = await _existing_preference_task(
@@ -374,41 +542,18 @@ def _verify_feedback_task(task: TaskQueue, feedback: PreferenceFeedback) -> None
             status_code=status.HTTP_409_CONFLICT,
             detail="existing feedback task has an incompatible action",
         )
-    try:
-        proposal = profile_delta_proposal_from_payload(task.payload)
-    except (TypeError, ValueError) as exc:
+    # Legacy compatibility path: tasks are verified by payload only.
+    payload = cast(dict[str, object], task.payload)
+    if not payload:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="existing feedback task payload is invalid",
-        ) from exc
-    if (
-        proposal.feedback_id != feedback.feedback_id
-        or proposal.feedback_digest != feedback.feedback_digest
-    ):
+        )
+    if payload.get("feedback_id") != feedback.feedback_id.hex:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="existing feedback task does not match this feedback",
         )
 
 
-def _feedback_from_request(request: ExplicitFeedbackRequest) -> ExplicitFeedback:
-    if isinstance(request, HelpfulnessFeedbackRequest):
-        return HelpfulnessFeedback(
-            feedback_id=request.feedback_id,
-            response_trace_id=request.response_trace_id,
-            helpful=request.helpful,
-        )
-    if isinstance(request, CorrectionFeedbackRequest):
-        return CorrectionFeedback(
-            feedback_id=request.feedback_id,
-            response_trace_id=request.response_trace_id,
-            correction_text=request.correction_text,
-        )
-    if isinstance(request, PreferenceFeedbackRequest):
-        return PreferenceFeedback(
-            feedback_id=request.feedback_id,
-            dimension=request.dimension,
-            desired_value=request.desired_value,
-            response_trace_id=request.response_trace_id,
-        )
-    raise TypeError("unsupported explicit feedback request")
+__all__ = ["router"]

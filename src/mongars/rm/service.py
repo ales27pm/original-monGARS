@@ -11,7 +11,7 @@ from uuid import UUID
 from mongars.config import Settings
 from mongars.db.models import TaskQueue
 from mongars.events.repository import EventRepository
-from mongars.rm.contracts import TASK_POLICY_KEYS, normalize_task_payload
+from mongars.rm.contracts import task_operation_contract, normalize_task_payload
 from mongars.rm.repository import TaskRepository
 from mongars.security.policy import PolicyDecision, ToolPolicy
 
@@ -78,8 +78,7 @@ class TaskService:
         dedupe_key: str | None = None,
     ) -> TaskQueue:
         normalized_payload = normalize_task_payload(kind, payload)
-        tool, action = TASK_POLICY_KEYS[kind]
-        policy_result = self._policy.evaluate(tool, action)
+        policy_result = self._policy.evaluate(*task_operation_contract(kind).policy_key)
         if policy_result.decision is PolicyDecision.DENY or policy_result.classification is None:
             raise PermissionError(policy_result.reason)
 
@@ -175,10 +174,10 @@ class TaskService:
     ) -> None:
         try:
             normalized_payload = normalize_task_payload(task.kind, task.payload)
-            tool, action = TASK_POLICY_KEYS[task.kind]
+            policy_key = task_operation_contract(task.kind).policy_key
         except (KeyError, ValueError) as exc:
             raise TaskIntegrityError("task kind or payload is no longer valid") from exc
-        policy_result = self._policy.evaluate(tool, action)
+        policy_result = self._policy.evaluate(*policy_key)
         if policy_result.decision is PolicyDecision.DENY or policy_result.classification is None:
             raise TaskIntegrityError("task action is no longer permitted by policy")
         if policy_result.classification.value != task.risk_level:

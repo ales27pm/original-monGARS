@@ -1,0 +1,3 @@
+services:
+  ollama:
+    image: ${MONGARS_OLLAMA_IMAGE_JETSON:-${MONGARS_OLLAMA_IMAGE}}

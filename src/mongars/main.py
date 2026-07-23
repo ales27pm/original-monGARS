@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import Response
 
-from mongars.api.routes import adaptation, chat, documents, health, memory, tasks, web
+from mongars.api.routes import adaptation, chat, documents, health, memory, p2p, tasks, web
 from mongars.config import Environment, Settings, get_settings
 from mongars.db.session import Database
 from mongars.embeddings.ollama import OllamaEmbeddingProvider
@@ -22,7 +22,7 @@ from mongars.inference.base import InferenceBackend
 from mongars.inference.ollama import OllamaBackend
 from mongars.logging import configure_logging
 from mongars.security.auth import BearerTokenAuth
-from mongars.security.runtime_policy import build_control_plane_policy
+from mongars.security.policy import ActionClassification, ToolPolicy
 from mongars.web_search import SearxNGSearchBackend
 
 logger = logging.getLogger(__name__)
@@ -94,7 +94,24 @@ def create_app(
     application.state.embeddings = runtime_embeddings
     application.state.web_search = runtime_web_search
     application.state.auth = BearerTokenAuth(runtime_settings, subject=runtime_settings.owner_id)
-    application.state.policy = build_control_plane_policy()
+    application.state.policy = ToolPolicy(
+        {
+            ("memory", "search"): ActionClassification.READ_ONLY,
+            ("memory", "note.create"): ActionClassification.LOCAL_MUTATION,
+            ("memory", "reindex"): ActionClassification.LOCAL_MUTATION,
+            ("document", "ingest"): ActionClassification.LOCAL_MUTATION,
+            ("personality", "profile.apply"): ActionClassification.LOCAL_MUTATION,
+            ("evolution", "proposal.generate"): ActionClassification.READ_ONLY,
+            ("evolution", "proposal.execute"): ActionClassification.LOCAL_MUTATION,
+            ("execution", "sandbox.echo"): ActionClassification.LOCAL_MUTATION,
+            ("model", "candidate.register"): ActionClassification.LOCAL_MUTATION,
+            ("model", "benchmark.suite.create"): ActionClassification.LOCAL_MUTATION,
+            ("model", "benchmark.run"): ActionClassification.LOCAL_MUTATION,
+            ("model", "promotion.propose"): ActionClassification.LOCAL_MUTATION,
+            ("model", "activation.apply"): ActionClassification.LOCAL_MUTATION,
+            ("model", "rollback.apply"): ActionClassification.LOCAL_MUTATION,
+        }
+    )
 
     application.add_middleware(
         RequestBodyLimitMiddleware,
@@ -140,6 +157,7 @@ def create_app(
     application.include_router(health.router)
     application.include_router(chat.router)
     application.include_router(adaptation.router)
+    application.include_router(p2p.router)
     application.include_router(tasks.router)
     application.include_router(documents.router)
     application.include_router(memory.router)

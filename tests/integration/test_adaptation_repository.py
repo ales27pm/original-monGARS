@@ -207,3 +207,27 @@ async def test_stale_profile_proposal_fails_closed_and_owner_state_is_isolated()
         await _clean_owner(database, owner_a)
         await _clean_owner(database, owner_b)
         await database.close()
+
+
+@pytest.mark.asyncio
+async def test_stored_feedback_can_be_loaded_as_typed_contract() -> None:
+    owner_id = f"adaptation-feedback-load-{uuid4().hex}"
+    settings = Settings(environment=Environment.TEST, database_url=DATABASE_URL)
+    database = Database(settings)
+    feedback = PreferenceFeedback(
+        feedback_id=uuid4(),
+        dimension="humor",
+        desired_value=0.3,
+    )
+
+    try:
+        async with database.session_factory() as session, session.begin():
+            repository = PersonalityRepository(session)
+            await repository.record_feedback(owner_id=owner_id, feedback=feedback)
+        async with database.session_factory() as session, session.begin():
+            repository = PersonalityRepository(session)
+            loaded = await repository.feedback(owner_id=owner_id, feedback_id=feedback.feedback_id)
+            assert loaded == feedback
+    finally:
+        await _clean_owner(database, owner_id)
+        await database.close()

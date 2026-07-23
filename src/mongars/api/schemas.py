@@ -5,23 +5,123 @@ from datetime import datetime
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from mongars.adaptation.repository import PersonalityRevision
 from mongars.db.models import MemoryDocument, TaskQueue
 from mongars.memory.repository import MemoryHit
-from mongars.orchestrator.personality import PersonalityDimension, PersonalitySnapshot
+from mongars.rm.contracts import TaskKind
+from mongars.orchestrator.personality import (
+    PersonalityDimension,
+    PersonalityPreference,
+    PersonalitySource,
+    PersonalitySnapshot,
+)
 from mongars.rm.payload_view import (
     TaskPayloadPage as RenderedTaskPayloadPage,
 )
 from mongars.rm.payload_view import (
     TaskPayloadSummary as RenderedTaskPayloadSummary,
 )
-from mongars.rm.payload_view import summarize_task_payload
+from mongars.rm.payload_view import (
+    summarize_task_payload,
+)
 
 
 class ApiModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class P2PMetadataRequest(ApiModel):
+    schema_version: str = Field(min_length=1, max_length=64)
+    sensitivity: str = Field(min_length=1, max_length=64)
+    retention_class: str = Field(min_length=1, max_length=64)
+    trust: str = Field(min_length=1, max_length=32)
+    source_time: datetime
+
+
+class P2PPairRequest(ApiModel):
+    peer_id: str = Field(min_length=1, max_length=255)
+    key_id: str = Field(min_length=1, max_length=255)
+    signing_secret_b64: str = Field(min_length=8, max_length=2048)
+
+
+class P2PPairResponse(ApiModel):
+    owner_id: str
+    peer_id: str
+    key_id: str
+    paired: bool = True
+
+
+class P2PStatusResponse(ApiModel):
+    owner_id: str
+    paired_peers: int
+    paired_keys: int
+    quarantine_item_count: int
+    quarantine_used_bytes: int
+
+
+class P2PEnvelopeExportRequest(ApiModel):
+    envelope_id: str = Field(min_length=1, max_length=255)
+    sender_peer_id: str = Field(min_length=1, max_length=255)
+    recipient_peer_id: str = Field(min_length=1, max_length=255)
+    sender_key_id: str = Field(min_length=1, max_length=255)
+    issued_at: datetime
+    expires_at: datetime
+    nonce: str = Field(min_length=1, max_length=255)
+    payload: dict[str, Any]
+    schema_version: str = Field(min_length=1, max_length=64)
+    sensitivity: str = Field(min_length=1, max_length=64)
+    retention_class: str = Field(min_length=1, max_length=64)
+    trust: str = Field(min_length=1, max_length=32)
+    source_time: datetime
+    signing_secret_b64: str = Field(min_length=8, max_length=2048)
+
+
+class P2PEnvelopeExportResponse(ApiModel):
+    envelope_id: str
+    sender_peer_id: str
+    recipient_peer_id: str
+    owner_id: str
+    sender_key_id: str
+    issued_at: datetime
+    expires_at: datetime
+    nonce: str
+    protocol_version: int
+    schema_version: str
+    sensitivity: str
+    retention_class: str
+    trust: str
+    source_time: datetime
+    payload_sha256: str
+    payload_bytes: str
+    signature: str
+
+
+class P2PEnvelopeImportRequest(ApiModel):
+    envelope_id: str = Field(min_length=1, max_length=255)
+    sender_peer_id: str = Field(min_length=1, max_length=255)
+    recipient_peer_id: str = Field(min_length=1, max_length=255)
+    owner_id: str = Field(min_length=1, max_length=255)
+    sender_key_id: str = Field(min_length=1, max_length=255)
+    issued_at: datetime
+    expires_at: datetime
+    nonce: str = Field(min_length=1, max_length=255)
+    payload: dict[str, Any]
+    schema_version: str = Field(min_length=1, max_length=64)
+    sensitivity: str = Field(min_length=1, max_length=64)
+    retention_class: str = Field(min_length=1, max_length=64)
+    trust: str = Field(min_length=1, max_length=32)
+    source_time: datetime
+    signature: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    payload_bytes: str | None = None
+
+
+class P2PEnvelopeImportResponse(ApiModel):
+    envelope_id: str
+    envelope_sha256: str
+    reviewed: bool
+    created: bool
+    quarantine_item_count: int
 
 
 class ChatRequest(ApiModel):
@@ -54,50 +154,42 @@ class ChatResponse(ApiModel):
     sources: list[WebSource]
 
 
-class HelpfulnessFeedbackRequest(ApiModel):
-    kind: Literal["helpfulness"]
-    feedback_id: UUID
-    response_trace_id: str = Field(pattern=r"^trc_[0-9a-f]{32}$")
-    helpful: StrictBool
+class TaskCreateRequest(ApiModel):
+    kind: TaskKind
+    payload: dict[str, Any]
+    priority: int = Field(default=100, ge=0, le=1000)
+    max_attempts: int = Field(default=3, ge=1, le=10)
+    dedupe_key: str | None = Field(default=None, min_length=1, max_length=255)
 
 
-class CorrectionFeedbackRequest(ApiModel):
-    kind: Literal["correction"]
+class ExplicitFeedbackCreateCorrectionRequest(ApiModel):
+    kind: Annotated[Literal["correction"], "correction"]
     feedback_id: UUID
     response_trace_id: str = Field(pattern=r"^trc_[0-9a-f]{32}$")
     correction_text: str = Field(min_length=1, max_length=2_000)
 
 
-class PreferenceFeedbackRequest(ApiModel):
-    kind: Literal["preference"]
+class ExplicitFeedbackCreateHelpfulnessRequest(ApiModel):
+    kind: Annotated[Literal["helpfulness"], "helpfulness"]
     feedback_id: UUID
+    response_trace_id: str = Field(pattern=r"^trc_[0-9a-f]{32}$")
+    helpful: bool
+
+
+class ExplicitFeedbackCreatePreferenceRequest(ApiModel):
+    kind: Annotated[Literal["preference"], "preference"]
+    feedback_id: UUID
+    response_trace_id: str | None = Field(default=None, pattern=r"^trc_[0-9a-f]{32}$")
     dimension: PersonalityDimension
     desired_value: float = Field(ge=0.0, le=1.0)
-    response_trace_id: str | None = Field(
-        default=None,
-        pattern=r"^trc_[0-9a-f]{32}$",
-    )
-
-    @field_validator("desired_value", mode="before")
-    @classmethod
-    def reject_boolean_desired_value(cls, value: object) -> object:
-        if isinstance(value, bool):
-            raise ValueError("desired_value must not be a boolean")
-        return value
 
 
-ExplicitFeedbackRequest = Annotated[
-    HelpfulnessFeedbackRequest | CorrectionFeedbackRequest | PreferenceFeedbackRequest,
+ExplicitFeedbackCreateRequest = Annotated[
+    ExplicitFeedbackCreateCorrectionRequest
+    | ExplicitFeedbackCreateHelpfulnessRequest
+    | ExplicitFeedbackCreatePreferenceRequest,
     Field(discriminator="kind"),
 ]
-
-
-class TaskCreateRequest(ApiModel):
-    kind: str = Field(min_length=1, max_length=100)
-    payload: dict[str, Any]
-    priority: int = Field(default=100, ge=0, le=1000)
-    max_attempts: int = Field(default=3, ge=1, le=10)
-    dedupe_key: str | None = Field(default=None, min_length=1, max_length=255)
 
 
 class TaskApproveRequest(ApiModel):
@@ -138,70 +230,6 @@ class TaskResponse(ApiModel):
             created_at=task.created_at,
             updated_at=task.updated_at,
         )
-
-
-class PersonalityPreferenceResponse(ApiModel):
-    dimension: PersonalityDimension
-    value: float
-    confidence: float
-    evidence_count: int
-
-
-class PersonalityProfileResponse(ApiModel):
-    revision: int
-    source: Literal["approved_profile", "default", "explicit_feedback"]
-    profile_digest: str | None
-    preferences: list[PersonalityPreferenceResponse]
-
-    @classmethod
-    def from_snapshot(cls, snapshot: PersonalitySnapshot) -> PersonalityProfileResponse:
-        return cls(
-            revision=snapshot.revision,
-            source=snapshot.source,
-            profile_digest=snapshot.profile_digest,
-            preferences=[
-                PersonalityPreferenceResponse(
-                    dimension=preference.dimension,
-                    value=preference.value,
-                    confidence=preference.confidence,
-                    evidence_count=preference.evidence_count,
-                )
-                for preference in snapshot.preferences
-            ],
-        )
-
-
-class PersonalityRevisionResponse(ApiModel):
-    profile: PersonalityProfileResponse
-    feedback_id: UUID
-    feedback_digest: str
-    proposal_digest: str
-    task_id: UUID
-    changed_dimension: PersonalityDimension
-    conflict: bool
-    created_at: datetime
-
-    @classmethod
-    def from_revision(cls, revision: PersonalityRevision) -> PersonalityRevisionResponse:
-        return cls(
-            profile=PersonalityProfileResponse.from_snapshot(revision.snapshot),
-            feedback_id=revision.feedback_id,
-            feedback_digest=revision.feedback_digest,
-            proposal_digest=revision.proposal_digest,
-            task_id=revision.task_id,
-            changed_dimension=revision.changed_dimension,
-            conflict=revision.conflict,
-            created_at=revision.created_at,
-        )
-
-
-class FeedbackSubmissionResponse(ApiModel):
-    feedback_id: UUID
-    feedback_digest: str
-    kind: Literal["correction", "helpfulness", "preference"]
-    created: bool
-    profile: PersonalityProfileResponse
-    proposal_task: TaskResponse | None
 
 
 class DocumentUploadResponse(ApiModel):
@@ -291,6 +319,77 @@ class TaskDetailResponse(TaskResponse):
             action_digest=task.action_digest,
         )
 
+
+class ExplicitFeedbackCreateResponse(ApiModel):
+    feedback_id: UUID
+    kind: Literal["correction", "helpfulness", "preference"]
+    feedback_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    created: bool
+    applied_task_id: UUID | None
+    applied_revision: int | None
+    proposal: dict[str, Any] | None = None
+
+
+class ProfileApplyFromFeedbackRequest(ApiModel):
+    feedback_id: UUID
+
+
+class PersonalityPreferenceResponse(ApiModel):
+    dimension: PersonalityDimension
+    value: float
+    confidence: float
+    evidence_count: int
+
+    @classmethod
+    def from_model(cls, preference: PersonalityPreference) -> PersonalityPreferenceResponse:
+        return cls(
+            dimension=preference.dimension,
+            value=preference.value,
+            confidence=preference.confidence,
+            evidence_count=preference.evidence_count,
+        )
+
+
+class PersonalitySnapshotResponse(ApiModel):
+    revision: int
+    source: PersonalitySource
+    profile_digest: str | None = None
+    schema_version: str = "personality-v1"
+    preferences: tuple[PersonalityPreferenceResponse, ...]
+
+    @classmethod
+    def from_model(cls, snapshot: PersonalitySnapshot) -> PersonalitySnapshotResponse:
+        return cls(
+            revision=snapshot.revision,
+            source=snapshot.source,
+            profile_digest=snapshot.profile_digest,
+            schema_version=snapshot.schema_version,
+            preferences=tuple(
+                PersonalityPreferenceResponse.from_model(preference)
+                for preference in snapshot.preferences
+            ),
+        )
+
+
+class PersonalityRevisionResponse(ApiModel):
+    feedback_id: UUID
+    feedback_digest: str
+    proposal_digest: str
+    task_id: UUID
+    changed_dimension: PersonalityDimension
+    conflict: bool
+    created_at: datetime
+    snapshot: PersonalitySnapshotResponse
+
+
+class PersonalityHistoryResponse(ApiModel):
+    items: tuple[PersonalityRevisionResponse, ...]
+
+
+class PersonalityExportResponse(ApiModel):
+    exported_at: datetime
+    current: PersonalitySnapshotResponse
+    history: tuple[PersonalityRevisionResponse, ...]
 
 class MemorySearchRequest(ApiModel):
     query: str = Field(min_length=1, max_length=32_000)
