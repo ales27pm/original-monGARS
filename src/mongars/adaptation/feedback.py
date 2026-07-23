@@ -18,7 +18,6 @@ from mongars.orchestrator.personality import (
 
 
 type FeedbackKind = Literal["correction", "helpfulness", "preference"]
-type ExplicitFeedback = CorrectionFeedback | HelpfulnessFeedback | PreferenceFeedback
 
 _MAX_CORRECTION_CHARACTERS = 2_000
 _MAX_CORRECTION_BYTES = 8_000
@@ -131,6 +130,9 @@ class CorrectionFeedback:
     @property
     def feedback_digest(self) -> str:
         return _feedback_digest(self.as_dict())
+
+
+type ExplicitFeedback = CorrectionFeedback | HelpfulnessFeedback | PreferenceFeedback
 
 
 def _validate_feedback_id(value: object) -> UUID:
