@@ -22,6 +22,9 @@ type FeedbackKind = Literal["correction", "helpfulness", "preference"]
 _MAX_CORRECTION_CHARACTERS = 2_000
 _MAX_CORRECTION_BYTES = 6_000
 _TRACE_ID = re.compile(r"^trc_[0-9a-f]{32}$")
+_FORBIDDEN_CONTROLS = frozenset(
+    chr(code) for code in (*range(0x00, 0x09), 0x0B, 0x0C, *range(0x0E, 0x20), 0x7F)
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,6 +159,8 @@ def _normalize_correction_text(value: object) -> str:
         raise TypeError("correction_text must be a string")
     normalized = unicodedata.normalize("NFC", value)
     normalized = normalized.replace("\r\n", "\n").replace("\r", "\n").strip()
+    if any(character in _FORBIDDEN_CONTROLS for character in normalized):
+        raise ValueError("correction_text contains binary control characters")
     if not normalized:
         raise ValueError("correction_text must contain non-whitespace text")
     if len(normalized) > _MAX_CORRECTION_CHARACTERS:
