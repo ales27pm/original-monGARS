@@ -20,7 +20,7 @@ from mongars.orchestrator.personality import (
 type FeedbackKind = Literal["correction", "helpfulness", "preference"]
 
 _MAX_CORRECTION_CHARACTERS = 2_000
-_MAX_CORRECTION_BYTES = 8_000
+_MAX_CORRECTION_BYTES = 6_000
 _TRACE_ID = re.compile(r"^trc_[0-9a-f]{32}$")
 
 
