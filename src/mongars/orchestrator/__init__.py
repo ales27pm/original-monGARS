@@ -5,6 +5,7 @@ from mongars.orchestrator.cognitive_context import (
 from mongars.orchestrator.cortex import ChatResult, Cortex
 from mongars.orchestrator.emotion import AffectLabel, AffectSignal, AffectSource
 from mongars.orchestrator.personality import (
+    PERSONALITY_DIMENSIONS,
     PersonalityDimension,
     PersonalityPreference,
     PersonalitySnapshot,
@@ -18,6 +19,7 @@ __all__ = [
     "ChatResult",
     "Cortex",
     "MAX_COGNITIVE_CONTEXT_BYTES",
+    "PERSONALITY_DIMENSIONS",
     "PersonalityDimension",
     "PersonalityPreference",
     "PersonalitySnapshot",
