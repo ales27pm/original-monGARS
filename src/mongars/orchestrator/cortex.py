@@ -18,6 +18,9 @@ from mongars.ids import uuid7
 from mongars.inference.base import ChatMessage, InferenceBackend, InferenceResponseError
 from mongars.memory.repository import MemoryHit, MemoryRepository
 from mongars.memory.service import MemoryService
+from mongars.orchestrator.cognitive_context import serialize_cognitive_context
+from mongars.orchestrator.emotion import AffectSignal
+from mongars.orchestrator.personality import PersonalitySnapshot
 from mongars.prompting import (
     ASSISTANT_PRIMER_TOKENS,
     CORTEX_SYSTEM_PROMPT,
@@ -118,9 +121,15 @@ class Cortex:
         inference: InferenceBackend,
         embeddings: EmbeddingService,
         session: AsyncSession,
+        personality: PersonalitySnapshot | None = None,
+        affect: AffectSignal | None = None,
         web_search: SearxNGSearchBackend | None = None,
         utc_now: Callable[[], datetime] | None = None,
     ) -> None:
+        if personality is not None and not isinstance(personality, PersonalitySnapshot):
+            raise TypeError("personality must be a PersonalitySnapshot")
+        if affect is not None and not isinstance(affect, AffectSignal):
+            raise TypeError("affect must be an AffectSignal")
         self._settings = settings
         self._inference = inference
         self._session = session
@@ -131,6 +140,8 @@ class Cortex:
             repository=self._memory_repository,
             embeddings=embeddings,
         )
+        self._personality = personality
+        self._affect = affect
         self._utc_now = utc_now or (lambda: datetime.now(UTC))
         self._web_search = web_search
 
@@ -171,6 +182,8 @@ class Cortex:
             history=(),
             hits=(),
             web_results=(),
+            personality=self._personality,
+            affect=self._affect,
         )
 
         resolved_session_id = session_id or uuid7()
@@ -283,6 +296,8 @@ class Cortex:
             history=history,
             hits=hits,
             web_results=web_results,
+            personality=self._personality,
+            affect=self._affect,
         )
         if web_search_requested and not envelope.included_web_results:
             return await self._complete_without_inference(
@@ -316,6 +331,8 @@ class Cortex:
                 history=history,
                 hits=hits,
                 web_results=envelope.included_web_results,
+                personality=self._personality,
+                affect=self._affect,
                 response_correction=True,
             )
             if not retry_envelope.included_web_results:
@@ -417,6 +434,8 @@ def build_prompt_envelope(
     hits: Sequence[MemoryHit],
     history: Sequence[ConversationMessage] = (),
     web_results: Sequence[WebSearchResult] = (),
+    personality: PersonalitySnapshot | None = None,
+    affect: AffectSignal | None = None,
     response_correction: bool = False,
 ) -> PromptEnvelope:
     """Pack retrieval into a conservative upper bound on the model prompt budget.
@@ -432,13 +451,23 @@ def build_prompt_envelope(
         ChatMessage(role="system", content=system_prompt),
         ChatMessage(role="user", content=user_message),
     )
-    base_tokens = prompt_token_upper_bound(minimum_messages)
-    if base_tokens > prompt_budget:
-        raise ValueError("message exceeds the configured model context budget")
-
+    cognitive_context = serialize_cognitive_context(
+        personality=personality,
+        affect=affect,
+    )
     base_messages: tuple[ChatMessage, ...] = minimum_messages
+    if cognitive_context is not None:
+        base_messages = _append_tool_message(base_messages, cognitive_context)
     if response_correction:
         base_messages = _append_tool_message(base_messages, _WEB_RESPONSE_CORRECTION)
+
+    base_tokens = prompt_token_upper_bound(base_messages)
+    if base_tokens > prompt_budget:
+        if cognitive_context is None and not response_correction:
+            raise ValueError("message exceeds the configured model context budget")
+        raise ValueError(
+            "message and mandatory prompt context exceed the configured model context budget"
+        )
 
     history_data: list[dict[str, object]] = []
     included_history: list[ConversationMessage] = []
