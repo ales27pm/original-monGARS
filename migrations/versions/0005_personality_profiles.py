@@ -50,8 +50,7 @@ def upgrade() -> None:
             name="ck_explicit_feedback_digest",
         ),
         sa.CheckConstraint(
-            "response_trace_id IS NULL OR "
-            "response_trace_id ~ '^trc_[0-9a-f]{32}$'",
+            "response_trace_id IS NULL OR response_trace_id ~ '^trc_[0-9a-f]{32}$'",
             name="ck_explicit_feedback_trace",
         ),
         sa.CheckConstraint(

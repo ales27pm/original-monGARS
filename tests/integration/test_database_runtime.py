@@ -632,7 +632,7 @@ def test_embedding_provenance_migration_round_trip_preserves_trusted_data() -> N
             revision_after_rejected_downgrade = connection.execute(
                 "SELECT version_num FROM alembic_version"
             ).fetchone()
-            assert revision_after_rejected_downgrade == ("0004_embedding_provenance",)
+            assert revision_after_rejected_downgrade == ("0005_personality_profiles",)
             connection.execute("DELETE FROM memory_chunks WHERE id = %s", (new_chunk_id,))
 
         command.downgrade(config, "0003_document_staging")

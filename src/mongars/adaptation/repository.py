@@ -479,9 +479,7 @@ def _revision_from_record(record: PersonalityProfileRevisionRecord) -> Personali
     )
     try:
         changed_dimension = cast(PersonalityDimension, record.changed_dimension)
-        if changed_dimension not in {
-            preference.dimension for preference in snapshot.preferences
-        }:
+        if changed_dimension not in {preference.dimension for preference in snapshot.preferences}:
             raise ValueError("changed dimension is missing from the revision snapshot")
     except ValueError as exc:
         raise PersonalityProfileDataError("persisted revision metadata is invalid") from exc

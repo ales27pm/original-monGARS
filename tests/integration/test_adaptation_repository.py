@@ -71,14 +71,10 @@ async def _clean_owner(database: Database, owner_id: str) -> None:
             )
         )
         await session.execute(
-            delete(PersonalityProfileRecord).where(
-                PersonalityProfileRecord.owner_id == owner_id
-            )
+            delete(PersonalityProfileRecord).where(PersonalityProfileRecord.owner_id == owner_id)
         )
         await session.execute(
-            delete(ExplicitFeedbackRecord).where(
-                ExplicitFeedbackRecord.owner_id == owner_id
-            )
+            delete(ExplicitFeedbackRecord).where(ExplicitFeedbackRecord.owner_id == owner_id)
         )
 
 
