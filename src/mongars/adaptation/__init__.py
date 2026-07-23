@@ -16,12 +16,12 @@ from mongars.adaptation.mimicry import (
 )
 
 __all__ = [
-    "CorrectionFeedback",
     "EMPTY_PROFILE_DIGEST",
+    "MAX_PROFILE_DELTA_BYTES",
+    "CorrectionFeedback",
     "ExplicitFeedback",
     "FeedbackKind",
     "HelpfulnessFeedback",
-    "MAX_PROFILE_DELTA_BYTES",
     "PreferenceFeedback",
     "ProfileDeltaProposal",
     "personality_profile_digest",

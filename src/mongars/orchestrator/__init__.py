@@ -13,13 +13,13 @@ from mongars.orchestrator.personality import (
 )
 
 __all__ = [
+    "MAX_COGNITIVE_CONTEXT_BYTES",
+    "PERSONALITY_DIMENSIONS",
     "AffectLabel",
     "AffectSignal",
     "AffectSource",
     "ChatResult",
     "Cortex",
-    "MAX_COGNITIVE_CONTEXT_BYTES",
-    "PERSONALITY_DIMENSIONS",
     "PersonalityDimension",
     "PersonalityPreference",
     "PersonalitySnapshot",

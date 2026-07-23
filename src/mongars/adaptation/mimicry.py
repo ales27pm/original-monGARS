@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Sequence
 from uuid import UUID
 
 from mongars.adaptation.feedback import (
@@ -99,9 +99,7 @@ class ProfileDeltaProposal:
                 raise TypeError("profile proposal previous value is invalid")
             if self.previous.dimension != self.changed_dimension:
                 raise ValueError("profile proposal previous dimension does not match its delta")
-        expected_conflict = (
-            self.previous is not None and self.previous.value != self.proposed.value
-        )
+        expected_conflict = self.previous is not None and self.previous.value != self.proposed.value
         if self.conflict is not expected_conflict:
             raise ValueError("profile proposal conflict flag does not match its values")
         target_preference = next(
@@ -186,9 +184,7 @@ def propose_profile_delta(
     )
     conflict = previous is not None and previous.value != feedback.desired_value
     evidence_count = (
-        min(previous.evidence_count + 1, 10_000)
-        if previous is not None and not conflict
-        else 1
+        min(previous.evidence_count + 1, 10_000) if previous is not None and not conflict else 1
     )
     proposed = PersonalityPreference(
         dimension=feedback.dimension,

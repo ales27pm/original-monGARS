@@ -16,7 +16,6 @@ from mongars.orchestrator.personality import (
     PersonalityDimension,
 )
 
-
 type FeedbackKind = Literal["correction", "helpfulness", "preference"]
 
 _MAX_CORRECTION_CHARACTERS = 2_000

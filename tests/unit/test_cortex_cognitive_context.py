@@ -122,10 +122,13 @@ def test_neutral_cognitive_values_preserve_the_absent_context_behavior() -> None
         affect=AffectSignal.unavailable(),
     )
 
-    assert serialize_cognitive_context(
-        personality=PersonalitySnapshot.default(),
-        affect=AffectSignal.unavailable(),
-    ) is None
+    assert (
+        serialize_cognitive_context(
+            personality=PersonalitySnapshot.default(),
+            affect=AffectSignal.unavailable(),
+        )
+        is None
+    )
     assert neutral == baseline
 
 
@@ -221,7 +224,9 @@ async def test_cortex_accepts_immutable_snapshots_without_logging_the_context() 
         json.loads(message.content) for message in inference.messages if message.role == "tool"
     ]
     assert [payload["kind"] for payload in tool_payloads] == ["cognitive_context"]
-    assert all("cognitive_context" not in json.dumps(record, default=str) for record in events.records)
+    assert all(
+        "cognitive_context" not in json.dumps(record, default=str) for record in events.records
+    )
 
 
 def test_cortex_rejects_mutable_or_untyped_cognitive_values() -> None:

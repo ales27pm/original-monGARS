@@ -11,7 +11,6 @@ from mongars.orchestrator._cognitive_validation import (
     validate_unit_interval,
 )
 
-
 type AffectLabel = Literal[
     "anger",
     "disgust",

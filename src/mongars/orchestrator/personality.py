@@ -10,7 +10,6 @@ from mongars.orchestrator._cognitive_validation import (
     validate_unit_interval,
 )
 
-
 type PersonalityDimension = Literal[
     "brevity",
     "directness",

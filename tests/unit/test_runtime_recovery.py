@@ -32,9 +32,7 @@ async def test_checked_in_script_bundles_runtime_recovery_without_exposing_sourc
     assert 'document.getElementById("memory-reindex-recovery")' in script.text
     assert "state.defaultSummaryText" in script.text
     assert "state.refreshing" in script.text
-    assert ".innerHTML" not in (WEB_STATIC_ROOT / "runtime-recovery.js").read_text(
-        encoding="utf-8"
-    )
+    assert ".innerHTML" not in (WEB_STATIC_ROOT / "runtime-recovery.js").read_text(encoding="utf-8")
 
 
 @pytest.mark.asyncio
