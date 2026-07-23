@@ -123,6 +123,13 @@ class PersonalityProfileApplyPayload(StrictPayload):
     target_profile_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     target_revision: int = Field(ge=1, le=2_147_483_647)
 
+    @field_validator("conflict", mode="before")
+    @classmethod
+    def require_boolean_conflict(cls, value: object) -> object:
+        if not isinstance(value, bool):
+            raise ValueError("personality conflict must be a boolean")
+        return value
+
     @field_validator("expected_revision", "target_revision", mode="before")
     @classmethod
     def reject_boolean_revisions(cls, value: object) -> object:
