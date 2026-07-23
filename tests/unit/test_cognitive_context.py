@@ -39,6 +39,28 @@ def test_affect_rejects_invalid_confidence(confidence: object) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("label", "source", "confidence", "evidence_count"),
+    [
+        ("joy", "unknown", 0.5, 1),
+        ("unknown", "explicit_feedback", 0.0, 0),
+    ],
+)
+def test_unknown_affect_provenance_is_reserved_for_unavailable(
+    label: object,
+    source: object,
+    confidence: float,
+    evidence_count: int,
+) -> None:
+    with pytest.raises(ValueError, match="reserved"):
+        AffectSignal(
+            label=label,  # type: ignore[arg-type]
+            confidence=confidence,
+            source=source,  # type: ignore[arg-type]
+            evidence_count=evidence_count,
+        )
+
+
 def test_reviewed_model_affect_requires_pinned_identity() -> None:
     signal = AffectSignal(
         label="neutral",
