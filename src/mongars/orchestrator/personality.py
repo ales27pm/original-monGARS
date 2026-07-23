@@ -21,7 +21,7 @@ type PersonalityDimension = Literal[
 ]
 type PersonalitySource = Literal["approved_profile", "default", "explicit_feedback"]
 
-_PERSONALITY_DIMENSIONS = frozenset(
+PERSONALITY_DIMENSIONS = frozenset(
     {"brevity", "directness", "formality", "humor", "initiative", "technical_depth"}
 )
 _PERSONALITY_SOURCES = frozenset({"approved_profile", "default", "explicit_feedback"})
@@ -38,7 +38,7 @@ class PersonalityPreference:
     evidence_count: int
 
     def __post_init__(self) -> None:
-        if self.dimension not in _PERSONALITY_DIMENSIONS:
+        if self.dimension not in PERSONALITY_DIMENSIONS:
             raise ValueError("unsupported personality dimension")
         object.__setattr__(
             self,
@@ -89,7 +89,7 @@ class PersonalitySnapshot:
             raise ValueError("personality revision must be a nonnegative integer")
         if not isinstance(self.preferences, tuple):
             raise ValueError("personality preferences must be an immutable tuple")
-        if len(self.preferences) > len(_PERSONALITY_DIMENSIONS):
+        if len(self.preferences) > len(PERSONALITY_DIMENSIONS):
             raise ValueError("personality snapshot has too many preferences")
         if any(not isinstance(item, PersonalityPreference) for item in self.preferences):
             raise ValueError("personality preferences contain an invalid value")
@@ -134,6 +134,7 @@ class PersonalitySnapshot:
 
 
 __all__ = [
+    "PERSONALITY_DIMENSIONS",
     "PersonalityDimension",
     "PersonalityPreference",
     "PersonalitySnapshot",
