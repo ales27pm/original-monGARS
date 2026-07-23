@@ -12,6 +12,7 @@ from mongars.adaptation.mimicry import (
     MAX_PROFILE_DELTA_BYTES,
     ProfileDeltaProposal,
     personality_profile_digest,
+    profile_delta_proposal_from_payload,
     propose_profile_delta,
 )
 from mongars.adaptation.repository import (
@@ -41,5 +42,6 @@ __all__ = [
     "ProfileApplication",
     "ProfileDeltaProposal",
     "personality_profile_digest",
+    "profile_delta_proposal_from_payload",
     "propose_profile_delta",
 ]
