@@ -2,22 +2,22 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from mongars.adaptation.repository import PersonalityRevision
 from mongars.db.models import MemoryDocument, TaskQueue
 from mongars.memory.repository import MemoryHit
+from mongars.orchestrator.personality import PersonalitySnapshot
 from mongars.rm.payload_view import (
     TaskPayloadPage as RenderedTaskPayloadPage,
 )
 from mongars.rm.payload_view import (
     TaskPayloadSummary as RenderedTaskPayloadSummary,
 )
-from mongars.rm.payload_view import (
-    summarize_task_payload,
-)
+from mongars.rm.payload_view import summarize_task_payload
 
 
 class ApiModel(BaseModel):
@@ -52,6 +52,54 @@ class ChatResponse(ApiModel):
         "context_limited",
     ]
     sources: list[WebSource]
+
+
+type PersonalityDimensionValue = Literal[
+    "brevity",
+    "directness",
+    "formality",
+    "humor",
+    "initiative",
+    "technical_depth",
+]
+
+
+class HelpfulnessFeedbackRequest(ApiModel):
+    kind: Literal["helpfulness"]
+    feedback_id: UUID
+    response_trace_id: str = Field(pattern=r"^trc_[0-9a-f]{32}$")
+    helpful: bool
+
+
+class CorrectionFeedbackRequest(ApiModel):
+    kind: Literal["correction"]
+    feedback_id: UUID
+    response_trace_id: str = Field(pattern=r"^trc_[0-9a-f]{32}$")
+    correction_text: str = Field(min_length=1, max_length=2_000)
+
+
+class PreferenceFeedbackRequest(ApiModel):
+    kind: Literal["preference"]
+    feedback_id: UUID
+    dimension: PersonalityDimensionValue
+    desired_value: float = Field(ge=0.0, le=1.0)
+    response_trace_id: str | None = Field(
+        default=None,
+        pattern=r"^trc_[0-9a-f]{32}$",
+    )
+
+    @field_validator("desired_value", mode="before")
+    @classmethod
+    def reject_boolean_desired_value(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("desired_value must not be a boolean")
+        return value
+
+
+ExplicitFeedbackRequest = Annotated[
+    HelpfulnessFeedbackRequest | CorrectionFeedbackRequest | PreferenceFeedbackRequest,
+    Field(discriminator="kind"),
+]
 
 
 class TaskCreateRequest(ApiModel):
@@ -100,6 +148,70 @@ class TaskResponse(ApiModel):
             created_at=task.created_at,
             updated_at=task.updated_at,
         )
+
+
+class PersonalityPreferenceResponse(ApiModel):
+    dimension: PersonalityDimensionValue
+    value: float
+    confidence: float
+    evidence_count: int
+
+
+class PersonalityProfileResponse(ApiModel):
+    revision: int
+    source: Literal["approved_profile", "default", "explicit_feedback"]
+    profile_digest: str | None
+    preferences: list[PersonalityPreferenceResponse]
+
+    @classmethod
+    def from_snapshot(cls, snapshot: PersonalitySnapshot) -> PersonalityProfileResponse:
+        return cls(
+            revision=snapshot.revision,
+            source=snapshot.source,
+            profile_digest=snapshot.profile_digest,
+            preferences=[
+                PersonalityPreferenceResponse(
+                    dimension=preference.dimension,
+                    value=preference.value,
+                    confidence=preference.confidence,
+                    evidence_count=preference.evidence_count,
+                )
+                for preference in snapshot.preferences
+            ],
+        )
+
+
+class PersonalityRevisionResponse(ApiModel):
+    profile: PersonalityProfileResponse
+    feedback_id: UUID
+    feedback_digest: str
+    proposal_digest: str
+    task_id: UUID
+    changed_dimension: PersonalityDimensionValue
+    conflict: bool
+    created_at: datetime
+
+    @classmethod
+    def from_revision(cls, revision: PersonalityRevision) -> PersonalityRevisionResponse:
+        return cls(
+            profile=PersonalityProfileResponse.from_snapshot(revision.snapshot),
+            feedback_id=revision.feedback_id,
+            feedback_digest=revision.feedback_digest,
+            proposal_digest=revision.proposal_digest,
+            task_id=revision.task_id,
+            changed_dimension=revision.changed_dimension,
+            conflict=revision.conflict,
+            created_at=revision.created_at,
+        )
+
+
+class FeedbackSubmissionResponse(ApiModel):
+    feedback_id: UUID
+    feedback_digest: str
+    kind: Literal["correction", "helpfulness", "preference"]
+    created: bool
+    profile: PersonalityProfileResponse
+    proposal_task: TaskResponse | None
 
 
 class DocumentUploadResponse(ApiModel):
