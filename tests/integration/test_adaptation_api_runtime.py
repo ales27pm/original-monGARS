@@ -38,7 +38,7 @@ if not _RAW_DATABASE_URL:
 
 pytestmark = pytest.mark.integration
 _PRIVATE_CORRECTION = "This correction must remain outside autobiographical event payloads."
-_TRACE_ID = "trc_" + ("a" * 32)
+_MISSING_TRACE_ID = "trc_" + ("a" * 32)
 
 
 def _psycopg_url(value: str) -> str:
@@ -178,13 +178,33 @@ async def test_feedback_task_worker_and_chat_profile_flow() -> None:
                 "preferences": [],
             }
 
+            missing_trace = await client.post(
+                "/v1/adaptation/feedback",
+                headers=headers,
+                json={
+                    "kind": "correction",
+                    "feedback_id": str(uuid4()),
+                    "response_trace_id": _MISSING_TRACE_ID,
+                    "correction_text": _PRIVATE_CORRECTION,
+                },
+            )
+            assert missing_trace.status_code == 404
+
+            initial_chat = await client.post(
+                "/v1/chat",
+                headers=headers,
+                json={"message": "Give me an initial response."},
+            )
+            assert initial_chat.status_code == 200
+            response_trace_id = initial_chat.json()["trace_id"]
+
             correction = await client.post(
                 "/v1/adaptation/feedback",
                 headers=headers,
                 json={
                     "kind": "correction",
                     "feedback_id": str(uuid4()),
-                    "response_trace_id": _TRACE_ID,
+                    "response_trace_id": response_trace_id,
                     "correction_text": _PRIVATE_CORRECTION,
                 },
             )
