@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, status
 
+from mongars.adaptation.repository import (
+    PersonalityProfileDataError,
+    PersonalityRepository,
+)
 from mongars.api.dependencies import (
     EmbeddingsDependency,
     InferenceDependency,
@@ -28,11 +32,22 @@ async def chat(
     embeddings: EmbeddingsDependency,
     web_search: WebSearchDependency,
 ) -> ChatResponse:
+    try:
+        personality = await PersonalityRepository(session).current_snapshot(
+            owner_id=principal.subject
+        )
+    except PersonalityProfileDataError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="persisted personality profile is invalid",
+        ) from exc
+
     cortex = Cortex(
         settings=settings,
         inference=inference,
         embeddings=embeddings,
         session=session,
+        personality=personality,
         web_search=web_search,
     )
     try:
