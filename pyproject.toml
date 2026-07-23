@@ -43,7 +43,7 @@ documents = []
 
 [project.scripts]
 mongars-api = "mongars.main:run"
-mongars-worker = "mongars.rm.worker:run"
+mongars-worker = "mongars.rm.adaptation_worker:run"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mongars"]

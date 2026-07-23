@@ -4,7 +4,18 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
+
+from mongars.adaptation.mimicry import profile_delta_proposal_from_payload
+from mongars.orchestrator.personality import PersonalityDimension
 
 
 class StrictPayload(BaseModel):
@@ -69,11 +80,66 @@ class DocumentIngestPayload(StrictPayload):
         return value.astimezone(UTC)
 
 
+class PersonalityPreferencePayload(StrictPayload):
+    dimension: PersonalityDimension
+    value: float = Field(ge=0.0, le=1.0)
+    confidence: float = Field(ge=0.0, le=1.0)
+    evidence_count: int = Field(ge=1, le=10_000)
+
+    @field_validator("value", "confidence", mode="before")
+    @classmethod
+    def reject_boolean_scores(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("personality scores must not be booleans")
+        return value
+
+    @field_validator("evidence_count", mode="before")
+    @classmethod
+    def reject_boolean_evidence(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("personality evidence_count must not be a boolean")
+        return value
+
+
+class PersonalityProfileApplyPayload(StrictPayload):
+    changed_dimension: PersonalityDimension
+    conflict: bool
+    expected_profile_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_revision: int = Field(ge=0, le=2_147_483_646)
+    feedback_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    feedback_id: UUID
+    previous: PersonalityPreferencePayload | None
+    proposed: PersonalityPreferencePayload
+    target_preferences: list[PersonalityPreferencePayload] = Field(min_length=1, max_length=6)
+    target_profile_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    target_revision: int = Field(ge=1, le=2_147_483_647)
+
+    @field_validator("conflict", mode="before")
+    @classmethod
+    def require_boolean_conflict(cls, value: object) -> object:
+        if not isinstance(value, bool):
+            raise ValueError("personality conflict must be a boolean")
+        return value
+
+    @field_validator("expected_revision", "target_revision", mode="before")
+    @classmethod
+    def reject_boolean_revisions(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("personality revisions must not be booleans")
+        return value
+
+    @model_validator(mode="after")
+    def validate_profile_delta(self) -> PersonalityProfileApplyPayload:
+        profile_delta_proposal_from_payload(self.model_dump(mode="json"))
+        return self
+
+
 _PAYLOAD_ADAPTERS: dict[str, TypeAdapter[Any]] = {
     "memory.search": TypeAdapter(MemorySearchPayload),
     "memory.note.create": TypeAdapter(MemoryNoteCreatePayload),
     "memory.reindex": TypeAdapter(MemoryReindexPayload),
     "document.ingest": TypeAdapter(DocumentIngestPayload),
+    "personality.profile.apply": TypeAdapter(PersonalityProfileApplyPayload),
 }
 
 TASK_POLICY_KEYS: dict[str, tuple[str, str]] = {
@@ -81,6 +147,7 @@ TASK_POLICY_KEYS: dict[str, tuple[str, str]] = {
     "memory.note.create": ("memory", "note.create"),
     "memory.reindex": ("memory", "reindex"),
     "document.ingest": ("document", "ingest"),
+    "personality.profile.apply": ("personality", "profile.apply"),
 }
 
 
@@ -104,6 +171,8 @@ __all__ = [
     "MemoryNoteCreatePayload",
     "MemoryReindexPayload",
     "MemorySearchPayload",
+    "PersonalityPreferencePayload",
+    "PersonalityProfileApplyPayload",
     "UnsupportedTaskKind",
     "ValidationError",
     "normalize_task_payload",

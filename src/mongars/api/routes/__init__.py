@@ -1,3 +1,3 @@
-from mongars.api.routes import chat, health, memory, tasks
+from mongars.api.routes import adaptation, chat, documents, health, memory, tasks, web
 
-__all__ = ["chat", "health", "memory", "tasks"]
+__all__ = ["adaptation", "chat", "documents", "health", "memory", "tasks", "web"]
