@@ -229,6 +229,7 @@ async def test_feedback_task_worker_and_chat_profile_flow() -> None:
             assert accepted["proposal_task"]["kind"] == "personality.profile.apply"
             assert accepted["proposal_task"]["risk_level"] == "local_mutation"
             assert accepted["proposal_task"]["status"] == "waiting_approval"
+            assert accepted["proposal_task"]["priority"] == 250
             task_id = UUID(accepted["proposal_task"]["id"])
 
             duplicate = await client.post(
@@ -318,8 +319,16 @@ async def test_feedback_task_worker_and_chat_profile_flow() -> None:
         cognitive = next(
             payload for payload in tool_payloads if payload["kind"] == "cognitive_context"
         )
-        assert cognitive["personality"]["revision"] == 1
-        assert cognitive["personality"]["preferences"][0]["dimension"] == "technical_depth"
+        personality = cognitive["personality"]
+        assert personality["revision"] == 1
+        assert personality["profile_digest"] is not None
+        preference = personality["preferences"][0]
+        assert preference == {
+            "dimension": "technical_depth",
+            "value": 0.85,
+            "confidence": 1.0,
+            "evidence_count": 1,
+        }
 
         async with database.session_factory() as session, session.begin():
             events = list(
