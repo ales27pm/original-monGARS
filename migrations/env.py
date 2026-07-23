@@ -6,6 +6,11 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from mongars.adaptation.models import (
+    ExplicitFeedbackRecord,
+    PersonalityProfileRecord,
+    PersonalityProfileRevisionRecord,
+)
 from mongars.db.models import Base
 
 config = context.config
@@ -13,6 +18,13 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
+# Import every separately packaged model before exposing metadata. This prevents a later
+# autogenerate run from misclassifying the adaptation tables as unmanaged database objects.
+_REGISTERED_ADAPTATION_MODELS = (
+    ExplicitFeedbackRecord,
+    PersonalityProfileRecord,
+    PersonalityProfileRevisionRecord,
+)
 target_metadata = Base.metadata
 
 
