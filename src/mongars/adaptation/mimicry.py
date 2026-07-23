@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from typing import cast
 from uuid import UUID
 
 from mongars.adaptation.feedback import (
@@ -23,6 +24,22 @@ from mongars.orchestrator.personality import (
 )
 
 MAX_PROFILE_DELTA_BYTES = 8_192
+_PROFILE_DELTA_KEYS = frozenset(
+    {
+        "changed_dimension",
+        "conflict",
+        "expected_profile_digest",
+        "expected_revision",
+        "feedback_digest",
+        "feedback_id",
+        "previous",
+        "proposed",
+        "target_preferences",
+        "target_profile_digest",
+        "target_revision",
+    }
+)
+_PREFERENCE_KEYS = frozenset({"confidence", "dimension", "evidence_count", "value"})
 
 
 def personality_profile_digest(preferences: Sequence[PersonalityPreference]) -> str:
@@ -222,7 +239,119 @@ def propose_profile_delta(
     )
 
 
-def _canonical_payload(payload: dict[str, object]) -> bytes:
+def profile_delta_proposal_from_payload(
+    payload: Mapping[str, object],
+) -> ProfileDeltaProposal:
+    """Rehydrate and fully validate one canonical approval-task payload."""
+
+    if not isinstance(payload, Mapping) or set(payload) != _PROFILE_DELTA_KEYS:
+        raise ValueError("profile task payload fields are invalid")
+
+    feedback_id_value = payload["feedback_id"]
+    if not isinstance(feedback_id_value, str):
+        raise ValueError("profile task feedback_id must be a canonical UUID string")
+    try:
+        feedback_id = UUID(feedback_id_value)
+    except ValueError as exc:
+        raise ValueError("profile task feedback_id must be a canonical UUID string") from exc
+    if str(feedback_id) != feedback_id_value:
+        raise ValueError("profile task feedback_id must be a canonical UUID string")
+
+    feedback_digest = _payload_digest(payload["feedback_digest"], "feedback_digest")
+    expected_digest = _payload_digest(
+        payload["expected_profile_digest"],
+        "expected_profile_digest",
+    )
+    target_digest = _payload_digest(
+        payload["target_profile_digest"],
+        "target_profile_digest",
+    )
+    expected_revision = _payload_int(payload["expected_revision"], "expected_revision")
+    target_revision = _payload_int(payload["target_revision"], "target_revision")
+    changed_dimension = _payload_dimension(payload["changed_dimension"])
+    conflict = _payload_bool(payload["conflict"], "conflict")
+
+    previous_value = payload["previous"]
+    previous = (
+        None
+        if previous_value is None
+        else _preference_from_task_payload(previous_value, field="previous")
+    )
+    proposed = _preference_from_task_payload(payload["proposed"], field="proposed")
+
+    target_values = payload["target_preferences"]
+    if not isinstance(target_values, list):
+        raise ValueError("profile task target_preferences must be a JSON array")
+    target_preferences = tuple(
+        _preference_from_task_payload(item, field="target_preferences")
+        for item in target_values
+    )
+    target_snapshot = PersonalitySnapshot(
+        revision=target_revision,
+        source="explicit_feedback",
+        preferences=target_preferences,
+        profile_digest=target_digest,
+    )
+    proposal = ProfileDeltaProposal(
+        feedback_id=feedback_id,
+        feedback_digest=feedback_digest,
+        expected_revision=expected_revision,
+        expected_profile_digest=expected_digest,
+        target_snapshot=target_snapshot,
+        changed_dimension=changed_dimension,
+        previous=previous,
+        proposed=proposed,
+        conflict=conflict,
+    )
+    if _canonical_payload(dict(payload)) != _canonical_payload(proposal.as_task_payload()):
+        raise ValueError("profile task payload is not in canonical form")
+    return proposal
+
+
+def _payload_digest(value: object, field: str) -> str:
+    try:
+        return validate_sha256_digest(value, field=f"profile task {field}")
+    except ValueError as exc:
+        raise ValueError(f"profile task {field} is invalid") from exc
+
+
+def _payload_int(value: object, field: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise ValueError(f"profile task {field} must be a nonnegative integer")
+    return value
+
+
+def _payload_bool(value: object, field: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValueError(f"profile task {field} must be a boolean")
+    return value
+
+
+def _payload_dimension(value: object) -> PersonalityDimension:
+    if not isinstance(value, str) or value not in PERSONALITY_DIMENSIONS:
+        raise ValueError("profile task changed_dimension is unsupported")
+    return cast(PersonalityDimension, value)
+
+
+def _preference_from_task_payload(
+    value: object,
+    *,
+    field: str,
+) -> PersonalityPreference:
+    if not isinstance(value, Mapping) or set(value) != _PREFERENCE_KEYS:
+        raise ValueError(f"profile task {field} preference fields are invalid")
+    try:
+        return PersonalityPreference(
+            dimension=cast(PersonalityDimension, value["dimension"]),
+            value=cast(float, value["value"]),
+            confidence=cast(float, value["confidence"]),
+            evidence_count=cast(int, value["evidence_count"]),
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"profile task {field} preference is invalid") from exc
+
+
+def _canonical_payload(payload: Mapping[str, object]) -> bytes:
     return json.dumps(
         payload,
         ensure_ascii=False,
@@ -237,5 +366,6 @@ __all__ = [
     "MAX_PROFILE_DELTA_BYTES",
     "ProfileDeltaProposal",
     "personality_profile_digest",
+    "profile_delta_proposal_from_payload",
     "propose_profile_delta",
 ]
