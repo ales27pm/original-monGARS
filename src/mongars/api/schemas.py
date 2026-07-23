@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator
 from mongars.adaptation.repository import PersonalityRevision
 from mongars.db.models import MemoryDocument, TaskQueue
 from mongars.memory.repository import MemoryHit
-from mongars.orchestrator.personality import PersonalitySnapshot
+from mongars.orchestrator.personality import PersonalityDimension, PersonalitySnapshot
 from mongars.rm.payload_view import (
     TaskPayloadPage as RenderedTaskPayloadPage,
 )
@@ -54,16 +54,6 @@ class ChatResponse(ApiModel):
     sources: list[WebSource]
 
 
-type PersonalityDimensionValue = Literal[
-    "brevity",
-    "directness",
-    "formality",
-    "humor",
-    "initiative",
-    "technical_depth",
-]
-
-
 class HelpfulnessFeedbackRequest(ApiModel):
     kind: Literal["helpfulness"]
     feedback_id: UUID
@@ -81,7 +71,7 @@ class CorrectionFeedbackRequest(ApiModel):
 class PreferenceFeedbackRequest(ApiModel):
     kind: Literal["preference"]
     feedback_id: UUID
-    dimension: PersonalityDimensionValue
+    dimension: PersonalityDimension
     desired_value: float = Field(ge=0.0, le=1.0)
     response_trace_id: str | None = Field(
         default=None,
@@ -151,7 +141,7 @@ class TaskResponse(ApiModel):
 
 
 class PersonalityPreferenceResponse(ApiModel):
-    dimension: PersonalityDimensionValue
+    dimension: PersonalityDimension
     value: float
     confidence: float
     evidence_count: int
@@ -187,7 +177,7 @@ class PersonalityRevisionResponse(ApiModel):
     feedback_digest: str
     proposal_digest: str
     task_id: UUID
-    changed_dimension: PersonalityDimensionValue
+    changed_dimension: PersonalityDimension
     conflict: bool
     created_at: datetime
 
