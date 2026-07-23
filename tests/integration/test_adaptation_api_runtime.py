@@ -315,7 +315,9 @@ async def test_feedback_task_worker_and_chat_profile_flow() -> None:
             for message in inference.message_calls[-1]
             if message.role == "tool"
         ]
-        cognitive = next(payload for payload in tool_payloads if payload["kind"] == "cognitive_context")
+        cognitive = next(
+            payload for payload in tool_payloads if payload["kind"] == "cognitive_context"
+        )
         assert cognitive["personality"]["revision"] == 1
         assert cognitive["personality"]["preferences"][0]["dimension"] == "technical_depth"
 
