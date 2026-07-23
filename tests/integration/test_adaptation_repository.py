@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from uuid import uuid4
 
@@ -115,7 +116,27 @@ async def test_feedback_is_idempotent_and_reviewed_profile_application_is_atomic
 
             current = await repository.current_snapshot(owner_id=owner_id)
             proposal = propose_profile_delta(current, feedback)
+            forged_base = propose_profile_delta(
+                current,
+                PreferenceFeedback(
+                    feedback_id=feedback_id,
+                    dimension="brevity",
+                    desired_value=0.2,
+                ),
+            )
             assert proposal is not None
+            assert forged_base is not None
+            forged = replace(
+                forged_base,
+                feedback_digest=feedback.feedback_digest,
+            )
+            with pytest.raises(PersonalityProfileConflict, match="persisted explicit preference"):
+                await repository.apply_proposal(
+                    owner_id=owner_id,
+                    proposal=forged,
+                    task_id=uuid4(),
+                )
+
             application = await repository.apply_proposal(
                 owner_id=owner_id,
                 proposal=proposal,
