@@ -119,7 +119,7 @@ def test_correction_feedback_enforces_character_and_utf8_byte_limits() -> None:
         CorrectionFeedback(
             feedback_id=uuid4(),
             response_trace_id=_TRACE_ID,
-            correction_text="界" * 2_000,
+            correction_text="😀" * 2_000,
         )
 
 
