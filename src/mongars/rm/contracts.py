@@ -15,6 +15,7 @@ from pydantic import (
 )
 
 from mongars.adaptation.mimicry import profile_delta_proposal_from_payload
+from mongars.orchestrator.personality import PersonalityDimension
 
 
 class StrictPayload(BaseModel):
@@ -79,18 +80,8 @@ class DocumentIngestPayload(StrictPayload):
         return value.astimezone(UTC)
 
 
-type PersonalityDimensionValue = Literal[
-    "brevity",
-    "directness",
-    "formality",
-    "humor",
-    "initiative",
-    "technical_depth",
-]
-
-
 class PersonalityPreferencePayload(StrictPayload):
-    dimension: PersonalityDimensionValue
+    dimension: PersonalityDimension
     value: float = Field(ge=0.0, le=1.0)
     confidence: float = Field(ge=0.0, le=1.0)
     evidence_count: int = Field(ge=1, le=10_000)
@@ -111,7 +102,7 @@ class PersonalityPreferencePayload(StrictPayload):
 
 
 class PersonalityProfileApplyPayload(StrictPayload):
-    changed_dimension: PersonalityDimensionValue
+    changed_dimension: PersonalityDimension
     conflict: bool
     expected_profile_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     expected_revision: int = Field(ge=0, le=2_147_483_646)
