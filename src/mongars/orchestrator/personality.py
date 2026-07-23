@@ -99,7 +99,9 @@ class PersonalitySnapshot:
                 raise ValueError("default personality must be empty revision zero")
         else:
             if self.revision < 1 or not ordered:
-                raise ValueError("reviewed personality requires a positive revision and preferences")
+                raise ValueError(
+                    "reviewed personality requires a positive revision and preferences"
+                )
             if not isinstance(self.profile_digest, str) or _PROFILE_DIGEST.fullmatch(
                 self.profile_digest
             ) is None:
