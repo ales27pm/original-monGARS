@@ -41,7 +41,7 @@ from mongars.api.schemas import (
     TaskResponse,
 )
 from mongars.config import Settings
-from mongars.db.models import TaskQueue
+from mongars.db.models import EpisodicEvent, TaskQueue
 from mongars.events.repository import EventRepository
 from mongars.rm.repository import TaskRepository
 from mongars.rm.service import TaskService
@@ -69,6 +69,13 @@ async def submit_feedback(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=str(exc),
         ) from exc
+
+    if feedback.response_trace_id is not None:
+        await _require_owned_response_trace(
+            session=session,
+            owner_id=principal.subject,
+            trace_id=feedback.response_trace_id,
+        )
 
     repository = PersonalityRepository(session)
     try:
@@ -164,6 +171,29 @@ async def get_profile_revisions(
     return [PersonalityRevisionResponse.from_revision(item) for item in revisions]
 
 
+async def _require_owned_response_trace(
+    *,
+    session: AsyncSession,
+    owner_id: str,
+    trace_id: str,
+) -> None:
+    statement = (
+        select(EpisodicEvent.id)
+        .where(
+            EpisodicEvent.owner_id == owner_id,
+            EpisodicEvent.trace_id == trace_id,
+            EpisodicEvent.actor == "cortex",
+            EpisodicEvent.event_type == "message",
+        )
+        .limit(1)
+    )
+    if await session.scalar(statement) is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="response trace not found",
+        )
+
+
 async def _preference_task(
     *,
     owner_id: str,
@@ -226,6 +256,7 @@ async def _preference_task(
                 owner_id=owner_id,
                 kind="personality.profile.apply",
                 payload=proposal.as_task_payload(),
+                priority=250,
                 max_attempts=3,
                 dedupe_key=dedupe_key,
             )
