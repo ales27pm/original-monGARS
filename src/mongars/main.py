@@ -22,7 +22,7 @@ from mongars.inference.base import InferenceBackend
 from mongars.inference.ollama import OllamaBackend
 from mongars.logging import configure_logging
 from mongars.security.auth import BearerTokenAuth
-from mongars.security.policy import ActionClassification, ToolPolicy
+from mongars.security.runtime_policy import build_control_plane_policy
 from mongars.web_search import SearxNGSearchBackend
 
 logger = logging.getLogger(__name__)
@@ -94,15 +94,7 @@ def create_app(
     application.state.embeddings = runtime_embeddings
     application.state.web_search = runtime_web_search
     application.state.auth = BearerTokenAuth(runtime_settings, subject=runtime_settings.owner_id)
-    application.state.policy = ToolPolicy(
-        {
-            ("memory", "search"): ActionClassification.READ_ONLY,
-            ("memory", "note.create"): ActionClassification.LOCAL_MUTATION,
-            ("memory", "reindex"): ActionClassification.LOCAL_MUTATION,
-            ("document", "ingest"): ActionClassification.LOCAL_MUTATION,
-            ("personality", "profile.apply"): ActionClassification.LOCAL_MUTATION,
-        }
-    )
+    application.state.policy = build_control_plane_policy()
 
     application.add_middleware(
         RequestBodyLimitMiddleware,
