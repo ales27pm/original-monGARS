@@ -99,7 +99,9 @@ class ProfileDeltaProposal:
                 raise TypeError("profile proposal previous value is invalid")
             if self.previous.dimension != self.changed_dimension:
                 raise ValueError("profile proposal previous dimension does not match its delta")
-        expected_conflict = self.previous is not None and self.previous.value != self.proposed.value
+        expected_conflict = (
+            self.previous is not None and self.previous.value != self.proposed.value
+        )
         if self.conflict is not expected_conflict:
             raise ValueError("profile proposal conflict flag does not match its values")
         target_preference = next(
@@ -163,10 +165,10 @@ def propose_profile_delta(
         raise TypeError("feedback must be an explicit feedback contract")
     if not isinstance(feedback, PreferenceFeedback):
         return None
-
-    snapshot = current or PersonalitySnapshot.default()
-    if not isinstance(snapshot, PersonalitySnapshot):
+    if current is not None and not isinstance(current, PersonalitySnapshot):
         raise TypeError("current personality must be a PersonalitySnapshot or None")
+
+    snapshot = current if current is not None else PersonalitySnapshot.default()
     if snapshot.revision >= 2_147_483_647:
         raise ValueError("personality revision cannot be incremented")
 
