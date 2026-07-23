@@ -4,7 +4,6 @@ import json
 import os
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Any
 from uuid import UUID, uuid4
 
 import httpx
@@ -12,7 +11,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from pydantic import SecretStr
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.engine import make_url
 
 from mongars.adaptation.models import (
@@ -38,6 +37,8 @@ if not _RAW_DATABASE_URL:
     )
 
 pytestmark = pytest.mark.integration
+_PRIVATE_CORRECTION = "This correction must remain outside autobiographical event payloads."
+_TRACE_ID = "trc_" + ("a" * 32)
 
 
 def _psycopg_url(value: str) -> str:
@@ -177,6 +178,20 @@ async def test_feedback_task_worker_and_chat_profile_flow() -> None:
                 "preferences": [],
             }
 
+            correction = await client.post(
+                "/v1/adaptation/feedback",
+                headers=headers,
+                json={
+                    "kind": "correction",
+                    "feedback_id": str(uuid4()),
+                    "response_trace_id": _TRACE_ID,
+                    "correction_text": _PRIVATE_CORRECTION,
+                },
+            )
+            assert correction.status_code == 202
+            assert correction.json()["proposal_task"] is None
+            assert correction.json()["profile"]["revision"] == 0
+
             submission = await client.post(
                 "/v1/adaptation/feedback",
                 headers=headers,
@@ -288,17 +303,13 @@ async def test_feedback_task_worker_and_chat_profile_flow() -> None:
             events = list(
                 (
                     await session.scalars(
-                        EpisodicEvent.__table__.select().where(
-                            EpisodicEvent.owner_id == owner_id
-                        )
+                        select(EpisodicEvent).where(EpisodicEvent.owner_id == owner_id)
                     )
                 ).all()
             )
-            serialized_events = json.dumps(
-                [getattr(event, "payload", {}) for event in events],
-                default=str,
-            )
+            serialized_events = json.dumps([event.payload for event in events], default=str)
             assert "desired_value" not in serialized_events
+            assert _PRIVATE_CORRECTION not in serialized_events
     finally:
         await _clean_owner(database, owner_id)
         await parser.aclose()
