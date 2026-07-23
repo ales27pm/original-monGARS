@@ -1,20 +1,21 @@
 from __future__ import annotations
 
 from typing import Annotated, cast
+from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
-from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from mongars.adaptation.feedback import (
     CorrectionFeedback,
     ExplicitFeedback,
+    FeedbackKind,
     HelpfulnessFeedback,
     PreferenceFeedback,
 )
 from mongars.adaptation.mimicry import (
-    ProfileDeltaProposal,
     profile_delta_proposal_from_payload,
     propose_profile_delta,
 )
@@ -39,10 +40,12 @@ from mongars.api.schemas import (
     PreferenceFeedbackRequest,
     TaskResponse,
 )
+from mongars.config import Settings
 from mongars.db.models import TaskQueue
 from mongars.events.repository import EventRepository
 from mongars.rm.repository import TaskRepository
 from mongars.rm.service import TaskService
+from mongars.security.policy import ToolPolicy
 
 router = APIRouter(prefix="/v1/adaptation", tags=["adaptation"])
 
@@ -116,7 +119,7 @@ async def submit_feedback(
     return FeedbackSubmissionResponse(
         feedback_id=receipt.feedback_id,
         feedback_digest=receipt.feedback_digest,
-        kind=cast(str, receipt.kind),
+        kind=cast(FeedbackKind, receipt.kind),
         created=receipt.created,
         profile=PersonalityProfileResponse.from_snapshot(profile),
         proposal_task=(
@@ -165,17 +168,17 @@ async def _preference_task(
     *,
     owner_id: str,
     feedback: PreferenceFeedback,
-    receipt_task_id: object,
+    receipt_task_id: UUID | None,
     repository: PersonalityRepository,
-    session: SessionDependency,
-    settings: SettingsDependency,
-    policy: PolicyDependency,
+    session: AsyncSession,
+    settings: Settings,
+    policy: ToolPolicy,
     trace_id: str,
 ) -> TaskQueue:
     task_repository = TaskRepository(session)
     if receipt_task_id is not None:
         task = await task_repository.get_for_owner(
-            task_id=cast(object, receipt_task_id),
+            task_id=receipt_task_id,
             owner_id=owner_id,
         )
         if task is None:
@@ -261,7 +264,7 @@ async def _preference_task(
 
 async def _task_by_dedupe_key(
     *,
-    session: SessionDependency,
+    session: AsyncSession,
     owner_id: str,
     dedupe_key: str,
 ) -> TaskQueue | None:
