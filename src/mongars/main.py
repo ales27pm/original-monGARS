@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import Response
 
-from mongars.api.routes import chat, documents, health, memory, tasks, web
+from mongars.api.routes import adaptation, chat, documents, health, memory, tasks, web
 from mongars.config import Environment, Settings, get_settings
 from mongars.db.session import Database
 from mongars.embeddings.ollama import OllamaEmbeddingProvider
@@ -100,6 +100,7 @@ def create_app(
             ("memory", "note.create"): ActionClassification.LOCAL_MUTATION,
             ("memory", "reindex"): ActionClassification.LOCAL_MUTATION,
             ("document", "ingest"): ActionClassification.LOCAL_MUTATION,
+            ("personality", "profile.apply"): ActionClassification.LOCAL_MUTATION,
         }
     )
 
@@ -146,6 +147,7 @@ def create_app(
 
     application.include_router(health.router)
     application.include_router(chat.router)
+    application.include_router(adaptation.router)
     application.include_router(tasks.router)
     application.include_router(documents.router)
     application.include_router(memory.router)
