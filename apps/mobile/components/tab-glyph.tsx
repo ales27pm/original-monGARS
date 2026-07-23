@@ -2,13 +2,14 @@ import { Text } from 'react-native';
 
 type TabGlyphProps = {
   color: string;
-  glyph: 'chat' | 'memory' | 'settings' | 'tasks';
+  glyph: 'chat' | 'memory' | 'personality' | 'settings' | 'tasks';
   focused: boolean;
 };
 
 const glyphs = {
   chat: '●',
   memory: '◆',
+  personality: '◎',
   tasks: '✓',
   settings: '⚙',
 } as const;

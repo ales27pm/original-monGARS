@@ -42,6 +42,15 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="(personality)"
+        options={{
+          title: 'Profile',
+          tabBarIcon: ({ color, focused }) => (
+            <TabGlyph color={color} focused={focused} glyph="personality" />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="(tasks)"
         options={{
           title: 'Tasks',

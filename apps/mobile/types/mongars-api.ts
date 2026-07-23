@@ -179,3 +179,67 @@ export type TaskPayloadPageResponse = {
   character_end: number;
   content: string;
 };
+
+export type PersonalityDimension =
+  | 'brevity'
+  | 'directness'
+  | 'formality'
+  | 'humor'
+  | 'initiative'
+  | 'technical_depth';
+
+export type PersonalityPreferenceResponse = {
+  dimension: PersonalityDimension;
+  value: number;
+  confidence: number;
+  evidence_count: number;
+};
+
+export type PersonalityProfileResponse = {
+  revision: number;
+  source: 'approved_profile' | 'default' | 'explicit_feedback';
+  profile_digest: string | null;
+  preferences: PersonalityPreferenceResponse[];
+};
+
+export type PersonalityRevisionResponse = {
+  profile: PersonalityProfileResponse;
+  feedback_id: string;
+  feedback_digest: string;
+  proposal_digest: string;
+  task_id: string;
+  changed_dimension: PersonalityDimension;
+  conflict: boolean;
+  created_at: string;
+};
+
+export type PersonalityLifecycleEventResponse = {
+  operation: 'reset' | 'delete';
+  expected_revision: number;
+  expected_profile_digest: string;
+  target_revision: number;
+  target_profile_digest: string;
+  data_state_digest: string | null;
+  task_id: string;
+  created_at: string;
+};
+
+export type PersonalityFeedbackExportResponse = {
+  feedback_id: string;
+  feedback_digest: string;
+  kind: 'correction' | 'helpfulness' | 'preference';
+  response_trace_id: string | null;
+  payload: Record<string, JsonValue>;
+  applied_task_id: string | null;
+  applied_revision: number | null;
+  created_at: string;
+};
+
+export type PersonalityProfileExportResponse = {
+  schema_version: 'mongars-personality-export-v1';
+  exported_at: string;
+  profile: PersonalityProfileResponse;
+  revisions: PersonalityRevisionResponse[];
+  lifecycle_events: PersonalityLifecycleEventResponse[];
+  feedback: PersonalityFeedbackExportResponse[];
+};

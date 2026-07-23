@@ -8,13 +8,17 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StrictBool,
     TypeAdapter,
     ValidationError,
     field_validator,
     model_validator,
 )
 
-from mongars.adaptation.mimicry import profile_delta_proposal_from_payload
+from mongars.adaptation.mimicry import (
+    EMPTY_PROFILE_DIGEST,
+    profile_delta_proposal_from_payload,
+)
 from mongars.orchestrator.personality import PersonalityDimension
 
 
@@ -134,12 +138,60 @@ class PersonalityProfileApplyPayload(StrictPayload):
         return self
 
 
+class PersonalityProfileResetPayload(StrictPayload):
+    expected_profile_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_revision: int = Field(ge=0, le=2_147_483_646)
+    target_profile_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    target_revision: int = Field(ge=1, le=2_147_483_647)
+
+    @field_validator("expected_revision", "target_revision", mode="before")
+    @classmethod
+    def reject_boolean_revisions(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("personality lifecycle revisions must not be booleans")
+        return value
+
+    @model_validator(mode="after")
+    def validate_reset_target(self) -> PersonalityProfileResetPayload:
+        if self.target_revision != self.expected_revision + 1:
+            raise ValueError("reset target revision must follow the expected revision")
+        if self.target_profile_digest != EMPTY_PROFILE_DIGEST:
+            raise ValueError("reset target digest must be the canonical empty profile")
+        return self
+
+
+class PersonalityProfileDeletePayload(StrictPayload):
+    data_state_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    delete_feedback: StrictBool
+    delete_history: StrictBool
+    delete_tasks: StrictBool
+    expected_profile_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    expected_revision: int = Field(ge=0, le=2_147_483_647)
+
+    @field_validator("expected_revision", mode="before")
+    @classmethod
+    def reject_boolean_revision(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("personality lifecycle revision must not be a boolean")
+        return value
+
+    @model_validator(mode="after")
+    def require_complete_privacy_delete(self) -> PersonalityProfileDeletePayload:
+        if not (self.delete_feedback and self.delete_history and self.delete_tasks):
+            raise ValueError(
+                "personality deletion must remove feedback, history, and task payloads"
+            )
+        return self
+
+
 _PAYLOAD_ADAPTERS: dict[str, TypeAdapter[Any]] = {
     "memory.search": TypeAdapter(MemorySearchPayload),
     "memory.note.create": TypeAdapter(MemoryNoteCreatePayload),
     "memory.reindex": TypeAdapter(MemoryReindexPayload),
     "document.ingest": TypeAdapter(DocumentIngestPayload),
     "personality.profile.apply": TypeAdapter(PersonalityProfileApplyPayload),
+    "personality.profile.reset": TypeAdapter(PersonalityProfileResetPayload),
+    "personality.profile.delete": TypeAdapter(PersonalityProfileDeletePayload),
 }
 
 TASK_POLICY_KEYS: dict[str, tuple[str, str]] = {
@@ -148,6 +200,8 @@ TASK_POLICY_KEYS: dict[str, tuple[str, str]] = {
     "memory.reindex": ("memory", "reindex"),
     "document.ingest": ("document", "ingest"),
     "personality.profile.apply": ("personality", "profile.apply"),
+    "personality.profile.reset": ("personality", "profile.reset"),
+    "personality.profile.delete": ("personality", "profile.delete"),
 }
 
 
@@ -173,6 +227,8 @@ __all__ = [
     "MemorySearchPayload",
     "PersonalityPreferencePayload",
     "PersonalityProfileApplyPayload",
+    "PersonalityProfileDeletePayload",
+    "PersonalityProfileResetPayload",
     "UnsupportedTaskKind",
     "ValidationError",
     "normalize_task_payload",

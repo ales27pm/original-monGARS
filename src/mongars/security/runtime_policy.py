@@ -14,6 +14,8 @@ CONTROL_PLANE_ACTIONS: Mapping[RuleKey, ActionClassification] = MappingProxyType
         ("memory", "reindex"): ActionClassification.LOCAL_MUTATION,
         ("document", "ingest"): ActionClassification.LOCAL_MUTATION,
         ("personality", "profile.apply"): ActionClassification.LOCAL_MUTATION,
+        ("personality", "profile.reset"): ActionClassification.LOCAL_MUTATION,
+        ("personality", "profile.delete"): ActionClassification.LOCAL_MUTATION,
     }
 )
 

@@ -102,16 +102,17 @@ class PersonalitySnapshot:
         if self.source == "default":
             if self.revision != 0 or ordered or self.profile_digest is not None:
                 raise ValueError("default personality must be empty revision zero")
-        else:
-            if self.revision < 1 or not ordered:
-                raise ValueError(
-                    "reviewed personality requires a positive revision and preferences"
-                )
-            digest = validate_sha256_digest(
-                self.profile_digest,
-                field="reviewed personality profile_digest",
-            )
-            object.__setattr__(self, "profile_digest", digest)
+            return
+
+        if self.revision < 1:
+            raise ValueError("reviewed personality requires a positive revision")
+        if self.source == "explicit_feedback" and not ordered:
+            raise ValueError("explicit-feedback personality requires at least one preference")
+        digest = validate_sha256_digest(
+            self.profile_digest,
+            field="reviewed personality profile_digest",
+        )
+        object.__setattr__(self, "profile_digest", digest)
 
     @classmethod
     def default(cls) -> PersonalitySnapshot:

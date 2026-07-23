@@ -18,6 +18,10 @@ import type {
   MemoryNoteCreateRequest,
   MemorySearchRequest,
   MemorySearchResponse,
+  PersonalityLifecycleEventResponse,
+  PersonalityProfileExportResponse,
+  PersonalityProfileResponse,
+  PersonalityRevisionResponse,
   ReadinessResponse,
   TaskDetailResponse,
   TaskPayloadPageResponse,
@@ -240,6 +244,40 @@ export class MongarsClient {
       method: 'POST',
       body: request,
     });
+  }
+
+  getPersonalityProfile(options: ApiCallOptions = {}): Promise<PersonalityProfileResponse> {
+    return this.request('/v1/adaptation/profile', options);
+  }
+
+  getPersonalityRevisions(
+    limit = 50,
+    options: ApiCallOptions = {},
+  ): Promise<PersonalityRevisionResponse[]> {
+    const safeLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
+    return this.request(`/v1/adaptation/profile/revisions?limit=${safeLimit}`, options);
+  }
+
+  getPersonalityLifecycle(
+    limit = 50,
+    options: ApiCallOptions = {},
+  ): Promise<PersonalityLifecycleEventResponse[]> {
+    const safeLimit = Math.max(1, Math.min(100, Math.trunc(limit)));
+    return this.request(`/v1/adaptation/profile/lifecycle?limit=${safeLimit}`, options);
+  }
+
+  exportPersonalityProfile(
+    options: ApiCallOptions = {},
+  ): Promise<PersonalityProfileExportResponse> {
+    return this.request('/v1/adaptation/profile/export', options);
+  }
+
+  requestPersonalityReset(options: ApiCallOptions = {}): Promise<TaskResponse> {
+    return this.request('/v1/adaptation/profile/reset', { ...options, method: 'POST' });
+  }
+
+  requestPersonalityDelete(options: ApiCallOptions = {}): Promise<TaskResponse> {
+    return this.request('/v1/adaptation/profile/delete', { ...options, method: 'POST' });
   }
 
   uploadDocument(

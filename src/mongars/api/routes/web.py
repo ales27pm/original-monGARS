@@ -10,10 +10,12 @@ WEB_STATIC_ROOT = Path(__file__).resolve().parents[2] / "web" / "static"
 _ASSET_MEDIA_TYPES = {
     "app.css": "text/css",
     "app.js": "text/javascript",
+    "personality.css": "text/css",
+    "personality.js": "text/javascript",
 }
 _RECOVERY_SCRIPT_NAME = "runtime-recovery.js"
 _NO_STORE_HEADERS = {"Cache-Control": "no-store"}
-_INDEX_HEADERS = {
+_PAGE_HEADERS = {
     **_NO_STORE_HEADERS,
     "Content-Security-Policy": (
         "default-src 'self'; "
@@ -78,7 +80,17 @@ def create_web_router(*, static_root: Path = WEB_STATIC_ROOT) -> APIRouter:
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Web interface is unavailable",
             )
-        return FileResponse(index, media_type="text/html", headers=_INDEX_HEADERS)
+        return FileResponse(index, media_type="text/html", headers=_PAGE_HEADERS)
+
+    @router.get("/personality")
+    async def personality_controls() -> FileResponse:
+        page = _contained_file(static_root, "personality.html")
+        if page is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Personality controls are unavailable",
+            )
+        return FileResponse(page, media_type="text/html", headers=_PAGE_HEADERS)
 
     @router.get("/assets/{asset_name:path}")
     async def web_asset(asset_name: str) -> Response:
@@ -98,7 +110,6 @@ def create_web_router(*, static_root: Path = WEB_STATIC_ROOT) -> APIRouter:
                     media_type=media_type,
                     headers=_NO_STORE_HEADERS,
                 )
-
         return FileResponse(asset, media_type=media_type, headers=_NO_STORE_HEADERS)
 
     return router

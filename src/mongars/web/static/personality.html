@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#0b0f0d">
+    <meta name="description" content="Owner-controlled monGARS personality profile lifecycle.">
+    <title>monGARS · Personality</title>
+    <link rel="stylesheet" href="/assets/personality.css">
+    <script src="/assets/personality.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to profile controls</a>
+    <header class="topbar">
+      <a class="brand" href="/">mon<span>GARS</span></a>
+      <div class="top-actions">
+        <span class="status" id="connection-status">Disconnected</span>
+        <a class="ghost-link" href="/#tasks">Tasks</a>
+      </div>
+    </header>
+
+    <main id="main" class="shell">
+      <section class="hero">
+        <p class="eyebrow">Mimétisme · owner-controlled</p>
+        <h1>Personality profile</h1>
+        <p>
+          Inspect the immutable snapshot, export private source feedback, or create an
+          exact-payload approval task for reset and deletion.
+        </p>
+      </section>
+
+      <section class="card" aria-labelledby="connection-title">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Secure connection</p>
+            <h2 id="connection-title">Bearer token</h2>
+          </div>
+          <button id="forget-token" class="text-button" type="button" hidden>Forget token</button>
+        </div>
+        <p class="warning" id="transport-warning" hidden>
+          Credentials are blocked on plaintext HTTP. Use HTTPS or localhost.
+        </p>
+        <form id="token-form" class="token-form">
+          <label for="api-token">API token</label>
+          <div class="token-row">
+            <input id="api-token" type="password" autocomplete="off" required>
+            <button class="primary" type="submit">Connect</button>
+          </div>
+        </form>
+        <p class="message" id="connection-message" role="status"></p>
+      </section>
+
+      <section class="summary-grid" aria-live="polite">
+        <article class="card metric">
+          <span>Revision</span>
+          <strong id="profile-revision">—</strong>
+        </article>
+        <article class="card metric">
+          <span>Source</span>
+          <strong id="profile-source">—</strong>
+        </article>
+        <article class="card metric">
+          <span>Preferences</span>
+          <strong id="profile-count">—</strong>
+        </article>
+      </section>
+
+      <section class="card" aria-labelledby="preferences-title">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Current immutable snapshot</p>
+            <h2 id="preferences-title">Preferences</h2>
+          </div>
+          <button id="refresh-profile" class="secondary" type="button">Refresh</button>
+        </div>
+        <code class="digest" id="profile-digest">Connect to inspect the profile.</code>
+        <div class="preference-list" id="preference-list"></div>
+      </section>
+
+      <section class="card" aria-labelledby="history-title">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Audit</p>
+            <h2 id="history-title">Revision and lifecycle history</h2>
+          </div>
+        </div>
+        <div class="history-grid">
+          <div>
+            <h3>Preference revisions</h3>
+            <div id="revision-list" class="history-list"></div>
+          </div>
+          <div>
+            <h3>Reset / deletion receipts</h3>
+            <div id="lifecycle-list" class="history-list"></div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="actions-title">
+        <p class="eyebrow">Protected lifecycle actions</p>
+        <h2 id="actions-title">Export, reset, or delete</h2>
+        <p>
+          Reset and deletion do not execute immediately. They create local-mutation tasks that must
+          be reviewed and approved from the Tasks screen.
+        </p>
+        <div class="actions">
+          <button id="export-profile" class="secondary" type="button">Export JSON</button>
+          <button id="reset-profile" class="warning-button" type="button">Prepare reset</button>
+          <button id="delete-profile" class="danger-button" type="button">Prepare deletion</button>
+        </div>
+        <div class="task-result" id="task-result" hidden>
+          <strong>Protected task created</strong>
+          <p id="task-message"></p>
+          <code id="task-id"></code>
+          <a class="primary task-link" href="/#tasks">Review exact task payload</a>
+        </div>
+        <p class="message" id="action-message" role="status"></p>
+      </section>
+    </main>
+  </body>
+</html>

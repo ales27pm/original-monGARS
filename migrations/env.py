@@ -8,6 +8,7 @@ from sqlalchemy import engine_from_config, pool
 
 from mongars.adaptation.models import (
     ExplicitFeedbackRecord,
+    PersonalityProfileLifecycleRecord,
     PersonalityProfileRecord,
     PersonalityProfileRevisionRecord,
 )
@@ -22,6 +23,7 @@ if config.config_file_name is not None:
 # autogenerate run from misclassifying the adaptation tables as unmanaged database objects.
 _REGISTERED_ADAPTATION_MODELS = (
     ExplicitFeedbackRecord,
+    PersonalityProfileLifecycleRecord,
     PersonalityProfileRecord,
     PersonalityProfileRevisionRecord,
 )
