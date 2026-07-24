@@ -15,6 +15,7 @@ from mongars.adaptation.feedback import (
     HelpfulnessFeedback,
     PreferenceFeedback,
 )
+from mongars.autobiography.contracts import RetentionClass, Sensitivity
 from mongars.autobiography.service import AutobiographyService
 from mongars.autobiography.tables import GenerationRun
 from mongars.db.models import EpisodicEvent
@@ -36,6 +37,8 @@ class ResolvedResponseTarget:
     generation_run_id: UUID | None
     session_id: UUID | None
     assistant_turn_id: UUID | None
+    sensitivity: Sensitivity | None
+    retention_class: RetentionClass | None
 
     @property
     def is_typed(self) -> bool:
@@ -43,6 +46,8 @@ class ResolvedResponseTarget:
             self.generation_run_id is not None
             and self.session_id is not None
             and self.assistant_turn_id is not None
+            and self.sensitivity is not None
+            and self.retention_class is not None
         )
 
 
@@ -59,6 +64,8 @@ async def resolve_owned_response_target(
             GenerationRun.id,
             GenerationRun.session_id,
             GenerationRun.assistant_turn_id,
+            GenerationRun.sensitivity,
+            GenerationRun.retention_class,
         )
         .where(
             GenerationRun.owner_id == owner_id,
@@ -75,12 +82,20 @@ async def resolve_owned_response_target(
             "response trace resolves to multiple completed typed generations"
         )
     if typed_rows:
-        generation_run_id, session_id, assistant_turn_id = typed_rows[0]
+        (
+            generation_run_id,
+            session_id,
+            assistant_turn_id,
+            sensitivity,
+            retention_class,
+        ) = typed_rows[0]
         return ResolvedResponseTarget(
             trace_id=trace_id,
             generation_run_id=cast(UUID, generation_run_id),
             session_id=cast(UUID, session_id),
             assistant_turn_id=cast(UUID, assistant_turn_id),
+            sensitivity=cast(Sensitivity, sensitivity),
+            retention_class=cast(RetentionClass, retention_class),
         )
 
     legacy_statement = (
@@ -99,6 +114,8 @@ async def resolve_owned_response_target(
             generation_run_id=None,
             session_id=None,
             assistant_turn_id=None,
+            sensitivity=None,
+            retention_class=None,
         )
     raise ResponseTraceNotFound("response trace not found")
 
@@ -117,49 +134,48 @@ async def record_typed_feedback_event(
     generation_run_id = cast(UUID, target.generation_run_id)
     session_id = cast(UUID, target.session_id)
     assistant_turn_id = cast(UUID, target.assistant_turn_id)
+    sensitivity = cast(Sensitivity, target.sensitivity)
+    retention_class = cast(RetentionClass, target.retention_class)
     autobiography = AutobiographyService(session)
+    common = {
+        "owner_id": owner_id,
+        "session_id": session_id,
+        "trace_id": target.trace_id,
+        "actor_type": "user",
+        "sensitivity": sensitivity,
+        "retention_class": retention_class,
+        "causation_id": generation_run_id,
+        "correlation_id": feedback.feedback_id,
+    }
 
     if isinstance(feedback, CorrectionFeedback):
         await autobiography.record_event(
-            owner_id=owner_id,
-            session_id=session_id,
-            trace_id=target.trace_id,
+            **common,
             event_type="correction_received",
-            actor_type="user",
             payload={
                 "target_turn_id": assistant_turn_id,
                 "correction_id": feedback.feedback_id,
                 "character_count": len(feedback.correction_text),
             },
-            causation_id=generation_run_id,
-            correlation_id=feedback.feedback_id,
         )
         return
 
     if isinstance(feedback, HelpfulnessFeedback):
         await autobiography.record_event(
-            owner_id=owner_id,
-            session_id=session_id,
-            trace_id=target.trace_id,
+            **common,
             event_type="feedback_received",
-            actor_type="user",
             payload={
                 "target_turn_id": assistant_turn_id,
                 "rating": "up" if feedback.helpful else "down",
                 "tags": ["explicit_helpfulness"],
             },
-            causation_id=generation_run_id,
-            correlation_id=feedback.feedback_id,
         )
         return
 
     if isinstance(feedback, PreferenceFeedback):
         await autobiography.record_event(
-            owner_id=owner_id,
-            session_id=session_id,
-            trace_id=target.trace_id,
+            **common,
             event_type="feedback_received",
-            actor_type="user",
             payload={
                 "target_turn_id": assistant_turn_id,
                 "rating": "neutral",
@@ -168,8 +184,6 @@ async def record_typed_feedback_event(
                     f"dimension:{feedback.dimension}",
                 ],
             },
-            causation_id=generation_run_id,
-            correlation_id=feedback.feedback_id,
         )
         return
 
