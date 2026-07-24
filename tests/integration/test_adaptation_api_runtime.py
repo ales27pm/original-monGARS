@@ -19,6 +19,11 @@ from mongars.adaptation.models import (
     PersonalityProfileRecord,
     PersonalityProfileRevisionRecord,
 )
+from mongars.autobiography.tables import (
+    AutobiographicalEventRecord,
+    ConversationTurn,
+    GenerationRun,
+)
 from mongars.config import Environment, Settings
 from mongars.db.models import EpisodicEvent, TaskQueue
 from mongars.db.session import Database
@@ -129,6 +134,15 @@ async def _clean_owner(database: Database, owner_id: str) -> None:
                 ExplicitFeedbackRecord.owner_id == owner_id
             )
         )
+        await session.execute(
+            delete(AutobiographicalEventRecord).where(
+                AutobiographicalEventRecord.owner_id == owner_id
+            )
+        )
+        await session.execute(delete(GenerationRun).where(GenerationRun.owner_id == owner_id))
+        await session.execute(
+            delete(ConversationTurn).where(ConversationTurn.owner_id == owner_id)
+        )
         await session.execute(delete(EpisodicEvent).where(EpisodicEvent.owner_id == owner_id))
         await session.execute(delete(TaskQueue).where(TaskQueue.owner_id == owner_id))
 
@@ -163,6 +177,8 @@ async def test_feedback_task_worker_and_chat_profile_flow() -> None:
     transport = httpx.ASGITransport(app=app)
     headers = {"Authorization": f"Bearer {token}"}
     feedback_id = uuid4()
+    correction_id = uuid4()
+    helpfulness_id = uuid4()
 
     try:
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -203,14 +219,41 @@ async def test_feedback_task_worker_and_chat_profile_flow() -> None:
                 headers=headers,
                 json={
                     "kind": "correction",
-                    "feedback_id": str(uuid4()),
+                    "feedback_id": str(correction_id),
                     "response_trace_id": response_trace_id,
                     "correction_text": _PRIVATE_CORRECTION,
                 },
             )
             assert correction.status_code == 202
+            assert correction.json()["created"] is True
             assert correction.json()["proposal_task"] is None
             assert correction.json()["profile"]["revision"] == 0
+
+            helpfulness = await client.post(
+                "/v1/adaptation/feedback",
+                headers=headers,
+                json={
+                    "kind": "helpfulness",
+                    "feedback_id": str(helpfulness_id),
+                    "response_trace_id": response_trace_id,
+                    "helpful": True,
+                },
+            )
+            assert helpfulness.status_code == 202
+            assert helpfulness.json()["created"] is True
+
+            duplicate_helpfulness = await client.post(
+                "/v1/adaptation/feedback",
+                headers=headers,
+                json={
+                    "kind": "helpfulness",
+                    "feedback_id": str(helpfulness_id),
+                    "response_trace_id": response_trace_id,
+                    "helpful": True,
+                },
+            )
+            assert duplicate_helpfulness.status_code == 202
+            assert duplicate_helpfulness.json()["created"] is False
 
             submission = await client.post(
                 "/v1/adaptation/feedback",
@@ -331,14 +374,60 @@ async def test_feedback_task_worker_and_chat_profile_flow() -> None:
         }
 
         async with database.session_factory() as session, session.begin():
-            events = list(
+            legacy_events = list(
                 (
                     await session.scalars(
                         select(EpisodicEvent).where(EpisodicEvent.owner_id == owner_id)
                     )
                 ).all()
             )
-            serialized_events = json.dumps([event.payload for event in events], default=str)
+            typed_events = list(
+                (
+                    await session.scalars(
+                        select(AutobiographicalEventRecord).where(
+                            AutobiographicalEventRecord.owner_id == owner_id
+                        )
+                    )
+                ).all()
+            )
+            generation = await session.scalar(
+                select(GenerationRun).where(
+                    GenerationRun.owner_id == owner_id,
+                    GenerationRun.trace_id == response_trace_id,
+                    GenerationRun.status == "completed",
+                )
+            )
+            assert generation is not None
+            assert generation.assistant_turn_id is not None
+
+            correction_events = [
+                event for event in typed_events if event.event_type == "correction_received"
+            ]
+            helpfulness_events = [
+                event for event in typed_events if event.event_type == "feedback_received"
+            ]
+            assert len(correction_events) == 1
+            assert correction_events[0].payload == {
+                "target_turn_id": str(generation.assistant_turn_id),
+                "correction_id": str(correction_id),
+                "character_count": len(_PRIVATE_CORRECTION),
+            }
+            assert correction_events[0].causation_id == generation.id
+            assert correction_events[0].correlation_id == correction_id
+            assert len(helpfulness_events) == 1
+            assert helpfulness_events[0].payload == {
+                "target_turn_id": str(generation.assistant_turn_id),
+                "rating": "up",
+                "tags": ["explicit_helpfulness"],
+            }
+            assert helpfulness_events[0].causation_id == generation.id
+            assert helpfulness_events[0].correlation_id == helpfulness_id
+
+            serialized_events = json.dumps(
+                [event.payload for event in legacy_events]
+                + [event.payload for event in typed_events],
+                default=str,
+            )
             assert "desired_value" not in serialized_events
             assert _PRIVATE_CORRECTION not in serialized_events
     finally:
