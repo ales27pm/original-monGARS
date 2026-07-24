@@ -2,6 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const test = require('node:test');
+const vm = require('node:vm');
 const ts = require('typescript');
 
 function loadDecoder() {
@@ -14,8 +15,12 @@ function loadDecoder() {
     },
   }).outputText;
   const module = { exports: {} };
-  const execute = new Function('require', 'module', 'exports', output);
-  execute(require, module, module.exports);
+  vm.runInNewContext(output, {
+    TextEncoder,
+    exports: module.exports,
+    module,
+    require,
+  });
   return module.exports.NdjsonChatDecoder;
 }
 
@@ -64,6 +69,24 @@ test('decodes NDJSON across arbitrary transport boundaries', () => {
   assert.equal(frames[4].response.answer, 'Hello');
 });
 
+test('accepts trusted citation metadata in the final frame', () => {
+  const Decoder = loadDecoder();
+  const response = finalResponse();
+  response.citations = [
+    {
+      key: 'M1',
+      kind: 'memory',
+      source_id: 'chunk-id',
+      title: 'Project plan',
+      url: null,
+      locator: { page_number: 7 },
+    },
+  ];
+  const frames = new Decoder().push(`${JSON.stringify({ type: 'final', response })}\n`);
+
+  assert.equal(frames[0].response.citations[0].key, 'M1');
+});
+
 test('rejects malformed and unsupported stream frames', () => {
   const Decoder = loadDecoder();
   const decoder = new Decoder();
@@ -77,4 +100,20 @@ test('rejects malformed and unsupported stream frames', () => {
     /unsupported frame/,
   );
   assert.throws(() => new Decoder().push('not-json\n'), /invalid NDJSON/);
+
+  const response = finalResponse();
+  response.citations = [
+    {
+      key: 'M1',
+      kind: 'made_up',
+      source_id: null,
+      title: null,
+      url: null,
+      locator: null,
+    },
+  ];
+  assert.throws(
+    () => new Decoder().push(`${JSON.stringify({ type: 'final', response })}\n`),
+    /invalid final frame/,
+  );
 });
