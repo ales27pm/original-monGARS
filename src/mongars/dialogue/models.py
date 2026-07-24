@@ -5,11 +5,15 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from types import MappingProxyType
 from typing import Literal
 from uuid import UUID
 
-from mongars.autobiography.contracts import EvidenceKind, EvidenceSnapshot, GroundingStatus
+from mongars.autobiography.contracts import (
+    EvidenceKind,
+    EvidenceSnapshot,
+    GroundingStatus,
+    deep_freeze_json_mapping,
+)
 from mongars.inference.base import ChatMessage, JsonValue
 
 ResponseMode = Literal["answer", "clarify", "abstain"]
@@ -51,7 +55,7 @@ class DialoguePlan:
             raise ValueError("dialogue policy version is invalid")
         if not isinstance(self.require_web_citation, bool):
             raise TypeError("dialogue web citation flag must be boolean")
-        object.__setattr__(self, "options", MappingProxyType(dict(self.options)))
+        object.__setattr__(self, "options", deep_freeze_json_mapping(self.options))
         keys = [item.key for item in self.evidence]
         if len(keys) != len(set(keys)):
             raise ValueError("dialogue evidence keys must be unique")
