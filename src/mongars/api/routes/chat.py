@@ -23,6 +23,7 @@ from mongars.api.dependencies import (
     WebSearchDependency,
 )
 from mongars.api.schemas import ChatRequest, WebSource
+from mongars.dialogue import Bouche
 from mongars.embeddings.errors import EmbeddingError, EmbeddingInputError
 from mongars.inference.base import InferenceError
 from mongars.orchestrator.cortex import ChatResult, Cortex
@@ -101,30 +102,20 @@ async def chat_stream(
     _validate_before_stream(request=request, settings=settings)
     personality = await _personality(session=session, owner_id=principal.subject)
     pump = ChatStreamPump()
-
-    if isinstance(session, AsyncSession):
-        runtime: Cortex | TypedChatRuntime = TypedChatRuntime(
-            settings=settings,
-            inference=inference,
-            embeddings=embeddings,
-            session=session,
-            personality=personality,
-            web_search=web_search,
-            bouche=StreamingBouche(
-                inference,
-                on_start=pump.on_start,
-                on_delta=pump.on_delta,
-            ),
-        )
-    else:
-        runtime = Cortex(
-            settings=settings,
-            inference=inference,
-            embeddings=embeddings,
-            session=session,
-            personality=personality,
-            web_search=web_search,
-        )
+    bouche = StreamingBouche(
+        inference,
+        on_start=pump.on_start,
+        on_delta=pump.on_delta,
+    )
+    runtime = _runtime(
+        session=session,
+        settings=settings,
+        inference=inference,
+        embeddings=embeddings,
+        personality=personality,
+        web_search=web_search,
+        bouche=bouche,
+    )
 
     async def produce() -> None:
         cancelled = False
@@ -201,6 +192,7 @@ def _runtime(
     embeddings: EmbeddingsDependency,
     personality: PersonalitySnapshot,
     web_search: WebSearchDependency,
+    bouche: Bouche | None = None,
 ) -> Cortex | TypedChatRuntime:
     if isinstance(session, AsyncSession):
         return TypedChatRuntime(
@@ -210,6 +202,7 @@ def _runtime(
             session=session,
             personality=personality,
             web_search=web_search,
+            bouche=bouche,
         )
     # Lightweight focused API tests use a minimal session double. PostgreSQL-backed
     # application sessions always take the typed persistence path above.
