@@ -1,6 +1,7 @@
 import { fetch as expoFetch, type FetchRequestInit } from 'expo/fetch';
 
 import { apiTokenStore, type ApiTokenStore } from '@/lib/api-token';
+import { NdjsonChatDecoder } from '@/lib/api/chat-stream';
 import {
   ApiConfigurationError,
   type ApiTransportSecurity,
@@ -13,6 +14,7 @@ import {
 import type {
   ChatRequest,
   ChatResponse,
+  ChatStreamFrame,
   DocumentUploadRequest,
   DocumentUploadResponse,
   MemoryNoteCreateRequest,
@@ -39,12 +41,26 @@ export type MongarsClientOptions = {
   tokenStore?: ApiTokenStore;
 };
 
+export type ChatStreamCallbacks = {
+  onStart?: (streamId: string) => void;
+  onAttempt?: (attempt: number) => void;
+  onReset?: (attempt: number) => void;
+  onDelta?: (text: string, attempt: number) => void;
+};
+
 type RequestOptions = ApiCallOptions & {
   method?: 'GET' | 'POST';
   body?: unknown;
   multipartBody?: FormData;
   authenticated?: boolean;
   acceptedStatuses?: readonly number[];
+};
+
+type ChatStreamState = {
+  activeAttempt: number;
+  provisionalText: string;
+  finalResponse: ChatResponse | null;
+  terminal: boolean;
 };
 
 export {
@@ -220,6 +236,110 @@ export class MongarsClient {
     return this.request('/v1/chat', { ...options, method: 'POST', body: request });
   }
 
+  async chatStream(
+    request: ChatRequest,
+    callbacks: ChatStreamCallbacks = {},
+    options: ApiCallOptions = {},
+  ): Promise<ChatResponse> {
+    assertSecureCredentialTransport(this.baseUrl);
+    const token = await this.tokenStore.read(getMongarsApiOrigin(this.baseUrl));
+    if (!token) {
+      throw new ApiError('Enter the monGARS API token to continue.', {
+        status: 401,
+        code: 'AUTH_REQUIRED',
+      });
+    }
+    const headers = new Headers({
+      Accept: 'application/x-ndjson',
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    });
+
+    let response: Response;
+    try {
+      response = await this.fetcher(`${this.baseUrl}/v1/chat/stream`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(request),
+        signal: options.signal,
+      });
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      throw new ApiError('Unable to reach the monGARS server.', {
+        status: 0,
+        code: 'NETWORK_ERROR',
+        cause: error,
+      });
+    }
+
+    if (!response.ok) {
+      const body = await readResponseBody(response);
+      if (response.status === 401) {
+        await this.tokenStore.clear().catch(() => undefined);
+      }
+      throw new ApiError(errorMessage(body, response.status), {
+        status: response.status,
+        code: errorCode(body, response.status),
+        detail: body,
+      });
+    }
+    if (!response.body) {
+      throw new ApiError('The monGARS server returned no chat stream.', {
+        status: response.status,
+        code: 'EMPTY_STREAM',
+      });
+    }
+
+    const state: ChatStreamState = {
+      activeAttempt: 0,
+      provisionalText: '',
+      finalResponse: null,
+      terminal: false,
+    };
+    const reader = response.body.getReader();
+    const textDecoder = new TextDecoder();
+    const ndjson = new NdjsonChatDecoder();
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        const frames = ndjson.push(textDecoder.decode(value, { stream: true }));
+        for (const frame of frames) applyStreamFrame(state, frame, callbacks);
+      }
+      for (const frame of ndjson.push(textDecoder.decode())) {
+        applyStreamFrame(state, frame, callbacks);
+      }
+      for (const frame of ndjson.finish()) {
+        applyStreamFrame(state, frame, callbacks);
+      }
+    } catch (error) {
+      await reader.cancel().catch(() => undefined);
+      if (isAbortError(error) || error instanceof ApiError) throw error;
+      throw new ApiError('The monGARS chat stream was interrupted.', {
+        status: 0,
+        code: 'STREAM_ERROR',
+        cause: error,
+      });
+    } finally {
+      reader.releaseLock();
+    }
+
+    const finalResponse = state.finalResponse;
+    if (!finalResponse) {
+      throw new ApiError('The monGARS stream ended without a final response.', {
+        status: 0,
+        code: 'INCOMPLETE_STREAM',
+      });
+    }
+    if (state.provisionalText && state.provisionalText !== finalResponse.answer) {
+      throw new ApiError('The streamed text did not match the validated answer.', {
+        status: 0,
+        code: 'STREAM_MISMATCH',
+      });
+    }
+    return finalResponse;
+  }
+
   searchMemory(
     request: MemorySearchRequest,
     options: ApiCallOptions = {},
@@ -321,6 +441,54 @@ export class MongarsClient {
       ...options,
       method: 'POST',
     });
+  }
+}
+
+function applyStreamFrame(
+  state: ChatStreamState,
+  frame: ChatStreamFrame,
+  callbacks: ChatStreamCallbacks,
+): void {
+  if (state.terminal) {
+    throw new ApiError('The monGARS stream continued after a terminal frame.', {
+      status: 0,
+      code: 'STREAM_PROTOCOL_ERROR',
+    });
+  }
+  switch (frame.type) {
+    case 'start':
+      callbacks.onStart?.(frame.stream_id);
+      return;
+    case 'attempt':
+      state.activeAttempt = frame.attempt;
+      callbacks.onAttempt?.(frame.attempt);
+      return;
+    case 'reset':
+      state.provisionalText = '';
+      callbacks.onReset?.(frame.attempt);
+      return;
+    case 'delta':
+      if (frame.attempt !== state.activeAttempt) {
+        throw new ApiError('The monGARS stream delta belongs to another attempt.', {
+          status: 0,
+          code: 'STREAM_PROTOCOL_ERROR',
+        });
+      }
+      state.provisionalText += frame.text;
+      callbacks.onDelta?.(frame.text, frame.attempt);
+      return;
+    case 'final':
+      state.finalResponse = frame.response;
+      state.terminal = true;
+      return;
+    case 'error':
+      state.provisionalText = '';
+      state.terminal = true;
+      throw new ApiError('The streamed monGARS response failed.', {
+        status: 200,
+        code: frame.code,
+        detail: frame,
+      });
   }
 }
 
