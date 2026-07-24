@@ -252,7 +252,7 @@ class TypedChatJournal:
             await self._session.commit()
         except Exception as persistence_error:
             await self._session.rollback()
-            logger.exception(
+            logger.warning(
                 "typed_chat_failure_persistence_failed",
                 extra={
                     "generation_run_id": str(generation_run_id),
