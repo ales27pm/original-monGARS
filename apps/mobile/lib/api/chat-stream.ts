@@ -1,16 +1,25 @@
-import type { ChatResponse, ChatStreamFrame } from '@/types/mongars-api';
+import type { ChatCitation, ChatResponse, ChatStreamFrame, WebSource } from '@/types/mongars-api';
 
 const MAX_LINE_BYTES = 1_000_000;
 const textEncoder = new TextEncoder();
+const WEB_SEARCH_STATUSES = new Set([
+  'not_requested',
+  'ok',
+  'disabled',
+  'unavailable',
+  'no_results',
+  'context_limited',
+]);
+const CITATION_KINDS = new Set(['memory', 'web', 'conversation', 'policy']);
 
 export class NdjsonChatDecoder {
   private buffer = '';
 
   push(chunk: string): ChatStreamFrame[] {
     this.buffer += chunk;
-    this.assertBufferBounded();
     const lines = this.buffer.split('\n');
     this.buffer = lines.pop() ?? '';
+    this.assertBufferBounded();
     return lines.flatMap((line) => this.parseLine(line));
   }
 
@@ -94,20 +103,52 @@ export function parseChatStreamFrame(value: unknown): ChatStreamFrame {
 function isChatResponse(value: unknown): value is ChatResponse {
   return (
     isRecord(value) &&
-    typeof value.trace_id === 'string' &&
-    typeof value.session_id === 'string' &&
+    nonEmptyString(value.trace_id) &&
+    nonEmptyString(value.session_id) &&
     value.status === 'ok' &&
     typeof value.answer === 'string' &&
-    typeof value.model === 'string' &&
-    Number.isSafeInteger(value.memory_hits) &&
+    nonEmptyString(value.model) &&
+    nonNegativeInteger(value.memory_hits) &&
     typeof value.web_search_status === 'string' &&
-    (!('citations' in value) || Array.isArray(value.citations)) &&
-    (!('sources' in value) || Array.isArray(value.sources))
+    WEB_SEARCH_STATUSES.has(value.web_search_status) &&
+    (!('citations' in value) ||
+      (Array.isArray(value.citations) && value.citations.every(isChatCitation))) &&
+    (!('sources' in value) ||
+      (Array.isArray(value.sources) && value.sources.every(isWebSource)))
   );
+}
+
+function isChatCitation(value: unknown): value is ChatCitation {
+  return (
+    isRecord(value) &&
+    nonEmptyString(value.key) &&
+    typeof value.kind === 'string' &&
+    CITATION_KINDS.has(value.kind) &&
+    nullableString(value.source_id) &&
+    nullableString(value.title) &&
+    nullableString(value.url) &&
+    (value.locator === null || isRecord(value.locator))
+  );
+}
+
+function isWebSource(value: unknown): value is WebSource {
+  return isRecord(value) && typeof value.title === 'string' && nonEmptyString(value.url);
 }
 
 function positiveInteger(value: unknown): value is number {
   return Number.isSafeInteger(value) && typeof value === 'number' && value > 0;
+}
+
+function nonNegativeInteger(value: unknown): value is number {
+  return Number.isSafeInteger(value) && typeof value === 'number' && value >= 0;
+}
+
+function nonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && Boolean(value.trim());
+}
+
+function nullableString(value: unknown): value is string | null {
+  return value === null || typeof value === 'string';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
