@@ -13,7 +13,7 @@ const MAX_SOURCES = 1_000;
 const MAX_JSON_DEPTH = 24;
 const EVIDENCE_KEY = /^[HMWP][1-9][0-9]{0,2}$/;
 const ERROR_CODE = /^[a-z0-9_]{1,100}$/;
-const WEB_SEARCH_STATUSES = new Set([
+const WEB_SEARCH_STATUSES = new Set<ChatResponse['web_search_status']>([
   'not_requested',
   'ok',
   'disabled',
@@ -21,7 +21,18 @@ const WEB_SEARCH_STATUSES = new Set([
   'no_results',
   'context_limited',
 ]);
-const EVIDENCE_KINDS = new Set(['memory', 'web', 'conversation', 'policy']);
+const EVIDENCE_KINDS = new Set<ChatCitation['kind']>([
+  'memory',
+  'web',
+  'conversation',
+  'policy',
+]);
+const EVIDENCE_PREFIX: Record<ChatCitation['kind'], string> = {
+  conversation: 'H',
+  memory: 'M',
+  policy: 'P',
+  web: 'W',
+};
 
 export class ChatStreamProtocolError extends Error {
   constructor(message: string, options?: ErrorOptions) {
@@ -99,7 +110,7 @@ export function parseChatStreamFrameLine(line: string): ChatStreamFrame {
     case 'sources':
       return {
         type: 'sources',
-        sources: sourceArray(value.sources, true),
+        sources: streamSourceArray(value.sources),
       };
     case 'delta':
       return {
@@ -111,7 +122,7 @@ export function parseChatStreamFrameLine(line: string): ChatStreamFrame {
         type: 'final',
         ...chatResponse(value),
         sources: webSourceArray(value.sources),
-        citations: sourceArray(value.citations, false),
+        citations: citationArray(value.citations),
       };
     case 'error':
       if (typeof value.code !== 'string' || !ERROR_CODE.test(value.code)) {
@@ -131,12 +142,17 @@ function chatResponse(value: Record<string, unknown>): ChatResponse {
     throw new ChatStreamProtocolError('The final chat frame has an invalid status.');
   }
   const memoryHits = value.memory_hits;
-  if (!Number.isSafeInteger(memoryHits) || Number(memoryHits) < 0) {
+  if (
+    typeof memoryHits !== 'number' ||
+    !Number.isSafeInteger(memoryHits) ||
+    memoryHits < 0
+  ) {
     throw new ChatStreamProtocolError('The final chat frame has invalid memory metadata.');
   }
+  const webSearchStatus = value.web_search_status;
   if (
-    typeof value.web_search_status !== 'string' ||
-    !WEB_SEARCH_STATUSES.has(value.web_search_status)
+    typeof webSearchStatus !== 'string' ||
+    !WEB_SEARCH_STATUSES.has(webSearchStatus as ChatResponse['web_search_status'])
   ) {
     throw new ChatStreamProtocolError('The final chat frame has an invalid web-search status.');
   }
@@ -147,50 +163,55 @@ function chatResponse(value: Record<string, unknown>): ChatResponse {
     status: 'ok',
     answer: boundedString(value.answer, 'answer', MAX_LINE_BYTES),
     model: boundedString(value.model, 'model', 255),
-    memory_hits: Number(memoryHits),
-    web_search_status: value.web_search_status as ChatResponse['web_search_status'],
+    memory_hits: memoryHits,
+    web_search_status: webSearchStatus as ChatResponse['web_search_status'],
   };
 }
 
-function sourceArray(value: unknown, includeFlag: true): ChatStreamSource[];
-function sourceArray(value: unknown, includeFlag: false): ChatCitation[];
-function sourceArray(
-  value: unknown,
-  includeFlag: boolean,
-): ChatStreamSource[] | ChatCitation[] {
+function streamSourceArray(value: unknown): ChatStreamSource[] {
+  return sourceItems(value).map((item) => {
+    const base = citation(item);
+    if (typeof item.included !== 'boolean') {
+      throw new ChatStreamProtocolError('A chat stream source has an invalid included flag.');
+    }
+    return { ...base, included: item.included };
+  });
+}
+
+function citationArray(value: unknown): ChatCitation[] {
+  return sourceItems(value).map(citation);
+}
+
+function sourceItems(value: unknown): Record<string, unknown>[] {
   if (!Array.isArray(value) || value.length > MAX_SOURCES) {
     throw new ChatStreamProtocolError('The chat stream source list is invalid.');
   }
-  return value.map((item) => source(item, includeFlag));
+  return value.map((item) => {
+    if (!isRecord(item)) {
+      throw new ChatStreamProtocolError('A chat stream source is not an object.');
+    }
+    return item;
+  });
 }
 
-function source(value: unknown, includeFlag: boolean): ChatStreamSource | ChatCitation {
-  if (!isRecord(value)) {
-    throw new ChatStreamProtocolError('A chat stream source is not an object.');
-  }
+function citation(value: Record<string, unknown>): ChatCitation {
   const key = boundedString(value.key, 'source key', 16);
-  const kind = boundedString(value.kind, 'source kind', 20);
-  if (!EVIDENCE_KEY.test(key) || !EVIDENCE_KINDS.has(kind)) {
+  const rawKind = boundedString(value.kind, 'source kind', 20);
+  if (!EVIDENCE_KEY.test(key) || !EVIDENCE_KINDS.has(rawKind as ChatCitation['kind'])) {
     throw new ChatStreamProtocolError('A chat stream source has an invalid identity.');
   }
-  const expectedPrefix = { conversation: 'H', memory: 'M', web: 'W', policy: 'P' }[kind];
-  if (key[0] !== expectedPrefix) {
+  const kind = rawKind as ChatCitation['kind'];
+  if (key[0] !== EVIDENCE_PREFIX[kind]) {
     throw new ChatStreamProtocolError('A chat stream source key does not match its kind.');
   }
-  const locator = nullableJsonMapping(value.locator);
-  const base: ChatCitation = {
+  return {
     key,
-    kind: kind as ChatCitation['kind'],
+    kind,
     source_id: nullableString(value.source_id, 'source_id', 255),
     title: nullableString(value.title, 'source title', 4_096),
     url: nullableString(value.url, 'source URL', 8_192),
-    locator,
+    locator: nullableJsonMapping(value.locator),
   };
-  if (!includeFlag) return base;
-  if (typeof value.included !== 'boolean') {
-    throw new ChatStreamProtocolError('A chat stream source has an invalid included flag.');
-  }
-  return { ...base, included: value.included };
 }
 
 function webSourceArray(value: unknown): WebSource[] {
