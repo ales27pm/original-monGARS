@@ -24,8 +24,8 @@ const WEB_SEARCH_STATUSES = new Set([
 const EVIDENCE_KINDS = new Set(['memory', 'web', 'conversation', 'policy']);
 
 export class ChatStreamProtocolError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
     this.name = 'ChatStreamProtocolError';
   }
 }
@@ -48,10 +48,6 @@ export class ChatNdjsonDecoder {
   }
 
   private drain(final: boolean): ChatStreamFrame[] {
-    if (this.buffer.length > MAX_BUFFER_CHARACTERS) {
-      throw new ChatStreamProtocolError('The chat stream line exceeded its buffer ceiling.');
-    }
-
     const frames: ChatStreamFrame[] = [];
     let newline = this.buffer.indexOf('\n');
     while (newline >= 0) {
@@ -61,6 +57,9 @@ export class ChatNdjsonDecoder {
       newline = this.buffer.indexOf('\n');
     }
 
+    if (this.buffer.length > MAX_BUFFER_CHARACTERS) {
+      throw new ChatStreamProtocolError('The chat stream line exceeded its buffer ceiling.');
+    }
     if (final && this.buffer.trim()) {
       const line = this.buffer.replace(/\r$/, '');
       this.buffer = '';
