@@ -13,13 +13,19 @@ export {
 export type {
   ApiCallOptions,
   ApiTransportSecurity,
+  ChatStreamHandlers,
+  ChatStreamOptions,
   FetchImplementation,
   MongarsClientOptions,
 } from './client';
+export { ChatNdjsonDecoder, ChatStreamProtocolError, parseChatStreamFrameLine } from './ndjson';
 
 export type {
+  ChatCitation,
   ChatRequest,
   ChatResponse,
+  ChatStreamFrame,
+  ChatStreamSource,
   JsonPrimitive,
   JsonValue,
   MemoryNoteCreateRequest,

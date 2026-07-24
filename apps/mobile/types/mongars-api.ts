@@ -95,6 +95,35 @@ export type ChatResponse = {
   citations?: ChatCitation[];
 };
 
+export type ChatStreamSource = ChatCitation & {
+  included: boolean;
+};
+
+export type ChatStreamFrame =
+  | {
+      type: 'start';
+      trace_id: string;
+      session_id: string;
+    }
+  | {
+      type: 'sources';
+      sources: ChatStreamSource[];
+    }
+  | {
+      type: 'delta';
+      text: string;
+    }
+  | (ChatResponse & {
+      type: 'final';
+      sources: WebSource[];
+      citations: ChatCitation[];
+    })
+  | {
+      type: 'error';
+      code: string;
+      retryable: boolean;
+    };
+
 export type MemorySearchRequest = {
   query: string;
   top_k?: number;

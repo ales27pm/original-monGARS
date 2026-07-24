@@ -3,6 +3,7 @@
 from .base import (
     ChatMessage,
     ChatResponse,
+    ChatStreamChunk,
     HealthStatus,
     InferenceBackend,
     InferenceConfigurationError,
@@ -13,12 +14,14 @@ from .base import (
     InferenceResponseError,
     InferenceTimeoutError,
     JsonValue,
+    StreamingInferenceBackend,
 )
 from .ollama import OllamaBackend
 
 __all__ = [
     "ChatMessage",
     "ChatResponse",
+    "ChatStreamChunk",
     "HealthStatus",
     "InferenceBackend",
     "InferenceConfigurationError",
@@ -30,4 +33,5 @@ __all__ = [
     "InferenceTimeoutError",
     "JsonValue",
     "OllamaBackend",
+    "StreamingInferenceBackend",
 ]
