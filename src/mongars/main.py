@@ -19,7 +19,7 @@ from mongars.embeddings.ollama import OllamaEmbeddingProvider
 from mongars.embeddings.service import EmbeddingService
 from mongars.http import RequestBodyLimitMiddleware
 from mongars.inference.base import InferenceBackend
-from mongars.inference.ollama import OllamaBackend
+from mongars.inference.ollama_streaming import StreamingOllamaBackend
 from mongars.logging import configure_logging
 from mongars.security.auth import BearerTokenAuth
 from mongars.security.policy import ActionClassification, ToolPolicy
@@ -39,7 +39,7 @@ def create_app(
     runtime_settings = settings or get_settings()
     configure_logging(runtime_settings.log_level)
     runtime_database = database or Database(runtime_settings)
-    runtime_inference = inference or OllamaBackend(
+    runtime_inference = inference or StreamingOllamaBackend(
         base_url=runtime_settings.ollama_base_url,
         chat_model=runtime_settings.ollama_chat_model,
         embedding_model=runtime_settings.ollama_embedding_model,
