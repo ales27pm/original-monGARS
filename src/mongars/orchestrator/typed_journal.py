@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
 from uuid import UUID
@@ -14,15 +15,20 @@ from mongars.autobiography.tables import GenerationRun
 from mongars.dialogue import ComposedResponse, DialoguePlan
 from mongars.events.repository import ConversationMessage, EventRepository
 from mongars.orchestrator.cortex import WebSearchStatus
+from mongars.orchestrator.typed_evidence import (
+    HistorySourceKey,
+    stable_history_source_keys,
+)
 
 logger = logging.getLogger(__name__)
 _SESSION_HISTORY_LIMIT = 12
+_FAILURE_PERSIST_TIMEOUT_SECONDS = 5.0
 
 
 @dataclass(frozen=True, slots=True)
 class HistoryBundle:
     messages: tuple[ConversationMessage, ...]
-    source_ids: dict[int, str]
+    source_ids: dict[HistorySourceKey, str]
 
 
 class TypedChatJournal:
@@ -50,7 +56,7 @@ class TypedChatJournal:
             session_id=session_id,
             limit=_SESSION_HISTORY_LIMIT,
         )
-        pairs: list[tuple[ConversationMessage, StoredTurn]] = []
+        typed_entries: list[tuple[ConversationMessage, str]] = []
         for turn in typed_turns:
             if turn.role not in {"user", "assistant"}:
                 continue
@@ -58,19 +64,25 @@ class TypedChatJournal:
                 role="user" if turn.role == "user" else "assistant",
                 content=turn.content,
             )
-            pairs.append((message, turn))
+            typed_entries.append((message, str(turn.id)))
 
         # Generic episodic messages are the pre-migration prefix; typed turns are the
         # newer suffix. Keep both until an explicit history backfill removes this seam.
-        typed_messages = tuple(message for message, _turn in pairs)
-        combined = (*legacy, *typed_messages)[-_SESSION_HISTORY_LIMIT:]
-        retained_ids = {id(message) for message in combined}
+        legacy_entries: tuple[tuple[ConversationMessage, str | None], ...] = tuple(
+            (message, None) for message in legacy
+        )
+        combined_entries = (
+            *legacy_entries,
+            *typed_entries,
+        )[-_SESSION_HISTORY_LIMIT:]
+        messages = tuple(message for message, _source_id in combined_entries)
+        keys = stable_history_source_keys(messages)
         source_ids = {
-            id(message): str(turn.id)
-            for message, turn in pairs
-            if id(message) in retained_ids
+            key: source_id
+            for key, (_message, source_id) in zip(keys, combined_entries, strict=True)
+            if source_id is not None
         }
-        return HistoryBundle(messages=tuple(combined), source_ids=source_ids)
+        return HistoryBundle(messages=messages, source_ids=source_ids)
 
     async def accept_user_turn(
         self,
@@ -237,6 +249,64 @@ class TypedChatJournal:
         error_code: str,
         retryable: bool,
         cancelled: bool = False,
+    ) -> None:
+        persistence_task = asyncio.create_task(
+            self._persist_failure_transaction(
+                owner_id=owner_id,
+                session_id=session_id,
+                trace_id=trace_id,
+                generation_run_id=generation_run_id,
+                error_code=error_code,
+                retryable=retryable,
+                cancelled=cancelled,
+            )
+        )
+        cancellation: asyncio.CancelledError | None = None
+        deadline = asyncio.get_running_loop().time() + _FAILURE_PERSIST_TIMEOUT_SECONDS
+
+        while not persistence_task.done():
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                persistence_task.cancel()
+                await asyncio.gather(persistence_task, return_exceptions=True)
+                logger.warning(
+                    "typed_chat_failure_persistence_timed_out",
+                    extra={"generation_run_id": str(generation_run_id)},
+                )
+                break
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(persistence_task),
+                    timeout=remaining,
+                )
+            except asyncio.CancelledError as cancellation_error:
+                cancellation = cancellation or cancellation_error
+                current_task = asyncio.current_task()
+                if current_task is not None:
+                    while current_task.cancelling():
+                        current_task.uncancel()
+            except TimeoutError:
+                persistence_task.cancel()
+                await asyncio.gather(persistence_task, return_exceptions=True)
+                logger.warning(
+                    "typed_chat_failure_persistence_timed_out",
+                    extra={"generation_run_id": str(generation_run_id)},
+                )
+                break
+
+        if cancellation is not None:
+            raise cancellation
+
+    async def _persist_failure_transaction(
+        self,
+        *,
+        owner_id: str,
+        session_id: UUID,
+        trace_id: str,
+        generation_run_id: UUID,
+        error_code: str,
+        retryable: bool,
+        cancelled: bool,
     ) -> None:
         try:
             await self._session.rollback()
