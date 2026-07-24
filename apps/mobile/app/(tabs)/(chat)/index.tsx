@@ -8,9 +8,7 @@ import { StatusPill } from '@/components/status-pill';
 import { SurfaceCard } from '@/components/surface-card';
 import { radii } from '@/constants/theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
-import { useChat } from '@/hooks/use-mongars-api';
-import { useMongars } from '@/providers/mongars-provider';
-import type { ChatRequest } from '@/types/mongars-api';
+import { useStreamingChat } from '@/hooks/use-streaming-chat';
 import {
   canTransition,
   nextLabel,
@@ -18,15 +16,18 @@ import {
   type VoiceLoopEvent,
   type VoiceLoopState,
 } from '@/lib/voice-state-machine';
+import { useMongars } from '@/providers/mongars-provider';
+import type { ChatCitation, ChatRequest, JsonValue } from '@/types/mongars-api';
 
 const suggestions = ['Summarize my day', 'Search project memory', 'Show active tasks'];
 
+type ChatSource = { label: string; url?: string };
 type ChatDisplayMessage = {
   id: string;
   role: 'assistant' | 'user';
   text: string;
   timestamp: string;
-  sources?: { label: string; url?: string }[];
+  sources?: ChatSource[];
 };
 
 const webSearchModes = ['off', 'auto', 'required'] as const;
@@ -49,7 +50,7 @@ function voiceReducer(state: VoiceLoopState, event: VoiceLoopEvent): VoiceLoopSt
   return nextVoiceState(state, event);
 }
 
-function normalizeWebSource(source: unknown): { label: string; url: string } | null {
+function normalizeWebSource(source: unknown): ChatSource | null {
   if (!source || typeof source !== 'object') return null;
   const candidate = source as { title?: unknown; url?: unknown };
   if (typeof candidate.title !== 'string' || typeof candidate.url !== 'string') return null;
@@ -65,6 +66,39 @@ function normalizeWebSource(source: unknown): { label: string; url: string } | n
   } catch {
     return null;
   }
+}
+
+function normalizeCitation(citation: ChatCitation): ChatSource {
+  const locator = locatorLabel(citation.locator);
+  const title = citation.title?.trim() || citation.kind;
+  const label = `${citation.key} · ${title}${locator ? ` · ${locator}` : ''}`;
+  if (!citation.url) return { label };
+  try {
+    const parsed = new URL(citation.url);
+    if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) return { label };
+    return { label, url: parsed.toString() };
+  } catch {
+    return { label };
+  }
+}
+
+function locatorLabel(locator: { [key: string]: JsonValue } | null): string | null {
+  if (!locator) return null;
+  const page = locator.page_number ?? locator.page;
+  if (typeof page === 'number' && Number.isFinite(page)) return `page ${page}`;
+  const headings = locator.heading_path;
+  if (Array.isArray(headings)) {
+    const text = headings.filter((item): item is string => typeof item === 'string').join(' › ');
+    if (text) return text;
+  }
+  const lineStart = locator.line_start;
+  const lineEnd = locator.line_end;
+  if (typeof lineStart === 'number') {
+    return typeof lineEnd === 'number' && lineEnd !== lineStart
+      ? `lines ${lineStart}–${lineEnd}`
+      : `line ${lineStart}`;
+  }
+  return null;
 }
 
 export default function ChatScreen() {
@@ -89,10 +123,11 @@ export default function ChatScreen() {
 function ConnectedChatScreen() {
   const theme = useAppTheme();
   const { hasToken } = useMongars();
-  const chat = useChat();
+  const chat = useStreamingChat();
   const [draft, setDraft] = useState('');
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatDisplayMessage[]>([]);
+  const [lastModel, setLastModel] = useState<string | null>(null);
   const [webSearchMode, setWebSearchMode] = useState<WebSearchMode>('auto');
   const [voiceState, dispatchVoiceEvent] = useReducer(voiceReducer, 'idle');
   const [voiceError, setVoiceError] = useState<string | null>(null);
@@ -119,24 +154,12 @@ function ConnectedChatScreen() {
             : '—';
 
   const primaryVoiceEvent: VoiceLoopEvent = (() => {
-    if (voiceState === 'idle') {
-      return 'start_push_to_talk';
-    }
-    if (voiceState === 'requesting_permission') {
-      return 'permission_granted';
-    }
-    if (voiceState === 'listening') {
-      return 'stop_recording';
-    }
-    if (voiceState === 'finalizing') {
-      return 'transcription_complete';
-    }
-    if (voiceState === 'thinking') {
-      return 'speak_complete';
-    }
-    if (voiceState === 'speaking') {
-      return continuousVoiceLoop ? 'auto_restart' : 'tts_stopped';
-    }
+    if (voiceState === 'idle') return 'start_push_to_talk';
+    if (voiceState === 'requesting_permission') return 'permission_granted';
+    if (voiceState === 'listening') return 'stop_recording';
+    if (voiceState === 'finalizing') return 'transcription_complete';
+    if (voiceState === 'thinking') return 'speak_complete';
+    if (voiceState === 'speaking') return continuousVoiceLoop ? 'auto_restart' : 'tts_stopped';
     return 'speak_complete';
   })();
 
@@ -156,10 +179,9 @@ function ConnectedChatScreen() {
     if (process.env.EXPO_OS === 'ios') {
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
-    const pendingMessageId = `user-${Date.now()}`;
     setMessages((current) => [
       ...current,
-      { id: pendingMessageId, role: 'user', text, timestamp: 'Now' },
+      { id: `user-${Date.now()}`, role: 'user', text, timestamp: 'Now' },
     ]);
     try {
       const response = await chat.mutate({
@@ -168,10 +190,20 @@ function ConnectedChatScreen() {
         require_local_only: true,
         web_search: webSearchMode,
       });
-      const responseSources = Array.isArray(response.sources)
+      const citationSources = Array.isArray(response.citations)
+        ? response.citations.map(normalizeCitation)
+        : [];
+      const fallbackSources = Array.isArray(response.sources)
         ? response.sources.map(normalizeWebSource).filter((source) => source !== null)
         : [];
+      const responseSources = citationSources.length
+        ? citationSources
+        : [
+            ...fallbackSources,
+            ...(response.memory_hits ? [{ label: `${response.memory_hits} memory hits` }] : []),
+          ];
       setSessionId(response.session_id);
+      setLastModel(response.model);
       setMessages((current) => [
         ...current,
         {
@@ -179,23 +211,27 @@ function ConnectedChatScreen() {
           role: 'assistant',
           text: response.answer,
           timestamp: 'Now',
-          sources:
-            responseSources.length || response.memory_hits
-              ? [
-                  ...responseSources,
-                  ...(response.memory_hits
-                    ? [{ label: `${response.memory_hits} memory hits` }]
-                    : []),
-                ]
-              : undefined,
+          sources: responseSources.length ? responseSources : undefined,
         },
       ]);
       setDraft((current) => (current.trim() === text ? '' : current));
+      chat.reset();
     } catch {
-      setMessages((current) => current.filter((message) => message.id !== pendingMessageId));
-      // The mutation exposes a user-readable error below the composer.
+      // The accepted user turn remains visible; the hook exposes a bounded error below.
     }
   }
+
+  const displayMessages: ChatDisplayMessage[] = chat.isPending
+    ? [
+        ...messages,
+        {
+          id: 'assistant-streaming',
+          role: 'assistant',
+          text: chat.partialText || '…',
+          timestamp: chat.attempt > 1 ? `Retry ${chat.attempt}` : 'Streaming',
+        },
+      ]
+    : messages;
 
   return (
     <ScreenScroll>
@@ -207,11 +243,17 @@ function ConnectedChatScreen() {
               Local Cortex
             </Text>
             <Text selectable style={{ color: theme.textSecondary, fontSize: 13 }}>
-              qwen3:4b-instruct · RTX 2070
+              {lastModel ?? 'Local model'} · private station
             </Text>
           </View>
           <StatusPill
-            label={chat.isPending ? 'Thinking' : hasToken ? 'Connected' : 'Token needed'}
+            label={
+              chat.isPending
+                ? `Streaming ${chat.attempt || 1}`
+                : hasToken
+                  ? 'Connected'
+                  : 'Token needed'
+            }
             tone={chat.isPending ? 'primary' : hasToken ? 'positive' : 'warning'}
           />
         </View>
@@ -244,10 +286,7 @@ function ConnectedChatScreen() {
                 opacity: pressed ? 0.75 : 1,
               })}
             >
-              <Text
-                selectable
-                style={{ color: theme.text, fontSize: 11, fontWeight: '700' }}
-              >
+              <Text selectable style={{ color: theme.text, fontSize: 11, fontWeight: '700' }}>
                 {voiceState === 'idle'
                   ? 'Request permission'
                   : voiceState === 'requesting_permission'
@@ -293,12 +332,19 @@ function ConnectedChatScreen() {
                 opacity: pressed ? 0.75 : 1,
               })}
             >
-              <Text selectable style={{ color: theme.textTertiary, fontSize: 11, fontWeight: '700' }}>
+              <Text
+                selectable
+                style={{ color: theme.textTertiary, fontSize: 11, fontWeight: '700' }}
+              >
                 Cancel
               </Text>
             </Pressable>
           </View>
-          <Text selectable accessibilityRole="text" style={{ color: theme.textTertiary, fontSize: 11 }}>
+          <Text
+            selectable
+            accessibilityRole="text"
+            style={{ color: theme.textTertiary, fontSize: 11 }}
+          >
             Waveform fallback: {voiceVisual}
           </Text>
           <Text selectable style={{ color: theme.textTertiary, fontSize: 11 }}>
@@ -311,12 +357,14 @@ function ConnectedChatScreen() {
             Request limits: {VOICE_LIMITS.maxUtteranceSeconds}s max utterance,{' '}
             {VOICE_LIMITS.maxUploadBytes} max upload bytes
           </Text>
-          {voiceError ? <Text style={{ color: theme.warning, fontSize: 11 }}>{voiceError}</Text> : null}
+          {voiceError ? (
+            <Text style={{ color: theme.warning, fontSize: 11 }}>{voiceError}</Text>
+          ) : null}
         </View>
       </SurfaceCard>
 
       <View style={{ gap: 12 }}>
-        {!messages.length ? (
+        {!displayMessages.length ? (
           <SurfaceCard title="Private, local conversation">
             <Text selectable style={{ color: theme.textSecondary, fontSize: 14, lineHeight: 20 }}>
               Ask Cortex to reason over your indexed memory or coordinate a local task. Nothing is
@@ -324,7 +372,7 @@ function ConnectedChatScreen() {
             </Text>
           </SurfaceCard>
         ) : null}
-        {messages.map((message) => {
+        {displayMessages.map((message) => {
           const isUser = message.role === 'user';
           return (
             <View
@@ -372,7 +420,7 @@ function ConnectedChatScreen() {
                           source.url
                             ? void Linking.openURL(source.url).catch(() => {
                                 Alert.alert(
-                                  'Could not open web result',
+                                  'Could not open source',
                                   'The source link could not be opened on this device.',
                                 );
                               })
@@ -526,6 +574,25 @@ function ConnectedChatScreen() {
           <Text selectable style={{ color: theme.textTertiary, flex: 1, fontSize: 11 }}>
             Local inference · web search {webSearchMode}
           </Text>
+          {chat.isPending ? (
+            <Pressable
+              accessibilityRole="button"
+              onPress={chat.cancel}
+              style={({ pressed }) => ({
+                alignItems: 'center',
+                backgroundColor: theme.surfaceMuted,
+                borderRadius: 999,
+                height: 38,
+                justifyContent: 'center',
+                opacity: pressed ? 0.75 : 1,
+                paddingHorizontal: 14,
+              })}
+            >
+              <Text style={{ color: theme.textSecondary, fontSize: 13, fontWeight: '700' }}>
+                Cancel
+              </Text>
+            </Pressable>
+          ) : null}
           <Pressable
             accessibilityRole="button"
             disabled={!draft.trim() || chat.isPending}
@@ -549,13 +616,13 @@ function ConnectedChatScreen() {
                 fontWeight: '700',
               }}
             >
-              {chat.isPending ? 'Thinking…' : 'Send'}
+              {chat.isPending ? 'Streaming…' : 'Send'}
             </Text>
           </Pressable>
         </View>
       </View>
       {chat.error ? (
-        <SurfaceCard tone="danger" title="Message not sent">
+        <SurfaceCard tone="danger" title="Response failed">
           <Text selectable style={{ color: theme.danger, fontSize: 13, lineHeight: 19 }}>
             {chat.error.message}
           </Text>
