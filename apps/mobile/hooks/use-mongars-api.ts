@@ -47,7 +47,9 @@ export type StreamingChatResult = {
   draftText: string;
   error: Error | null;
   isPending: boolean;
+  sessionId: string | null;
   sources: ChatStreamSource[];
+  traceId: string | null;
   mutate: (input: ChatRequest) => Promise<ChatResponse>;
   cancel: () => void;
   reset: () => void;
@@ -288,7 +290,9 @@ export function useStreamingChat(): StreamingChatResult {
   const [draftText, setDraftText] = useState('');
   const [error, setError] = useState<Error | null>(null);
   const [isPending, setIsPending] = useState(false);
+  const [sessionId, setSessionId] = useState<string | null>(null);
   const [sources, setSources] = useState<ChatStreamSource[]>([]);
+  const [traceId, setTraceId] = useState<string | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
   const requestIdRef = useRef(0);
   const mountedRef = useRef(true);
@@ -311,6 +315,8 @@ export function useStreamingChat(): StreamingChatResult {
     setData(null);
     setDraftText('');
     setSources([]);
+    setSessionId(null);
+    setTraceId(null);
     setError(null);
     setIsPending(false);
   }, []);
@@ -324,16 +330,19 @@ export function useStreamingChat(): StreamingChatResult {
       setData(null);
       setDraftText('');
       setSources([]);
+      setTraceId(null);
       setError(null);
       setIsPending(true);
 
       try {
         const response = await requireClient(client, configurationError).streamChat(input, {
           signal: controller.signal,
-          onStart: () => {
+          onStart: (frame) => {
             if (mountedRef.current && requestId === requestIdRef.current) {
               setDraftText('');
               setSources([]);
+              setSessionId(frame.session_id);
+              setTraceId(frame.trace_id);
             }
           },
           onSources: (nextSources) => {
@@ -350,12 +359,15 @@ export function useStreamingChat(): StreamingChatResult {
         if (mountedRef.current && requestId === requestIdRef.current) {
           setData(response);
           setDraftText(response.answer);
+          setSessionId(response.session_id);
+          setTraceId(response.trace_id);
         }
         return response;
       } catch (requestError) {
         if (mountedRef.current && requestId === requestIdRef.current) {
           // A partial draft is not a committed assistant response. Discard it on every
-          // protocol, inference, or cancellation failure.
+          // protocol, inference, or cancellation failure. Keep start-frame identity so the
+          // next turn remains in the same server-side autobiographical session.
           setDraftText('');
           setSources([]);
           if (!isAbortError(requestError)) setError(toError(requestError));
@@ -370,7 +382,18 @@ export function useStreamingChat(): StreamingChatResult {
     [client, configurationError],
   );
 
-  return { data, draftText, error, isPending, sources, mutate, cancel, reset };
+  return {
+    data,
+    draftText,
+    error,
+    isPending,
+    sessionId,
+    sources,
+    traceId,
+    mutate,
+    cancel,
+    reset,
+  };
 }
 
 export function useMemorySearch(): MutationResult<
