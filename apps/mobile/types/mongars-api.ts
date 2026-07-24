@@ -68,6 +68,15 @@ export type WebSource = {
   url: string;
 };
 
+export type ChatCitation = {
+  key: string;
+  kind: 'memory' | 'web' | 'conversation' | 'policy';
+  source_id: string | null;
+  title: string | null;
+  url: string | null;
+  locator: { [key: string]: JsonValue } | null;
+};
+
 export type ChatResponse = {
   trace_id: string;
   session_id: string;
@@ -83,6 +92,7 @@ export type ChatResponse = {
     | 'no_results'
     | 'context_limited';
   sources?: WebSource[];
+  citations?: ChatCitation[];
 };
 
 export type MemorySearchRequest = {
