@@ -333,9 +333,13 @@ export function useStreamingChat(): StreamingChatResult {
       setTraceId(null);
       setError(null);
       setIsPending(true);
+      const effectiveInput =
+        input.session_id == null && sessionId
+          ? { ...input, session_id: sessionId }
+          : input;
 
       try {
-        const response = await requireClient(client, configurationError).streamChat(input, {
+        const response = await requireClient(client, configurationError).streamChat(effectiveInput, {
           signal: controller.signal,
           onStart: (frame) => {
             if (mountedRef.current && requestId === requestIdRef.current) {
@@ -379,7 +383,7 @@ export function useStreamingChat(): StreamingChatResult {
         }
       }
     },
-    [client, configurationError],
+    [client, configurationError, sessionId],
   );
 
   return {
