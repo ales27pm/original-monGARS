@@ -245,9 +245,11 @@ async def test_authenticated_ndjson_stream_commits_one_final_assistant_turn() ->
             "start",
             "sources",
             "delta",
-            "delta",
             "final",
         ]
+        assert "".join(
+            frame["text"] for frame in frames if frame["type"] == "delta"
+        ) == "streamed answer"
         assert frames[-1]["answer"] == "streamed answer"
         assert frames[-1]["citations"] == []
         assert frames[-1]["trace_id"] == frames[0]["trace_id"]
