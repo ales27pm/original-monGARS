@@ -1,7 +1,6 @@
 import type { ChatCitation, ChatResponse, ChatStreamFrame, WebSource } from '@/types/mongars-api';
 
 const MAX_LINE_BYTES = 1_000_000;
-const textEncoder = new TextEncoder();
 const WEB_SEARCH_STATUSES = new Set([
   'not_requested',
   'ok',
@@ -32,7 +31,7 @@ export class NdjsonChatDecoder {
   private parseLine(line: string): ChatStreamFrame[] {
     const normalized = line.endsWith('\r') ? line.slice(0, -1) : line;
     if (!normalized.trim()) return [];
-    if (textEncoder.encode(normalized).byteLength > MAX_LINE_BYTES) {
+    if (utf8ByteLength(normalized) > MAX_LINE_BYTES) {
       throw new Error('The monGARS stream frame exceeded its byte limit.');
     }
     let value: unknown;
@@ -45,7 +44,7 @@ export class NdjsonChatDecoder {
   }
 
   private assertBufferBounded(): void {
-    if (textEncoder.encode(this.buffer).byteLength > MAX_LINE_BYTES) {
+    if (utf8ByteLength(this.buffer) > MAX_LINE_BYTES) {
       throw new Error('The monGARS stream frame exceeded its byte limit.');
     }
   }
@@ -149,6 +148,29 @@ function nonEmptyString(value: unknown): value is string {
 
 function nullableString(value: unknown): value is string | null {
   return value === null || typeof value === 'string';
+}
+
+function utf8ByteLength(value: string): number {
+  let bytes = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x80) {
+      bytes += 1;
+    } else if (code < 0x800) {
+      bytes += 2;
+    } else if (code >= 0xd800 && code <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        bytes += 4;
+        index += 1;
+      } else {
+        bytes += 3;
+      }
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
