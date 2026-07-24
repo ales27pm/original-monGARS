@@ -12,7 +12,13 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import HTTPSHandler, HTTPRedirectHandler, Request, build_opener
+from urllib.request import (
+    HTTPSHandler,
+    HTTPRedirectHandler,
+    ProxyHandler,
+    Request,
+    build_opener,
+)
 
 _MAX_LINE_BYTES = 1_000_000
 _MAX_FRAMES = 10_000
@@ -68,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
         },
     )
     opener = build_opener(
+        ProxyHandler({}),
         _NoRedirects(),
         HTTPSHandler(context=context),
     )
