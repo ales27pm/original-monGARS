@@ -1,8 +1,11 @@
-"""Public inference contracts and Ollama implementation."""
+"""Public inference contracts and Ollama implementations."""
 
-from .base import (
+from mongars.inference.base import (
     ChatMessage,
     ChatResponse,
+    ChatStreamCompleted,
+    ChatStreamDelta,
+    ChatStreamEvent,
     HealthStatus,
     InferenceBackend,
     InferenceConfigurationError,
@@ -13,12 +16,18 @@ from .base import (
     InferenceResponseError,
     InferenceTimeoutError,
     JsonValue,
+    StreamingInferenceBackend,
 )
-from .ollama import OllamaBackend
+from mongars.inference.ollama import OllamaBackend
+from mongars.inference.ollama_streaming import StreamingOllamaBackend
+from mongars.inference.streaming import ObservedStreamingInference
 
 __all__ = [
     "ChatMessage",
     "ChatResponse",
+    "ChatStreamCompleted",
+    "ChatStreamDelta",
+    "ChatStreamEvent",
     "HealthStatus",
     "InferenceBackend",
     "InferenceConfigurationError",
@@ -29,5 +38,8 @@ __all__ = [
     "InferenceResponseError",
     "InferenceTimeoutError",
     "JsonValue",
+    "ObservedStreamingInference",
     "OllamaBackend",
+    "StreamingInferenceBackend",
+    "StreamingOllamaBackend",
 ]
