@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+import json as json_module
+from collections.abc import AsyncIterator, Mapping, Sequence
 from time import monotonic
 from typing import Any, cast
 from urllib.parse import urlsplit
@@ -12,6 +13,7 @@ import httpx
 from .base import (
     ChatMessage,
     ChatResponse,
+    ChatStreamChunk,
     HealthStatus,
     InferenceConnectionError,
     InferenceError,
@@ -24,6 +26,8 @@ from .base import (
 
 _BACKEND = "ollama"
 _VALID_ROLES = frozenset({"system", "user", "assistant", "tool"})
+_MAX_STREAM_LINE_BYTES = 1_000_000
+_MAX_STREAM_ERROR_BYTES = 16_384
 
 
 class OllamaBackend:
@@ -76,24 +80,13 @@ class OllamaBackend:
     ) -> ChatResponse:
         normalized_messages = _validate_messages(messages)
         selected_model = _validate_model(model, field="model") if model else self._chat_model
-        payload: dict[str, Any] = {
-            "model": selected_model,
-            "messages": [
-                {"role": message.role, "content": message.content}
-                for message in normalized_messages
-            ],
-            "stream": False,
-        }
-        if self._think is not None:
-            payload["think"] = self._think
-        if options is not None:
-            if not isinstance(options, Mapping):
-                raise InferenceRequestError(
-                    "Chat options must be a mapping.",
-                    backend=_BACKEND,
-                    operation="chat",
-                )
-            payload["options"] = dict(options)
+        payload = _chat_payload(
+            messages=normalized_messages,
+            model=selected_model,
+            options=options,
+            think=self._think,
+            stream=False,
+        )
 
         data = await self._request_json("POST", "/api/chat", operation="chat", json=payload)
         message = data.get("message")
@@ -103,9 +96,7 @@ class OllamaBackend:
         if not isinstance(content, str):
             raise _response_error("Chat response message has no string 'content'.", "chat")
 
-        response_model = data.get("model", selected_model)
-        if not isinstance(response_model, str) or not response_model.strip():
-            raise _response_error("Chat response has an invalid 'model'.", "chat")
+        response_model = _response_model(data, selected_model, operation="chat")
         done_reason = data.get("done_reason")
         if done_reason is not None and not isinstance(done_reason, str):
             raise _response_error("Chat response has an invalid 'done_reason'.", "chat")
@@ -128,6 +119,162 @@ class OllamaBackend:
             prompt_tokens=_optional_nonnegative_int(data, "prompt_eval_count", "chat"),
             completion_tokens=_optional_nonnegative_int(data, "eval_count", "chat"),
         )
+
+    async def stream_chat(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        model: str | None = None,
+        options: Mapping[str, JsonValue] | None = None,
+    ) -> AsyncIterator[ChatStreamChunk]:
+        """Stream a single Ollama chat response as validated NDJSON chunks."""
+
+        normalized_messages = _validate_messages(messages)
+        selected_model = _validate_model(model, field="model") if model else self._chat_model
+        payload = _chat_payload(
+            messages=normalized_messages,
+            model=selected_model,
+            options=options,
+            think=self._think,
+            stream=True,
+        )
+
+        try:
+            async with self._client.stream(
+                "POST",
+                f"{self._base_url}/api/chat",
+                json=payload,
+                timeout=self._timeout,
+            ) as response:
+                if not 200 <= response.status_code < 300:
+                    status_code = response.status_code
+                    detail = await _safe_stream_error_detail(response)
+                    raise InferenceHTTPError(
+                        f"Ollama chat_stream failed with HTTP {status_code}: {detail}",
+                        backend=_BACKEND,
+                        operation="chat_stream",
+                        status_code=status_code,
+                        retryable=status_code in {408, 425, 429} or status_code >= 500,
+                    )
+
+                saw_done = False
+                established_model: str | None = None
+                async for line in response.aiter_lines():
+                    if not line:
+                        continue
+                    if len(line.encode("utf-8")) > _MAX_STREAM_LINE_BYTES:
+                        raise _response_error(
+                            "Ollama chat stream emitted an oversized NDJSON line.",
+                            "chat_stream",
+                        )
+                    try:
+                        data = json_module.loads(line)
+                    except ValueError as exc:
+                        raise _response_error(
+                            "Ollama chat stream returned invalid NDJSON.",
+                            "chat_stream",
+                        ) from exc
+                    if not isinstance(data, dict):
+                        raise _response_error(
+                            "Ollama chat stream returned a non-object JSON value.",
+                            "chat_stream",
+                        )
+
+                    response_model = _response_model(
+                        data,
+                        established_model or selected_model,
+                        operation="chat_stream",
+                    )
+                    if established_model is None:
+                        established_model = response_model
+                    elif not (_model_aliases(established_model) & _model_aliases(response_model)):
+                        raise _response_error(
+                            "Ollama chat stream changed models during one response.",
+                            "chat_stream",
+                        )
+
+                    message = data.get("message")
+                    if not isinstance(message, Mapping):
+                        raise _response_error(
+                            "Ollama chat stream chunk is missing an object 'message'.",
+                            "chat_stream",
+                        )
+                    content = message.get("content", "")
+                    if not isinstance(content, str):
+                        raise _response_error(
+                            "Ollama chat stream chunk has invalid content.",
+                            "chat_stream",
+                        )
+
+                    done = data.get("done")
+                    if not isinstance(done, bool):
+                        raise _response_error(
+                            "Ollama chat stream chunk has an invalid 'done' flag.",
+                            "chat_stream",
+                        )
+                    if saw_done:
+                        raise _response_error(
+                            "Ollama chat stream emitted data after completion.",
+                            "chat_stream",
+                        )
+                    done_reason = data.get("done_reason")
+                    if done_reason is not None and not isinstance(done_reason, str):
+                        raise _response_error(
+                            "Ollama chat stream chunk has an invalid 'done_reason'.",
+                            "chat_stream",
+                        )
+                    if done_reason == "length":
+                        raise _response_error(
+                            "Chat response was truncated by the generation limit.",
+                            "chat_stream",
+                        )
+                    if done:
+                        saw_done = True
+
+                    yield ChatStreamChunk(
+                        content=content,
+                        model=response_model,
+                        done=done,
+                        done_reason=done_reason,
+                        prompt_tokens=_optional_nonnegative_int(
+                            data,
+                            "prompt_eval_count",
+                            "chat_stream",
+                        ),
+                        completion_tokens=_optional_nonnegative_int(
+                            data,
+                            "eval_count",
+                            "chat_stream",
+                        ),
+                    )
+
+                if not saw_done:
+                    raise _response_error(
+                        "Ollama chat stream ended without a terminal chunk.",
+                        "chat_stream",
+                    )
+        except InferenceError:
+            raise
+        except httpx.TimeoutException as exc:
+            raise InferenceTimeoutError(
+                "Ollama chat stream timed out.",
+                backend=_BACKEND,
+                operation="chat_stream",
+                retryable=True,
+            ) from exc
+        except httpx.RequestError as exc:
+            raise InferenceConnectionError(
+                "Ollama chat stream could not reach the backend.",
+                backend=_BACKEND,
+                operation="chat_stream",
+                retryable=True,
+            ) from exc
+        except (TypeError, ValueError) as exc:
+            raise InferenceRequestError(
+                "Ollama chat stream request could not be encoded.",
+                backend=_BACKEND,
+                operation="chat_stream",
+            ) from exc
 
     async def health(self) -> HealthStatus:
         """Probe Ollama and verify that both configured mandatory models exist."""
@@ -232,6 +379,51 @@ class OllamaBackend:
         return cast(dict[str, Any], data)
 
 
+def _chat_payload(
+    *,
+    messages: Sequence[ChatMessage],
+    model: str,
+    options: Mapping[str, JsonValue] | None,
+    think: bool | None,
+    stream: bool,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": message.role, "content": message.content} for message in messages
+        ],
+        "stream": stream,
+    }
+    if think is not None:
+        payload["think"] = think
+    if options is not None:
+        if not isinstance(options, Mapping):
+            raise InferenceRequestError(
+                "Chat options must be a mapping.",
+                backend=_BACKEND,
+                operation="chat_stream" if stream else "chat",
+            )
+        payload["options"] = dict(options)
+    return payload
+
+
+def _response_model(
+    data: Mapping[str, Any],
+    selected_model: str,
+    *,
+    operation: str,
+) -> str:
+    response_model = data.get("model", selected_model)
+    if not isinstance(response_model, str) or not response_model.strip():
+        raise _response_error("Chat response has an invalid 'model'.", operation)
+    if not (_model_aliases(response_model) & _model_aliases(selected_model)):
+        raise _response_error(
+            "Chat response model does not match the requested model.",
+            operation,
+        )
+    return response_model.strip()
+
+
 def _validate_base_url(value: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError("base_url must be a non-empty HTTP(S) URL")
@@ -280,9 +472,6 @@ def _model_aliases(value: str) -> set[str]:
     normalized = value.strip().casefold().rstrip("/")
     if not normalized:
         return set()
-    # Ollama reports default-library models both as short names and under its own
-    # registry namespace. Only collapse that known namespace: taking the basename of
-    # every qualified name would make unrelated registries/owners collide.
     library_prefix = "registry.ollama.ai/library/"
     canonical = (
         normalized[len(library_prefix) :] if normalized.startswith(library_prefix) else normalized
@@ -367,6 +556,27 @@ def _optional_nonnegative_int(
 def _safe_error_detail(response: httpx.Response) -> str:
     try:
         data = response.json()
+    except ValueError:
+        data = None
+    if isinstance(data, Mapping):
+        for key in ("error", "message"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return " ".join(value.split())[:200]
+    return response.reason_phrase or "request failed"
+
+
+async def _safe_stream_error_detail(response: httpx.Response) -> str:
+    collected = bytearray()
+    async for chunk in response.aiter_bytes():
+        remaining = _MAX_STREAM_ERROR_BYTES - len(collected)
+        if remaining <= 0:
+            break
+        collected.extend(chunk[:remaining])
+        if len(collected) >= _MAX_STREAM_ERROR_BYTES:
+            break
+    try:
+        data = json_module.loads(collected.decode("utf-8", errors="replace"))
     except ValueError:
         data = None
     if isinstance(data, Mapping):
