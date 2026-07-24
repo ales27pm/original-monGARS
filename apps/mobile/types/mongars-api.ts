@@ -95,6 +95,37 @@ export type ChatResponse = {
   citations?: ChatCitation[];
 };
 
+export type ChatStreamFrame =
+  | {
+      type: 'start';
+      protocol: 'mongars-chat-ndjson-v1';
+      stream_id: string;
+    }
+  | {
+      type: 'attempt';
+      attempt: number;
+    }
+  | {
+      type: 'reset';
+      attempt: number;
+      reason: 'validation_retry';
+    }
+  | {
+      type: 'delta';
+      attempt: number;
+      text: string;
+    }
+  | {
+      type: 'final';
+      response: ChatResponse;
+    }
+  | {
+      type: 'error';
+      code: string;
+      retryable: boolean;
+      discard_partial: true;
+    };
+
 export type MemorySearchRequest = {
   query: string;
   top_k?: number;

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
 
@@ -27,6 +27,26 @@ class ChatResponse:
     done_reason: str | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ChatStreamDelta:
+    """One user-visible assistant text fragment.
+
+    Implementations must never expose hidden-reasoning fields or marker-delimited traces.
+    """
+
+    content: str
+
+
+@dataclass(frozen=True, slots=True)
+class ChatStreamCompleted:
+    """Terminal stream event carrying the fully normalized assistant response."""
+
+    response: ChatResponse
+
+
+type ChatStreamEvent = ChatStreamDelta | ChatStreamCompleted
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,3 +145,17 @@ class InferenceBackend(Protocol):
 
     async def aclose(self) -> None:
         """Release resources owned by the adapter."""
+
+
+@runtime_checkable
+class StreamingInferenceBackend(Protocol):
+    """Optional capability for backends that emit visible chat text incrementally."""
+
+    def stream_chat(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        model: str | None = None,
+        options: Mapping[str, JsonValue] | None = None,
+    ) -> AsyncIterator[ChatStreamEvent]:
+        """Yield visible deltas followed by exactly one completion event."""
