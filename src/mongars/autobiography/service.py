@@ -15,7 +15,7 @@ from mongars.autobiography.contracts import (
     StoredTurn,
     normalize_event_payload,
 )
-from mongars.autobiography.repository import AutobiographyRepository
+from mongars.autobiography.repository import AutobiographyRepository, _safe_error_code
 from mongars.autobiography.tables import GenerationRun
 
 
@@ -201,7 +201,7 @@ class AutobiographyService:
         retryable: bool,
         cancelled: bool = False,
     ) -> None:
-        normalized_error = _event_error_code(error_code)
+        normalized_error = _safe_error_code(error_code)
         await self._repository.fail_generation(
             owner_id=owner_id,
             generation_run_id=generation_run_id,
@@ -268,15 +268,6 @@ class AutobiographyService:
             causation_id=causation_id,
             correlation_id=correlation_id,
         )
-
-
-def _event_error_code(value: str) -> str:
-    normalized = value.strip().casefold().replace("-", "_")
-    if not normalized or len(normalized) > 100 or any(
-        character not in "abcdefghijklmnopqrstuvwxyz0123456789_" for character in normalized
-    ):
-        return "generation_error"
-    return normalized
 
 
 def _expiry(retention_class: RetentionClass) -> datetime | None:
