@@ -5,6 +5,7 @@ import { useMongars } from '@/providers/mongars-provider';
 import type {
   ChatRequest,
   ChatResponse,
+  ChatStreamSource,
   DocumentUploadRequest,
   DocumentUploadResponse,
   MemoryNoteCreateRequest,
@@ -37,6 +38,17 @@ export type MutationResult<TInput, TData> = {
   error: Error | null;
   isPending: boolean;
   mutate: (input: TInput) => Promise<TData>;
+  cancel: () => void;
+  reset: () => void;
+};
+
+export type StreamingChatResult = {
+  data: ChatResponse | null;
+  draftText: string;
+  error: Error | null;
+  isPending: boolean;
+  sources: ChatStreamSource[];
+  mutate: (input: ChatRequest) => Promise<ChatResponse>;
   cancel: () => void;
   reset: () => void;
 };
@@ -268,6 +280,97 @@ export function useChat(): MutationResult<ChatRequest, ChatResponse> {
     [client, configurationError],
   );
   return useAbortableMutation(executor);
+}
+
+export function useStreamingChat(): StreamingChatResult {
+  const { client, configurationError } = useMongars();
+  const [data, setData] = useState<ChatResponse | null>(null);
+  const [draftText, setDraftText] = useState('');
+  const [error, setError] = useState<Error | null>(null);
+  const [isPending, setIsPending] = useState(false);
+  const [sources, setSources] = useState<ChatStreamSource[]>([]);
+  const controllerRef = useRef<AbortController | null>(null);
+  const requestIdRef = useRef(0);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      controllerRef.current?.abort();
+    };
+  }, []);
+
+  const cancel = useCallback(() => {
+    controllerRef.current?.abort();
+  }, []);
+
+  const reset = useCallback(() => {
+    controllerRef.current?.abort();
+    requestIdRef.current += 1;
+    setData(null);
+    setDraftText('');
+    setSources([]);
+    setError(null);
+    setIsPending(false);
+  }, []);
+
+  const mutate = useCallback(
+    async (input: ChatRequest) => {
+      controllerRef.current?.abort();
+      const controller = new AbortController();
+      const requestId = ++requestIdRef.current;
+      controllerRef.current = controller;
+      setData(null);
+      setDraftText('');
+      setSources([]);
+      setError(null);
+      setIsPending(true);
+
+      try {
+        const response = await requireClient(client, configurationError).streamChat(input, {
+          signal: controller.signal,
+          onStart: () => {
+            if (mountedRef.current && requestId === requestIdRef.current) {
+              setDraftText('');
+              setSources([]);
+            }
+          },
+          onSources: (nextSources) => {
+            if (mountedRef.current && requestId === requestIdRef.current) {
+              setSources(nextSources);
+            }
+          },
+          onDelta: (text) => {
+            if (mountedRef.current && requestId === requestIdRef.current) {
+              setDraftText((current) => current + text);
+            }
+          },
+        });
+        if (mountedRef.current && requestId === requestIdRef.current) {
+          setData(response);
+          setDraftText(response.answer);
+        }
+        return response;
+      } catch (requestError) {
+        if (mountedRef.current && requestId === requestIdRef.current) {
+          // A partial draft is not a committed assistant response. Discard it on every
+          // protocol, inference, or cancellation failure.
+          setDraftText('');
+          setSources([]);
+          if (!isAbortError(requestError)) setError(toError(requestError));
+        }
+        throw requestError;
+      } finally {
+        if (mountedRef.current && requestId === requestIdRef.current) {
+          setIsPending(false);
+        }
+      }
+    },
+    [client, configurationError],
+  );
+
+  return { data, draftText, error, isPending, sources, mutate, cancel, reset };
 }
 
 export function useMemorySearch(): MutationResult<
