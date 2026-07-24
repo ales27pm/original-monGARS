@@ -25,6 +25,13 @@ from mongars.adaptation.repository import (
     PersonalityProfileDataError,
     PersonalityRepository,
 )
+from mongars.adaptation.typed_feedback import (
+    ResolvedResponseTarget,
+    ResponseTraceIntegrityError,
+    ResponseTraceNotFound,
+    record_typed_feedback_event,
+    resolve_owned_response_target,
+)
 from mongars.api.dependencies import (
     PolicyDependency,
     PrincipalDependency,
@@ -45,7 +52,7 @@ from mongars.api.schemas import (
     TaskResponse,
 )
 from mongars.config import Settings
-from mongars.db.models import EpisodicEvent, TaskQueue
+from mongars.db.models import TaskQueue
 from mongars.events.repository import EventRepository
 from mongars.rm.repository import TaskRepository
 from mongars.rm.service import TaskIntegrityError, TaskService
@@ -124,12 +131,24 @@ async def create_feedback(
 ) -> ExplicitFeedbackCreateResponse:
     repository = PersonalityRepository(session)
     feedback, _kind = _to_feedback_payload(request)
+    response_target: ResolvedResponseTarget | None = None
     if feedback.response_trace_id is not None:
-        await _require_owned_response_trace(
-            session=session,
-            owner_id=principal.subject,
-            trace_id=feedback.response_trace_id,
-        )
+        try:
+            response_target = await resolve_owned_response_target(
+                session=session,
+                owner_id=principal.subject,
+                trace_id=feedback.response_trace_id,
+            )
+        except ResponseTraceNotFound as exc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="response trace not found",
+            ) from exc
+        except ResponseTraceIntegrityError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="response trace identity is inconsistent",
+            ) from exc
 
     try:
         receipt = await repository.record_feedback(
@@ -155,6 +174,14 @@ async def create_feedback(
             settings=settings,
             policy=policy,
             trace_id=feedback.response_trace_id or f"fb_{feedback.feedback_id.hex}",
+        )
+
+    if receipt.created and response_target is not None:
+        await record_typed_feedback_event(
+            session=session,
+            owner_id=principal.subject,
+            target=response_target,
+            feedback=feedback,
         )
 
     try:
@@ -338,29 +365,6 @@ async def create_profile_apply_task(
             detail=str(exc),
         ) from exc
     return TaskResponse.from_model(task)
-
-
-async def _require_owned_response_trace(
-    *,
-    session: AsyncSession,
-    owner_id: str,
-    trace_id: str,
-) -> None:
-    statement = (
-        select(EpisodicEvent.id)
-        .where(
-            EpisodicEvent.owner_id == owner_id,
-            EpisodicEvent.trace_id == trace_id,
-            EpisodicEvent.actor == "cortex",
-            EpisodicEvent.event_type == "message",
-        )
-        .limit(1)
-    )
-    if await session.scalar(statement) is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="response trace not found",
-        )
 
 
 async def _preference_task(
