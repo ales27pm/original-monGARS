@@ -135,6 +135,7 @@ async def chat_stream(
                 require_local_only=request.require_local_only,
                 web_search_mode=request.web_search,
             )
+            await pump.finish(result)
         except asyncio.CancelledError:
             raise
         except (InferenceError, EmbeddingError) as exc:
@@ -151,8 +152,6 @@ async def chat_stream(
                 extra={"error_type": type(exc).__name__},
             )
             await pump.fail(_PublicStreamError("stream_error", retryable=False))
-        else:
-            await pump.finish(result)
         finally:
             await pump.close()
 
