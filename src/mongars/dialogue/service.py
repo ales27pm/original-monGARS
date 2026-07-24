@@ -29,6 +29,7 @@ _THINKING = re.compile(r"</?think\b", re.IGNORECASE)
 _CORRECTION_KIND = "application_citation_validation"
 _STREAM_FALLBACK_CHARS = 256
 _STREAM_GUARD_CHARS = 16
+_MAX_RESPONSE_CHARACTERS = 1_000_000
 
 
 class Bouche:
@@ -187,10 +188,20 @@ class _StreamingTextGuard:
     def __init__(self) -> None:
         self._pending = ""
         self._started = False
+        self._received_characters = 0
 
     def feed(self, value: str) -> str:
         if not isinstance(value, str):
             raise TypeError("streamed Bouche content must be a string")
+        next_total = self._received_characters + len(value)
+        if next_total > _MAX_RESPONSE_CHARACTERS:
+            raise InferenceResponseError(
+                "Bouche response exceeds the output-size ceiling.",
+                backend="ollama",
+                operation="chat_stream",
+                retryable=False,
+            )
+        self._received_characters = next_total
         self._pending += value
         if not self._started:
             self._pending = self._pending.lstrip()
@@ -263,6 +274,13 @@ def _validate_answer(value: str) -> str:
             backend="ollama",
             operation="chat",
             retryable=True,
+        )
+    if len(normalized) > _MAX_RESPONSE_CHARACTERS:
+        raise InferenceResponseError(
+            "Bouche response exceeds the output-size ceiling.",
+            backend="ollama",
+            operation="chat",
+            retryable=False,
         )
     if _THINKING.search(normalized) is not None:
         raise InferenceResponseError(
