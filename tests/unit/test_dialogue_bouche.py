@@ -9,8 +9,13 @@ import pytest
 
 from mongars.autobiography.contracts import EvidenceSnapshot
 from mongars.dialogue import Bouche, DialoguePlan
-from mongars.inference.base import ChatMessage, ChatResponse, HealthStatus, JsonValue
-from mongars.inference.base import InferenceResponseError
+from mongars.inference.base import (
+    ChatMessage,
+    ChatResponse,
+    HealthStatus,
+    InferenceResponseError,
+    JsonValue,
+)
 
 
 def run[T](coroutine: Coroutine[Any, Any, T]) -> T:
@@ -51,7 +56,11 @@ class FakeInference:
         return None
 
 
-def plan(*, require_web: bool = False) -> DialoguePlan:
+def plan(
+    *,
+    require_web: bool = False,
+    options: Mapping[str, JsonValue] | None = None,
+) -> DialoguePlan:
     return DialoguePlan(
         trace_id="trc_test",
         session_id=uuid4(),
@@ -62,7 +71,7 @@ def plan(*, require_web: bool = False) -> DialoguePlan:
         ),
         model_alias="qwen3:4b-instruct",
         model_digest="a" * 64,
-        options={"temperature": 0.0},
+        options=options if options is not None else {"temperature": 0.0},
         evidence=(
             EvidenceSnapshot(
                 key="W1",
@@ -123,11 +132,35 @@ def test_hidden_reasoning_marker_is_rejected() -> None:
         run(Bouche(inference).compose(plan()))
 
 
-def test_dialogue_plan_defensively_freezes_options() -> None:
-    dialogue_plan = plan()
+def test_dialogue_plan_defensively_deep_freezes_options() -> None:
+    options: dict[str, JsonValue] = {
+        "sampling": {
+            "temperature": 0.0,
+            "stop": ["END", "STOP"],
+        }
+    }
+    dialogue_plan = plan(options=options)
+
+    sampling_input = options["sampling"]
+    assert isinstance(sampling_input, dict)
+    sampling_input["temperature"] = 1.0
+    stop_input = sampling_input["stop"]
+    assert isinstance(stop_input, list)
+    stop_input.append("MUTATED")
+
+    sampling = dialogue_plan.options["sampling"]
+    assert isinstance(sampling, Mapping)
+    assert sampling["temperature"] == 0.0
+    stop = sampling["stop"]
+    assert isinstance(stop, list)
+    assert stop == ["END", "STOP"]
 
     with pytest.raises(TypeError):
-        dialogue_plan.options["temperature"] = 1.0  # type: ignore[index]
+        sampling["temperature"] = 0.5  # type: ignore[index]
+    with pytest.raises(TypeError):
+        stop[0] = "CHANGED"
+    with pytest.raises(TypeError):
+        stop.append("CHANGED")
 
 
 def test_policy_evidence_key_is_valid_but_not_required_as_web_grounding() -> None:
