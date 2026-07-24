@@ -11,7 +11,8 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
+from urllib.parse import urlsplit
+from urllib.request import HTTPSHandler, HTTPRedirectHandler, Request, build_opener
 
 _MAX_LINE_BYTES = 1_000_000
 _MAX_FRAMES = 10_000
@@ -27,8 +28,23 @@ class StreamSmokeError(RuntimeError):
     """Raised when the deployed stream violates its public protocol."""
 
 
+class _NoRedirects(HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req: Request,
+        fp: Any,
+        code: int,
+        msg: str,
+        headers: Any,
+        newurl: str,
+    ) -> None:
+        del req, fp, code, msg, headers, newurl
+        return None
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = _parser().parse_args(argv)
+    url = _validated_stream_url(arguments.url)
     token = _read_secret(arguments.token_file)
     context = ssl.create_default_context(cafile=str(arguments.ca_file))
     payload = json.dumps(
@@ -41,7 +57,7 @@ def main(argv: list[str] | None = None) -> int:
         separators=(",", ":"),
     ).encode("utf-8")
     request = Request(
-        arguments.url,
+        url,
         data=payload,
         method="POST",
         headers={
@@ -51,13 +67,13 @@ def main(argv: list[str] | None = None) -> int:
             "User-Agent": "monGARS-deployment-stream-smoke/1",
         },
     )
+    opener = build_opener(
+        _NoRedirects(),
+        HTTPSHandler(context=context),
+    )
 
     try:
-        with urlopen(  # noqa: S310 - HTTPS URL and explicit certificate context are required below.
-            request,
-            context=context,
-            timeout=arguments.timeout,
-        ) as response:
+        with opener.open(request, timeout=arguments.timeout) as response:  # noqa: S310
             if response.status != 200:
                 raise StreamSmokeError(f"stream returned HTTP {response.status}, expected 200")
             media_type = response.headers.get_content_type().casefold()
@@ -93,6 +109,23 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--timeout", type=float, default=120.0)
     return parser
+
+
+def _validated_stream_url(value: str) -> str:
+    parsed = urlsplit(value.strip())
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path.rstrip("/") != "/v1/chat/stream"
+    ):
+        raise StreamSmokeError(
+            "stream URL must be an HTTPS /v1/chat/stream endpoint without credentials, query, or fragment"
+        )
+    return value.strip()
 
 
 def _read_secret(path: Path) -> str:
