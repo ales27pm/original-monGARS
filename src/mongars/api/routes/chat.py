@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mongars.adaptation.repository import (
@@ -8,6 +9,7 @@ from mongars.adaptation.repository import (
     PersonalityRepository,
 )
 from mongars.api.chat_schemas import ChatCitation, TypedChatResponse
+from mongars.api.chat_streaming import build_typed_chat_stream
 from mongars.api.dependencies import (
     EmbeddingsDependency,
     InferenceDependency,
@@ -20,6 +22,7 @@ from mongars.api.schemas import ChatRequest, WebSource
 from mongars.embeddings.errors import EmbeddingError, EmbeddingInputError
 from mongars.inference.base import InferenceError
 from mongars.orchestrator.cortex import Cortex
+from mongars.orchestrator.personality import PersonalitySnapshot
 from mongars.orchestrator.typed_chat import TypedChatRuntime
 
 router = APIRouter(prefix="/v1", tags=["cortex"])
@@ -35,15 +38,7 @@ async def chat(
     embeddings: EmbeddingsDependency,
     web_search: WebSearchDependency,
 ) -> TypedChatResponse:
-    try:
-        personality = await PersonalityRepository(session).current_snapshot(
-            owner_id=principal.subject
-        )
-    except PersonalityProfileDataError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="persisted personality profile is invalid",
-        ) from exc
+    personality = await _load_personality(session=session, owner_id=principal.subject)
 
     if isinstance(session, AsyncSession):
         runtime: Cortex | TypedChatRuntime = TypedChatRuntime(
@@ -116,3 +111,47 @@ async def chat(
             for citation in citations
         ],
     )
+
+
+@router.post("/chat/stream", response_class=StreamingResponse)
+async def chat_stream(
+    request: ChatRequest,
+    principal: PrincipalDependency,
+    session: SessionDependency,
+    settings: SettingsDependency,
+    inference: InferenceDependency,
+    embeddings: EmbeddingsDependency,
+    web_search: WebSearchDependency,
+) -> StreamingResponse:
+    """Stream provisional visible text; only the final frame is authoritative."""
+
+    if not isinstance(session, AsyncSession):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="typed chat streaming requires a PostgreSQL-backed session",
+        )
+    personality = await _load_personality(session=session, owner_id=principal.subject)
+    return build_typed_chat_stream(
+        request=request,
+        owner_id=principal.subject,
+        session=session,
+        settings=settings,
+        inference=inference,
+        embeddings=embeddings,
+        personality=personality,
+        web_search=web_search,
+    )
+
+
+async def _load_personality(
+    *,
+    session: SessionDependency,
+    owner_id: str,
+) -> PersonalitySnapshot:
+    try:
+        return await PersonalityRepository(session).current_snapshot(owner_id=owner_id)
+    except PersonalityProfileDataError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="persisted personality profile is invalid",
+        ) from exc
