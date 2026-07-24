@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from uuid import uuid4
 
@@ -8,17 +9,15 @@ import pytest
 from mongars.api.chat_streaming import ChatStreamPump
 from mongars.autobiography.contracts import EvidenceSnapshot
 from mongars.dialogue import CitationBinding, DialoguePlan
-from mongars.inference import ChatMessage
+from mongars.inference import ChatMessage, InferenceResponseError
 from mongars.orchestrator.cortex import ChatResult
 from mongars.orchestrator.typed_chat import TypedChatResult
 
 
-@pytest.mark.asyncio
-async def test_stream_pump_emits_start_sources_delta_and_final() -> None:
-    session_id = uuid4()
-    plan = DialoguePlan(
+def _plan() -> DialoguePlan:
+    return DialoguePlan(
         trace_id="trc_transport",
-        session_id=session_id,
+        session_id=uuid4(),
         messages=(ChatMessage(role="user", content="hello"),),
         model_alias="qwen3:4b",
         model_digest="a" * 64,
@@ -35,9 +34,14 @@ async def test_stream_pump_emits_start_sources_delta_and_final() -> None:
         estimated_prompt_tokens=20,
         context_budget=4096,
     )
+
+
+@pytest.mark.asyncio
+async def test_stream_pump_emits_start_sources_delta_and_final() -> None:
+    plan = _plan()
     result = TypedChatResult(
         trace_id=plan.trace_id,
-        session_id=session_id,
+        session_id=plan.session_id,
         answer="answer [M1]",
         model="qwen3:4b",
         memory_hits=1,
@@ -107,6 +111,33 @@ async def test_stream_pump_emits_bounded_public_error() -> None:
         {"type": "error", "code": "inference_timeout", "retryable": True}
     ]
     assert "private" not in json.dumps(frames)
+
+
+@pytest.mark.asyncio
+async def test_stream_pump_applies_backpressure_when_the_queue_is_full() -> None:
+    pump = ChatStreamPump()
+    await pump.on_start(_plan())
+    for _ in range(62):
+        await pump.on_delta("x")
+
+    blocked = asyncio.create_task(pump.on_delta("y"))
+    await asyncio.sleep(0)
+    assert blocked.done() is False
+
+    stream = pump.bytes()
+    first = await anext(stream)
+    assert json.loads(first)["type"] == "start"
+    await asyncio.wait_for(blocked, timeout=1)
+    await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_stream_pump_rejects_an_oversized_accumulated_answer() -> None:
+    pump = ChatStreamPump()
+    await pump.on_start(_plan())
+
+    with pytest.raises(InferenceResponseError, match="answer-size ceiling"):
+        await pump.on_delta("x" * 1_000_001)
 
 
 async def _decoded(pump: ChatStreamPump):
