@@ -127,6 +127,7 @@ async def chat_stream(
         )
 
     async def produce() -> None:
+        cancelled = False
         try:
             result = await runtime.chat(
                 owner_id=principal.subject,
@@ -137,6 +138,7 @@ async def chat_stream(
             )
             await pump.finish(result)
         except asyncio.CancelledError:
+            cancelled = True
             raise
         except (InferenceError, EmbeddingError) as exc:
             await pump.fail(exc)
@@ -153,7 +155,10 @@ async def chat_stream(
             )
             await pump.fail(_PublicStreamError("stream_error", retryable=False))
         finally:
-            await pump.close()
+            # When the response iterator is gone, nobody can drain a bounded queue. Skip the
+            # sentinel on cancellation; the body iterator is closing already.
+            if not cancelled:
+                await pump.close()
 
     async def body() -> AsyncIterator[bytes]:
         producer = asyncio.create_task(produce(), name="mongars-chat-stream")
