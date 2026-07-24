@@ -88,7 +88,27 @@ class ComposedResponse:
     latency_ms: float
 
 
+@dataclass(frozen=True, slots=True)
+class BoucheStreamDelta:
+    """One safe user-visible response fragment."""
+
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class BoucheStreamFinal:
+    """The fully validated response terminating a Bouche stream."""
+
+    response: ComposedResponse
+
+
+type BoucheStreamEvent = BoucheStreamDelta | BoucheStreamFinal
+
+
 __all__ = [
+    "BoucheStreamDelta",
+    "BoucheStreamEvent",
+    "BoucheStreamFinal",
     "CitationBinding",
     "ComposedResponse",
     "DialoguePlan",

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
 
@@ -24,6 +24,22 @@ class ChatResponse:
 
     content: str
     model: str
+    done_reason: str | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ChatStreamChunk:
+    """One normalized chunk from a streaming chat response.
+
+    A backend may emit zero or more content-bearing chunks followed by exactly one
+    ``done`` chunk. Usage metadata is expected only on that terminal chunk.
+    """
+
+    content: str
+    model: str
+    done: bool = False
     done_reason: str | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
@@ -125,3 +141,17 @@ class InferenceBackend(Protocol):
 
     async def aclose(self) -> None:
         """Release resources owned by the adapter."""
+
+
+@runtime_checkable
+class StreamingInferenceBackend(Protocol):
+    """Optional streaming capability implemented by supporting inference adapters."""
+
+    def stream_chat(
+        self,
+        messages: Sequence[ChatMessage],
+        *,
+        model: str | None = None,
+        options: Mapping[str, JsonValue] | None = None,
+    ) -> AsyncIterator[ChatStreamChunk]:
+        """Stream one assistant response as normalized chunks."""
