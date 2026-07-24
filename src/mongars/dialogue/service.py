@@ -4,15 +4,31 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import AsyncIterator
 from time import monotonic
 
 from mongars.autobiography.contracts import GroundingStatus
-from mongars.dialogue.models import CitationBinding, ComposedResponse, DialoguePlan
-from mongars.inference.base import ChatMessage, InferenceBackend, InferenceResponseError
+from mongars.dialogue.models import (
+    BoucheStreamDelta,
+    BoucheStreamEvent,
+    BoucheStreamFinal,
+    CitationBinding,
+    ComposedResponse,
+    DialoguePlan,
+)
+from mongars.inference.base import (
+    ChatMessage,
+    ChatStreamChunk,
+    InferenceBackend,
+    InferenceResponseError,
+    StreamingInferenceBackend,
+)
 
 _CITATION = re.compile(r"\[([HMWP][1-9][0-9]{0,2})\]")
 _THINKING = re.compile(r"</?think\b", re.IGNORECASE)
 _CORRECTION_KIND = "application_citation_validation"
+_STREAM_FALLBACK_CHARS = 256
+_STREAM_GUARD_CHARS = 16
 
 
 class Bouche:
@@ -43,7 +59,8 @@ class Bouche:
                         "kind": _CORRECTION_KIND,
                         "instruction": (
                             "Answer again. Cite at least one supplied web evidence key in square "
-                            "brackets, or explicitly abstain when the evidence is insufficient."
+                            "brackets. If the evidence is insufficient, state that limitation while "
+                            "citing the evidence that supports it."
                         ),
                         "allowed_web_keys": [
                             item.key for item in plan.evidence if item.kind == "web" and item.included
@@ -80,6 +97,127 @@ class Bouche:
             completion_tokens=response.completion_tokens,
             latency_ms=(monotonic() - started) * 1_000,
         )
+
+    async def stream(self, plan: DialoguePlan) -> AsyncIterator[BoucheStreamEvent]:
+        """Stream safe response fragments and terminate with one validated result.
+
+        Required-web responses retain the existing bounded correction behavior by using the
+        verified non-streaming path and then chunking the validated answer. Other plans use
+        native backend streaming when available. If final validation fails, no final event is
+        emitted and the caller must discard the draft fragments.
+        """
+
+        _validate_plan(plan)
+        if plan.require_web_citation or not isinstance(
+            self._inference,
+            StreamingInferenceBackend,
+        ):
+            composed = await self.compose(plan)
+            for text in _chunk_text(composed.answer):
+                yield BoucheStreamDelta(text=text)
+            yield BoucheStreamFinal(response=composed)
+            return
+
+        started = monotonic()
+        guard = _StreamingTextGuard()
+        parts: list[str] = []
+        terminal: ChatStreamChunk | None = None
+        established_model: str | None = None
+
+        async for chunk in self._inference.stream_chat(
+            plan.messages,
+            model=plan.model_alias,
+            options=plan.options,
+        ):
+            if established_model is None:
+                established_model = chunk.model
+            elif chunk.model != established_model:
+                raise InferenceResponseError(
+                    "Bouche stream changed models during one response.",
+                    backend="ollama",
+                    operation="chat_stream",
+                    retryable=False,
+                )
+            if terminal is not None:
+                raise InferenceResponseError(
+                    "Bouche stream emitted data after completion.",
+                    backend="ollama",
+                    operation="chat_stream",
+                    retryable=False,
+                )
+            if chunk.content:
+                safe = guard.feed(chunk.content)
+                if safe:
+                    parts.append(safe)
+                    yield BoucheStreamDelta(text=safe)
+            if chunk.done:
+                terminal = chunk
+
+        tail = guard.finish()
+        if tail:
+            parts.append(tail)
+            yield BoucheStreamDelta(text=tail)
+        if terminal is None:
+            raise InferenceResponseError(
+                "Bouche stream ended without a terminal response.",
+                backend="ollama",
+                operation="chat_stream",
+                retryable=True,
+            )
+
+        answer = _validate_answer("".join(parts))
+        citations = _citations(answer, plan)
+        composed = ComposedResponse(
+            answer=answer,
+            model_alias=terminal.model,
+            model_digest=plan.model_digest,
+            finish_reason=terminal.done_reason,
+            citations=citations,
+            grounding_status=_grounding_status(plan, citations),
+            prompt_tokens=terminal.prompt_tokens,
+            completion_tokens=terminal.completion_tokens,
+            latency_ms=(monotonic() - started) * 1_000,
+        )
+        yield BoucheStreamFinal(response=composed)
+
+
+class _StreamingTextGuard:
+    """Withhold a suffix so split hidden-reasoning markers cannot reach clients."""
+
+    def __init__(self) -> None:
+        self._pending = ""
+
+    def feed(self, value: str) -> str:
+        if not isinstance(value, str):
+            raise TypeError("streamed Bouche content must be a string")
+        self._pending += value
+        self._reject_hidden_reasoning()
+        emit_length = max(0, len(self._pending) - _STREAM_GUARD_CHARS)
+        emitted = self._pending[:emit_length]
+        self._pending = self._pending[emit_length:]
+        return emitted
+
+    def finish(self) -> str:
+        self._reject_hidden_reasoning()
+        emitted = self._pending
+        self._pending = ""
+        return emitted
+
+    def _reject_hidden_reasoning(self) -> None:
+        if _THINKING.search(self._pending) is not None:
+            raise InferenceResponseError(
+                "Bouche response contains a hidden-reasoning marker.",
+                backend="ollama",
+                operation="chat_stream",
+                retryable=False,
+            )
+
+
+def _chunk_text(value: str) -> tuple[str, ...]:
+    return tuple(
+        value[index : index + _STREAM_FALLBACK_CHARS]
+        for index in range(0, len(value), _STREAM_FALLBACK_CHARS)
+    )
 
 
 def _validate_plan(plan: DialoguePlan) -> None:
