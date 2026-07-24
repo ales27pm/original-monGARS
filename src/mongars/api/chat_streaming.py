@@ -18,6 +18,7 @@ from mongars.api.chat_schemas import (
     ChatStreamSources,
     ChatStreamStart,
 )
+from mongars.api.schemas import WebSource
 from mongars.autobiography.contracts import EvidenceSnapshot
 from mongars.dialogue import (
     Bouche,
@@ -26,9 +27,8 @@ from mongars.dialogue import (
     ComposedResponse,
     DialoguePlan,
 )
-from mongars.inference.base import InferenceBackend, InferenceError, InferenceResponseError
+from mongars.inference.base import InferenceBackend, InferenceResponseError
 from mongars.orchestrator.typed_chat import TypedChatResult
-from mongars.web_search import WebSearchResult
 
 _MAX_FRAME_BYTES: Final = 1_000_000
 _QUEUE_END: Final = object()
@@ -167,7 +167,7 @@ class ChatStreamPump:
             yield serialized
 
 
-async def cancel_and_join(task: asyncio.Task[object]) -> None:
+async def cancel_and_join[T](task: asyncio.Task[T]) -> None:
     """Cancel a stream producer and absorb only its expected cancellation."""
 
     if not task.done():
@@ -210,10 +210,7 @@ def _final_frame(result: TypedChatResult) -> ChatStreamFinal:
         model=result.model,
         memory_hits=result.memory_hits,
         web_search_status=result.web_search_status,
-        sources=[
-            {"title": source.title, "url": source.url}
-            for source in result.sources
-        ],
+        sources=[WebSource(title=source.title, url=source.url) for source in result.sources],
         citations=_citation_payload(result),
     )
 
