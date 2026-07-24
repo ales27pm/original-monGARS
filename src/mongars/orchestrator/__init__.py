@@ -31,6 +31,8 @@ _ORCHESTRATOR_EXPORTS = {
     "PersonalityPreference": ("personality", "PersonalityPreference"),
     "PersonalitySnapshot": ("personality", "PersonalitySnapshot"),
     "PersonalitySource": ("personality", "PersonalitySource"),
+    "TypedChatResult": ("typed_chat", "TypedChatResult"),
+    "TypedChatRuntime": ("typed_chat", "TypedChatRuntime"),
     "serialize_cognitive_context": ("cognitive_context", "serialize_cognitive_context"),
 }
 
@@ -47,5 +49,7 @@ __all__ = [
     "PersonalityPreference",
     "PersonalitySnapshot",
     "PersonalitySource",
+    "TypedChatResult",
+    "TypedChatRuntime",
     "serialize_cognitive_context",
 ]
