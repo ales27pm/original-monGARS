@@ -75,6 +75,28 @@ async def test_stream_pump_emits_start_sources_delta_and_final() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stream_pump_rejects_a_final_answer_that_differs_from_queued_deltas() -> None:
+    plan = _plan()
+    result = TypedChatResult(
+        trace_id=plan.trace_id,
+        session_id=plan.session_id,
+        answer="substituted final",
+        model="qwen3:4b",
+        memory_hits=0,
+        web_search_status="not_requested",
+        sources=(),
+        citations=(),
+    )
+    pump = ChatStreamPump()
+
+    await pump.on_start(plan)
+    await pump.on_delta("displayed draft")
+
+    with pytest.raises(InferenceResponseError, match="do not match"):
+        await pump.finish(result)
+
+
+@pytest.mark.asyncio
 async def test_stream_pump_supports_the_lightweight_cortex_result() -> None:
     result = ChatResult(
         trace_id="trc_legacy",
