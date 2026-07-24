@@ -25,11 +25,13 @@ from mongars.api.dependencies import (
 from mongars.api.schemas import ChatRequest, WebSource
 from mongars.embeddings.errors import EmbeddingError, EmbeddingInputError
 from mongars.inference.base import InferenceError
-from mongars.orchestrator.cortex import Cortex
-from mongars.orchestrator.typed_chat import TypedChatRuntime
+from mongars.orchestrator.cortex import ChatResult, Cortex
+from mongars.orchestrator.personality import PersonalitySnapshot
+from mongars.orchestrator.typed_chat import TypedChatResult, TypedChatRuntime
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1", tags=["cortex"])
+type RuntimeResult = ChatResult | TypedChatResult
 
 
 @router.post("/chat", response_model=TypedChatResponse)
@@ -173,7 +175,11 @@ async def chat_stream(
     )
 
 
-async def _personality(*, session: SessionDependency, owner_id: str):
+async def _personality(
+    *,
+    session: SessionDependency,
+    owner_id: str,
+) -> PersonalitySnapshot:
     try:
         return await PersonalityRepository(session).current_snapshot(owner_id=owner_id)
     except PersonalityProfileDataError as exc:
@@ -189,7 +195,7 @@ def _runtime(
     settings: SettingsDependency,
     inference: InferenceDependency,
     embeddings: EmbeddingsDependency,
-    personality,
+    personality: PersonalitySnapshot,
     web_search: WebSearchDependency,
 ) -> Cortex | TypedChatRuntime:
     if isinstance(session, AsyncSession):
@@ -232,8 +238,8 @@ def _validate_before_stream(*, request: ChatRequest, settings: SettingsDependenc
         )
 
 
-def _response(result) -> TypedChatResponse:
-    citations = tuple(getattr(result, "citations", ()))
+def _response(result: RuntimeResult) -> TypedChatResponse:
+    citations = result.citations if isinstance(result, TypedChatResult) else ()
     return TypedChatResponse(
         trace_id=result.trace_id,
         session_id=result.session_id,
