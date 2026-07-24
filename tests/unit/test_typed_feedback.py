@@ -47,7 +47,9 @@ async def test_resolves_one_owner_scoped_completed_typed_response() -> None:
     turn_id = uuid4()
 
     resolved = await resolve_owned_response_target(
-        session=_Session(typed_rows=[(run_id, session_id, turn_id)]),  # type: ignore[arg-type]
+        session=_Session(  # type: ignore[arg-type]
+            typed_rows=[(run_id, session_id, turn_id, "restricted", "ttl_30d")]
+        ),
         owner_id="owner",
         trace_id="trc_" + ("a" * 32),
     )
@@ -55,12 +57,14 @@ async def test_resolves_one_owner_scoped_completed_typed_response() -> None:
     assert resolved.generation_run_id == run_id
     assert resolved.session_id == session_id
     assert resolved.assistant_turn_id == turn_id
+    assert resolved.sensitivity == "restricted"
+    assert resolved.retention_class == "ttl_30d"
     assert resolved.is_typed is True
 
 
 @pytest.mark.asyncio
 async def test_rejects_ambiguous_or_missing_response_traces() -> None:
-    row = (uuid4(), uuid4(), uuid4())
+    row = (uuid4(), uuid4(), uuid4(), "private", "keep")
     with pytest.raises(ResponseTraceIntegrityError):
         await resolve_owned_response_target(
             session=_Session(typed_rows=[row, row]),  # type: ignore[arg-type]
@@ -86,10 +90,12 @@ async def test_legacy_response_trace_remains_accepted_without_typed_event() -> N
 
     assert resolved.is_typed is False
     assert resolved.assistant_turn_id is None
+    assert resolved.sensitivity is None
+    assert resolved.retention_class is None
 
 
 @pytest.mark.asyncio
-async def test_correction_event_is_content_minimized(
+async def test_correction_event_is_content_minimized_and_inherits_governance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     recorded: list[dict[str, Any]] = []
@@ -115,6 +121,8 @@ async def test_correction_event_is_content_minimized(
         generation_run_id=uuid4(),
         session_id=uuid4(),
         assistant_turn_id=uuid4(),
+        sensitivity="restricted",
+        retention_class="ttl_30d",
     )
 
     await record_typed_feedback_event(
@@ -126,6 +134,8 @@ async def test_correction_event_is_content_minimized(
 
     assert len(recorded) == 1
     assert recorded[0]["event_type"] == "correction_received"
+    assert recorded[0]["sensitivity"] == "restricted"
+    assert recorded[0]["retention_class"] == "ttl_30d"
     assert recorded[0]["payload"] == {
         "target_turn_id": target.assistant_turn_id,
         "correction_id": feedback.feedback_id,
@@ -161,6 +171,8 @@ async def test_helpfulness_event_maps_to_typed_rating(
         generation_run_id=uuid4(),
         session_id=uuid4(),
         assistant_turn_id=uuid4(),
+        sensitivity="private",
+        retention_class="keep",
     )
 
     await record_typed_feedback_event(
