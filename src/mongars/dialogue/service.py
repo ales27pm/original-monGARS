@@ -25,7 +25,8 @@ class Bouche:
         self._inference = inference
 
     async def compose(self, plan: DialoguePlan) -> ComposedResponse:
-        _validate_plan(plan)J        started = monotonic()
+        _validate_plan(plan)
+        started = monotonic()
         response = await self._inference.chat(
             plan.messages,
             model=plan.model_alias,
