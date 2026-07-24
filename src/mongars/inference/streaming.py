@@ -8,7 +8,6 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from mongars.inference.base import (
     ChatMessage,
     ChatResponse,
-    ChatStreamCompleted,
     ChatStreamDelta,
     HealthStatus,
     InferenceBackend,
