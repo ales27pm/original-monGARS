@@ -22,12 +22,34 @@ from mongars.web_search import WebSearchResult
 _EVIDENCE_KEY_RESERVE_BASE = 512
 _EVIDENCE_KEY_RESERVE_PER_ITEM = 64
 
+type HistorySourceKey = tuple[str, str, int]
+
 
 @dataclass(frozen=True, slots=True)
 class KeyedPrompt:
     messages: tuple[ChatMessage, ...]
     evidence: tuple[EvidenceSnapshot, ...]
     estimated_prompt_tokens: int
+
+
+def stable_history_source_keys(
+    messages: Sequence[ConversationMessage],
+) -> tuple[HistorySourceKey, ...]:
+    """Identify history values without depending on Python object identity.
+
+    Context packing retains a chronological suffix. Counting identical role/content values
+    from the newest end therefore preserves attribution when message objects are reconstructed.
+    """
+
+    reverse_occurrences: dict[tuple[str, str], int] = {}
+    reversed_keys: list[HistorySourceKey] = []
+    for message in reversed(messages):
+        digest = hashlib.sha256(message.content.encode("utf-8")).hexdigest()
+        value_key = (message.role, digest)
+        reverse_occurrence = reverse_occurrences.get(value_key, 0)
+        reverse_occurrences[value_key] = reverse_occurrence + 1
+        reversed_keys.append((message.role, digest, reverse_occurrence))
+    return tuple(reversed(reversed_keys))
 
 
 def reserve_evidence_key_budget(settings: Settings, *, candidate_count: int) -> Settings:
@@ -54,13 +76,13 @@ def key_prompt_evidence(
     included_history: Sequence[ConversationMessage],
     included_hits: Sequence[MemoryHit],
     included_web_results: Sequence[WebSearchResult],
-    history_source_ids: Mapping[int, str],
+    history_source_ids: Mapping[HistorySourceKey, str],
     web_retrieved_at: datetime | None,
     context_budget: int,
 ) -> KeyedPrompt:
     """Assign H/M/W/P keys and snapshot exactly the evidence supplied to Bouche."""
 
-    history_iter = iter(included_history)
+    history_key_iter = iter(stable_history_source_keys(included_history))
     hit_by_id = {str(hit.chunk_id): hit for hit in included_hits}
     web_by_url = {item.url: item for item in included_web_results}
     keyed_messages: list[ChatMessage] = []
@@ -85,7 +107,7 @@ def key_prompt_evidence(
         elif kind == "conversation_history":
             _key_conversation_history(
                 payload,
-                history_iter=history_iter,
+                history_key_iter=history_key_iter,
                 history_source_ids=history_source_ids,
                 evidence=evidence,
             )
@@ -168,8 +190,8 @@ def _key_cognitive_context(
 def _key_conversation_history(
     payload: dict[str, Any],
     *,
-    history_iter: Iterator[ConversationMessage],
-    history_source_ids: Mapping[int, str],
+    history_key_iter: Iterator[HistorySourceKey],
+    history_source_ids: Mapping[HistorySourceKey, str],
     evidence: list[EvidenceSnapshot],
 ) -> None:
     items = payload.get("messages")
@@ -183,7 +205,7 @@ def _key_conversation_history(
         key = f"H{index}"
         copied["key"] = key
         rewritten.append(copied)
-        original = next(history_iter, None)
+        source_key = next(history_key_iter, None)
         content = copied.get("content")
         role = copied.get("role")
         if not isinstance(content, str) or not isinstance(role, str):
@@ -193,7 +215,11 @@ def _key_conversation_history(
                 key=key,
                 kind="conversation",
                 text=content,
-                source_id=history_source_ids.get(id(original)) if original else None,
+                source_id=(
+                    history_source_ids.get(source_key)
+                    if source_key is not None
+                    else None
+                ),
                 title="Prior conversation turn",
                 locator={
                     "role": role,
@@ -323,8 +349,10 @@ def _canonical_json(payload: Mapping[str, Any]) -> str:
 
 
 __all__ = [
+    "HistorySourceKey",
     "KeyedPrompt",
     "canonical_prompt_bytes",
     "key_prompt_evidence",
     "reserve_evidence_key_budget",
+    "stable_history_source_keys",
 ]
