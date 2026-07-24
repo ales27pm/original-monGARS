@@ -112,6 +112,25 @@ async def test_stream_emits_deltas_then_one_validated_final() -> None:
 
 
 @pytest.mark.asyncio
+async def test_stream_deltas_exactly_match_the_normalized_final_answer() -> None:
+    inference = StreamingFakeInference(
+        (
+            ChatStreamChunk(content=" \n  Grounded", model="qwen3:4b"),
+            ChatStreamChunk(content=" answer [M1].   ", model="qwen3:4b", done=True),
+        )
+    )
+
+    events = [event async for event in Bouche(inference).stream(plan())]
+    delta_text = "".join(
+        event.text for event in events if isinstance(event, BoucheStreamDelta)
+    )
+    final = next(event.response for event in events if isinstance(event, BoucheStreamFinal))
+
+    assert delta_text == "Grounded answer [M1]."
+    assert final.answer == delta_text
+
+
+@pytest.mark.asyncio
 async def test_stream_withholds_split_hidden_reasoning_marker() -> None:
     inference = StreamingFakeInference(
         (
