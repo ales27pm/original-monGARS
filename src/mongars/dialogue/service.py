@@ -182,24 +182,32 @@ class Bouche:
 
 
 class _StreamingTextGuard:
-    """Withhold a suffix so split hidden-reasoning markers cannot reach clients."""
+    """Normalize stream edges and retain enough suffix to block split hidden markers."""
 
     def __init__(self) -> None:
         self._pending = ""
+        self._started = False
 
     def feed(self, value: str) -> str:
         if not isinstance(value, str):
             raise TypeError("streamed Bouche content must be a string")
         self._pending += value
+        if not self._started:
+            self._pending = self._pending.lstrip()
+            self._started = bool(self._pending)
         self._reject_hidden_reasoning()
-        emit_length = max(0, len(self._pending) - _STREAM_GUARD_CHARS)
+
+        guarded_limit = max(0, len(self._pending) - _STREAM_GUARD_CHARS)
+        emit_length = min(guarded_limit, _trailing_whitespace_start(self._pending))
         emitted = self._pending[:emit_length]
         self._pending = self._pending[emit_length:]
         return emitted
 
     def finish(self) -> str:
+        if not self._started:
+            self._pending = self._pending.lstrip()
         self._reject_hidden_reasoning()
-        emitted = self._pending
+        emitted = self._pending.rstrip()
         self._pending = ""
         return emitted
 
@@ -211,6 +219,13 @@ class _StreamingTextGuard:
                 operation="chat_stream",
                 retryable=False,
             )
+
+
+def _trailing_whitespace_start(value: str) -> int:
+    index = len(value)
+    while index and value[index - 1].isspace():
+        index -= 1
+    return index
 
 
 def _chunk_text(value: str) -> tuple[str, ...]:
