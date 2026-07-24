@@ -77,6 +77,8 @@ class AutobiographyService:
         estimated_prompt_tokens: int,
         grounding_status: GroundingStatus,
         evidence: tuple[EvidenceSnapshot, ...],
+        sensitivity: Sensitivity = "private",
+        retention_class: RetentionClass = "keep",
     ) -> GenerationRun:
         run = await self._repository.start_generation(
             owner_id=owner_id,
@@ -91,6 +93,9 @@ class AutobiographyService:
             context_budget=context_budget,
             estimated_prompt_tokens=estimated_prompt_tokens,
             grounding_status=grounding_status,
+            sensitivity=sensitivity,
+            retention_class=retention_class,
+            expires_at=_expiry(retention_class),
             evidence=evidence,
         )
         await self.record_event(
@@ -108,6 +113,8 @@ class AutobiographyService:
                 "policy_version": policy_version,
                 "evidence_count": len(evidence),
             },
+            sensitivity=sensitivity,
+            retention_class=retention_class,
         )
         return run
 
@@ -256,6 +263,7 @@ class AutobiographyService:
             session_id=session_id,
             sensitivity=sensitivity,
             retention_class=retention_class,
+            expires_at=_expiry(retention_class),
             source_occurred_at=source_occurred_at,
             causation_id=causation_id,
             correlation_id=correlation_id,

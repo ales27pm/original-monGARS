@@ -97,7 +97,10 @@ class AutobiographyRepository:
                 ConversationTurn.session_id == session_id,
                 ConversationTurn.state.in_(("accepted", "final")),
                 ConversationTurn.role.in_(("user", "assistant")),
-                (ConversationTurn.expires_at.is_(None) | (ConversationTurn.expires_at > func.now())),
+                (
+                    ConversationTurn.expires_at.is_(None)
+                    | (ConversationTurn.expires_at > func.now())
+                ),
             )
             .order_by(ConversationTurn.ordinal.desc())
             .limit(limit)
@@ -120,6 +123,9 @@ class AutobiographyRepository:
         context_budget: int,
         estimated_prompt_tokens: int,
         grounding_status: GroundingStatus,
+        sensitivity: Sensitivity,
+        retention_class: RetentionClass,
+        expires_at: datetime | None,
         evidence: tuple[EvidenceSnapshot, ...],
     ) -> GenerationRun:
         run = GenerationRun(
@@ -141,6 +147,9 @@ class AutobiographyRepository:
             latency_ms=None,
             finish_reason=None,
             grounding_status=grounding_status,
+            sensitivity=sensitivity,
+            retention_class=retention_class,
+            expires_at=expires_at,
             status="started",
             error_code=None,
         )
@@ -222,6 +231,7 @@ class AutobiographyRepository:
         session_id: UUID | None,
         sensitivity: Sensitivity,
         retention_class: RetentionClass,
+        expires_at: datetime | None,
         source_occurred_at: datetime | None = None,
         causation_id: UUID | None = None,
         correlation_id: UUID | None = None,
@@ -246,6 +256,7 @@ class AutobiographyRepository:
             source_occurred_at=source_occurred_at,
             sensitivity=sensitivity,
             retention_class=retention_class,
+            expires_at=expires_at,
             payload=payload,
             payload_sha256=hashlib.sha256(canonical).digest(),
         )

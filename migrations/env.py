@@ -11,6 +11,12 @@ from mongars.adaptation.models import (
     PersonalityProfileRecord,
     PersonalityProfileRevisionRecord,
 )
+from mongars.autobiography.tables import (
+    AutobiographicalEventRecord,
+    ConversationTurn,
+    GenerationEvidence,
+    GenerationRun,
+)
 from mongars.db.models import Base
 
 config = context.config
@@ -19,11 +25,15 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Import every separately packaged model before exposing metadata. This prevents a later
-# autogenerate run from misclassifying the adaptation tables as unmanaged database objects.
-_REGISTERED_ADAPTATION_MODELS = (
+# autogenerate run from misclassifying modular tables as unmanaged database objects.
+_REGISTERED_PACKAGED_MODELS = (
     ExplicitFeedbackRecord,
     PersonalityProfileRecord,
     PersonalityProfileRevisionRecord,
+    AutobiographicalEventRecord,
+    ConversationTurn,
+    GenerationEvidence,
+    GenerationRun,
 )
 target_metadata = Base.metadata
 

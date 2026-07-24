@@ -10,7 +10,7 @@ from mongars.autobiography.contracts import GroundingStatus
 from mongars.dialogue.models import CitationBinding, ComposedResponse, DialoguePlan
 from mongars.inference.base import ChatMessage, InferenceBackend, InferenceResponseError
 
-_CITATION = re.compile(r"\[([HMW][1-9][0-9]{0,2})\]")
+_CITATION = re.compile(r"\[([HMWP][1-9][0-9]{0,2})\]")
 _THINKING = re.compile(r"</?think\b", re.IGNORECASE)
 _CORRECTION_KIND = "application_citation_validation"
 
@@ -25,8 +25,7 @@ class Bouche:
         self._inference = inference
 
     async def compose(self, plan: DialoguePlan) -> ComposedResponse:
-        _validate_plan(plan)
-        started = monotonic()
+        _validate_plan(plan)J        started = monotonic()
         response = await self._inference.chat(
             plan.messages,
             model=plan.model_alias,
@@ -96,8 +95,6 @@ def _validate_plan(plan: DialoguePlan) -> None:
     keys = [item.key for item in plan.evidence]
     if len(keys) != len(set(keys)):
         raise ValueError("dialogue evidence keys must be unique")
-    if any(_CITATION.fullmatch(f"[{key}]") is None for key in keys):
-        raise ValueError("dialogue evidence key is invalid")
     if plan.require_web_citation and not any(
         item.kind == "web" and item.included for item in plan.evidence
     ):

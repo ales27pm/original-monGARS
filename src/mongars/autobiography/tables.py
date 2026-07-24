@@ -97,13 +97,21 @@ class GenerationRun(Base):
     __table_args__ = (
         ForeignKeyConstraint(
             ("user_turn_id", "owner_id", "session_id"),
-            ("conversation_turns.id", "conversation_turns.owner_id", "conversation_turns.session_id"),
+            (
+                "conversation_turns.id",
+                "conversation_turns.owner_id",
+                "conversation_turns.session_id",
+            ),
             name="fk_generation_run_user_turn_owner_session",
             ondelete="RESTRICT",
         ),
         ForeignKeyConstraint(
             ("assistant_turn_id", "owner_id", "session_id"),
-            ("conversation_turns.id", "conversation_turns.owner_id", "conversation_turns.session_id"),
+            (
+                "conversation_turns.id",
+                "conversation_turns.owner_id",
+                "conversation_turns.session_id",
+            ),
             name="fk_generation_run_assistant_turn_owner_session",
             ondelete="RESTRICT",
         ),
@@ -114,6 +122,14 @@ class GenerationRun(Base):
         CheckConstraint(
             "grounding_status IN ('not_required', 'grounded', 'partially_grounded', 'abstained')",
             name="ck_generation_run_grounding",
+        ),
+        CheckConstraint(
+            "sensitivity IN ('private', 'shared', 'restricted')",
+            name="ck_generation_run_sensitivity",
+        ),
+        CheckConstraint(
+            "retention_class IN ('keep', 'ttl_30d', 'ttl_90d', 'legal_hold')",
+            name="ck_generation_run_retention",
         ),
         CheckConstraint(
             "model_digest IS NULL OR model_digest ~ '^[0-9a-f]{64}$'",
@@ -170,6 +186,9 @@ class GenerationRun(Base):
     latency_ms: Mapped[float | None] = mapped_column(Float)
     finish_reason: Mapped[str | None] = mapped_column(String(64))
     grounding_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    sensitivity: Mapped[str] = mapped_column(String(20), nullable=False)
+    retention_class: Mapped[str] = mapped_column(String(20), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     status: Mapped[str] = mapped_column(String(20), nullable=False)
     error_code: Mapped[str | None] = mapped_column(String(100))
     created_at: Mapped[datetime] = mapped_column(
@@ -191,7 +210,7 @@ class GenerationEvidence(Base):
             name="ck_generation_evidence_kind",
         ),
         CheckConstraint(
-            "evidence_key ~ '^[HMW][1-9][0-9]{0,2}$'",
+            "evidence_key ~ '^[HMWP][1-9][0-9]{0,2}$'",
             name="ck_generation_evidence_key",
         ),
         CheckConstraint("rank >= 0", name="ck_generation_evidence_rank"),
@@ -242,7 +261,11 @@ class AutobiographicalEventRecord(Base):
             name="ck_autobiographical_event_digest_length",
         ),
         Index("ix_autobiographical_events_owner_occurred", "owner_id", text("occurred_at DESC")),
-        Index("ix_autobiographical_events_session_occurred", "session_id", text("occurred_at DESC")),
+        Index(
+            "ix_autobiographical_events_session_occurred",
+            "session_id",
+            text("occurred_at DESC"),
+        ),
         Index("ix_autobiographical_events_trace", "trace_id"),
     )
 
@@ -261,6 +284,7 @@ class AutobiographicalEventRecord(Base):
     source_occurred_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     sensitivity: Mapped[str] = mapped_column(String(20), nullable=False)
     retention_class: Mapped[str] = mapped_column(String(20), nullable=False)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     payload_sha256: Mapped[bytes] = mapped_column(LargeBinary(32), nullable=False)
 

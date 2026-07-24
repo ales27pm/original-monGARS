@@ -121,3 +121,40 @@ def test_hidden_reasoning_marker_is_rejected() -> None:
 
     with pytest.raises(InferenceResponseError, match="hidden-reasoning marker"):
         run(Bouche(inference).compose(plan()))
+
+
+def test_dialogue_plan_defensively_freezes_options() -> None:
+    dialogue_plan = plan()
+
+    with pytest.raises(TypeError):
+        dialogue_plan.options["temperature"] = 1.0  # type: ignore[index]
+
+
+def test_policy_evidence_key_is_valid_but_not_required_as_web_grounding() -> None:
+    inference = FakeInference(["This follows the active policy [P1]."])
+    dialogue_plan = DialoguePlan(
+        trace_id="trc_policy",
+        session_id=uuid4(),
+        messages=(
+            ChatMessage(role="system", content="Follow policy."),
+            ChatMessage(role="user", content="Explain the policy."),
+        ),
+        model_alias="qwen3:4b-instruct",
+        model_digest="b" * 64,
+        options={},
+        evidence=(
+            EvidenceSnapshot(
+                key="P1",
+                kind="policy",
+                text="The active policy requires local inference.",
+                rank=0,
+            ),
+        ),
+        estimated_prompt_tokens=50,
+        context_budget=4096,
+    )
+
+    result = run(Bouche(inference).compose(dialogue_plan))
+
+    assert [citation.key for citation in result.citations] == ["P1"]
+    assert result.grounding_status == "grounded"

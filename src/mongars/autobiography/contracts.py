@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import copy
+import math
+import re
+import unicodedata
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from types import MappingProxyType
 from typing import Any, Literal
 from uuid import UUID
 
@@ -18,6 +24,15 @@ RetentionClass = Literal["keep", "ttl_30d", "ttl_90d", "legal_hold"]
 GenerationStatus = Literal["started", "completed", "failed", "cancelled"]
 GroundingStatus = Literal["not_required", "grounded", "partially_grounded", "abstained"]
 EvidenceKind = Literal["memory", "web", "conversation", "policy"]
+
+_EVIDENCE_KEY = re.compile(r"^[HMWP][1-9][0-9]{0,2}$")
+_EVIDENCE_PREFIX: dict[EvidenceKind, str] = {
+    "conversation": "H",
+    "memory": "M",
+    "web": "W",
+    "policy": "P",
+}
+_MAX_EVIDENCE_TEXT_BYTES = 1_000_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,11 +58,51 @@ class EvidenceSnapshot:
     source_id: str | None = None
     title: str | None = None
     source_uri: str | None = None
-    locator: dict[str, JsonValue] | None = None
+    locator: Mapping[str, JsonValue] | None = None
     score: float | None = None
     rank: int = 0
     retrieved_at: datetime | None = None
     included: bool = True
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.key, str) or _EVIDENCE_KEY.fullmatch(self.key) is None:
+            raise ValueError("evidence key must match H/M/W/P followed by a positive index")
+        if self.key[0] != _EVIDENCE_PREFIX[self.kind]:
+            raise ValueError("evidence key prefix does not match evidence kind")
+        if not isinstance(self.text, str):
+            raise TypeError("evidence text must be a string")
+        normalized = unicodedata.normalize(
+            "NFC",
+            self.text.replace("\r\n", "\n").replace("\r", "\n"),
+        ).strip()
+        if not normalized:
+            raise ValueError("evidence text must not be empty")
+        if len(normalized.encode("utf-8")) > _MAX_EVIDENCE_TEXT_BYTES:
+            raise ValueError("evidence text exceeds the hard byte ceiling")
+        object.__setattr__(self, "text", normalized)
+
+        if isinstance(self.rank, bool) or not isinstance(self.rank, int) or self.rank < 0:
+            raise ValueError("evidence rank must be a non-negative integer")
+        if self.score is not None and (
+            isinstance(self.score, bool)
+            or not isinstance(self.score, (int, float))
+            or not math.isfinite(float(self.score))
+        ):
+            raise ValueError("evidence score must be a finite number")
+        if self.retrieved_at is not None and (
+            self.retrieved_at.tzinfo is None or self.retrieved_at.utcoffset() is None
+        ):
+            raise ValueError("evidence retrieval time must be timezone-aware")
+        if not isinstance(self.included, bool):
+            raise TypeError("evidence included flag must be boolean")
+        if self.locator is not None:
+            if not isinstance(self.locator, Mapping):
+                raise TypeError("evidence locator must be a mapping")
+            object.__setattr__(
+                self,
+                "locator",
+                MappingProxyType(copy.deepcopy(dict(self.locator))),
+            )
 
 
 class StrictPayload(BaseModel):

@@ -40,7 +40,10 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.CheckConstraint("ordinal > 0", name="ck_conversation_turn_ordinal_positive"),
+        sa.CheckConstraint(
+            "ordinal > 0",
+            name="ck_conversation_turn_ordinal_positive",
+        ),
         sa.CheckConstraint(
             "role IN ('user', 'assistant', 'policy')",
             name="ck_conversation_turn_role",
@@ -80,7 +83,11 @@ def upgrade() -> None:
         "conversation_turns",
         ["owner_id", "session_id", sa.text("ordinal DESC")],
     )
-    op.create_index("ix_conversation_turns_trace", "conversation_turns", ["trace_id"])
+    op.create_index(
+        "ix_conversation_turns_trace",
+        "conversation_turns",
+        ["trace_id"],
+    )
 
     op.create_table(
         "generation_runs",
@@ -102,6 +109,9 @@ def upgrade() -> None:
         sa.Column("latency_ms", sa.Float(), nullable=True),
         sa.Column("finish_reason", sa.String(length=64), nullable=True),
         sa.Column("grounding_status", sa.String(length=32), nullable=False),
+        sa.Column("sensitivity", sa.String(length=20), nullable=False),
+        sa.Column("retention_class", sa.String(length=20), nullable=False),
+        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
         sa.Column("status", sa.String(length=20), nullable=False),
         sa.Column("error_code", sa.String(length=100), nullable=True),
         sa.Column(
@@ -116,8 +126,17 @@ def upgrade() -> None:
             name="ck_generation_run_status",
         ),
         sa.CheckConstraint(
-            "grounding_status IN ('not_required', 'grounded', 'partially_grounded', 'abstained')",
+            "grounding_status IN "
+            "('not_required', 'grounded', 'partially_grounded', 'abstained')",
             name="ck_generation_run_grounding",
+        ),
+        sa.CheckConstraint(
+            "sensitivity IN ('private', 'shared', 'restricted')",
+            name="ck_generation_run_sensitivity",
+        ),
+        sa.CheckConstraint(
+            "retention_class IN ('keep', 'ttl_30d', 'ttl_90d', 'legal_hold')",
+            name="ck_generation_run_retention",
         ),
         sa.CheckConstraint(
             "model_digest IS NULL OR model_digest ~ '^[0-9a-f]{64}$'",
@@ -127,7 +146,10 @@ def upgrade() -> None:
             "octet_length(prompt_sha256) = 32",
             name="ck_generation_run_prompt_digest_length",
         ),
-        sa.CheckConstraint("context_budget > 0", name="ck_generation_run_context_budget"),
+        sa.CheckConstraint(
+            "context_budget > 0",
+            name="ck_generation_run_context_budget",
+        ),
         sa.CheckConstraint(
             "estimated_prompt_tokens >= 0",
             name="ck_generation_run_estimated_tokens",
@@ -179,7 +201,11 @@ def upgrade() -> None:
         "generation_runs",
         ["owner_id", "session_id", "created_at"],
     )
-    op.create_index("ix_generation_runs_trace", "generation_runs", ["trace_id"])
+    op.create_index(
+        "ix_generation_runs_trace",
+        "generation_runs",
+        ["trace_id"],
+    )
 
     op.create_table(
         "generation_evidence",
@@ -197,11 +223,20 @@ def upgrade() -> None:
             nullable=False,
         ),
         sa.Column("retrieved_text", sa.Text(), nullable=False),
-        sa.Column("retrieved_text_sha256", sa.LargeBinary(length=32), nullable=False),
+        sa.Column(
+            "retrieved_text_sha256",
+            sa.LargeBinary(length=32),
+            nullable=False,
+        ),
         sa.Column("score", sa.Float(), nullable=True),
         sa.Column("rank", sa.Integer(), nullable=False),
         sa.Column("retrieved_at", sa.DateTime(timezone=True), nullable=True),
-        sa.Column("included", sa.Boolean(), server_default=sa.text("true"), nullable=False),
+        sa.Column(
+            "included",
+            sa.Boolean(),
+            server_default=sa.text("true"),
+            nullable=False,
+        ),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),
@@ -213,10 +248,13 @@ def upgrade() -> None:
             name="ck_generation_evidence_kind",
         ),
         sa.CheckConstraint(
-            "evidence_key ~ '^[HMW][1-9][0-9]{0,2}$'",
+            "evidence_key ~ '^[HMWP][1-9][0-9]{0,2}$'",
             name="ck_generation_evidence_key",
         ),
-        sa.CheckConstraint("rank >= 0", name="ck_generation_evidence_rank"),
+        sa.CheckConstraint(
+            "rank >= 0",
+            name="ck_generation_evidence_rank",
+        ),
         sa.CheckConstraint(
             "octet_length(retrieved_text_sha256) = 32",
             name="ck_generation_evidence_digest_length",
@@ -256,10 +294,19 @@ def upgrade() -> None:
             server_default=sa.text("now()"),
             nullable=False,
         ),
-        sa.Column("source_occurred_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column(
+            "source_occurred_at",
+            sa.DateTime(timezone=True),
+            nullable=True,
+        ),
         sa.Column("sensitivity", sa.String(length=20), nullable=False),
         sa.Column("retention_class", sa.String(length=20), nullable=False),
-        sa.Column("payload", postgresql.JSONB(astext_type=sa.Text()), nullable=False),
+        sa.Column("expires_at", sa.DateTime(timezone=True), nullable=True),
+        sa.Column(
+            "payload",
+            postgresql.JSONB(astext_type=sa.Text()),
+            nullable=False,
+        ),
         sa.Column("payload_sha256", sa.LargeBinary(length=32), nullable=False),
         sa.CheckConstraint(
             "schema_version > 0",
@@ -297,7 +344,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_autobiographical_events_trace", table_name="autobiographical_events")
+    op.drop_index(
+        "ix_autobiographical_events_trace",
+        table_name="autobiographical_events",
+    )
     op.drop_index(
         "ix_autobiographical_events_session_occurred",
         table_name="autobiographical_events",
@@ -307,12 +357,21 @@ def downgrade() -> None:
         table_name="autobiographical_events",
     )
     op.drop_table("autobiographical_events")
-    op.drop_index("ix_generation_evidence_run_rank", table_name="generation_evidence")
+    op.drop_index(
+        "ix_generation_evidence_run_rank",
+        table_name="generation_evidence",
+    )
     op.drop_table("generation_evidence")
     op.drop_index("ix_generation_runs_trace", table_name="generation_runs")
-    op.drop_index("ix_generation_runs_owner_session_created", table_name="generation_runs")
+    op.drop_index(
+        "ix_generation_runs_owner_session_created",
+        table_name="generation_runs",
+    )
     op.drop_table("generation_runs")
-    op.drop_index("ix_conversation_turns_trace", table_name="conversation_turns")
+    op.drop_index(
+        "ix_conversation_turns_trace",
+        table_name="conversation_turns",
+    )
     op.drop_index(
         "ix_conversation_turns_owner_session_ordinal",
         table_name="conversation_turns",
