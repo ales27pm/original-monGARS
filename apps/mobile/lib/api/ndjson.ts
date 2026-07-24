@@ -8,6 +8,7 @@ import type {
 } from '@/types/mongars-api';
 
 const MAX_LINE_BYTES = 1_000_000;
+const MAX_CHUNK_BYTES = 2_000_000;
 const MAX_BUFFER_CHARACTERS = 1_100_000;
 const MAX_SOURCES = 1_000;
 const MAX_JSON_DEPTH = 24;
@@ -48,6 +49,9 @@ export class ChatNdjsonDecoder {
   push(chunk: Uint8Array): ChatStreamFrame[] {
     if (!(chunk instanceof Uint8Array)) {
       throw new ChatStreamProtocolError('The chat stream emitted a non-byte chunk.');
+    }
+    if (chunk.byteLength > MAX_CHUNK_BYTES) {
+      throw new ChatStreamProtocolError('The chat stream emitted an oversized network chunk.');
     }
     this.buffer += this.decoder.decode(chunk, { stream: true });
     return this.drain(false);
