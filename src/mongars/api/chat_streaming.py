@@ -95,6 +95,7 @@ class ChatStreamPump:
         self._terminal = False
         self._frame_count = 0
         self._delta_characters = 0
+        self._delta_parts: list[str] = []
 
     async def on_start(self, plan: DialoguePlan) -> None:
         if self._started:
@@ -129,8 +130,9 @@ class ChatStreamPump:
                 operation="chat_stream",
                 retryable=False,
             )
-        self._delta_characters = next_total
         await self._put_frame(ChatStreamDelta(text=text))
+        self._delta_characters = next_total
+        self._delta_parts.append(text)
 
     async def finish(self, result: RuntimeResult) -> None:
         if not self._started:
@@ -144,6 +146,13 @@ class ChatStreamPump:
             await self._put_frame(ChatStreamSources(sources=[]))
             if result.answer:
                 await self.on_delta(result.answer)
+        if "".join(self._delta_parts) != result.answer:
+            raise InferenceResponseError(
+                "Queued stream deltas do not match the final answer.",
+                backend="application",
+                operation="chat_stream",
+                retryable=False,
+            )
         await self._put_frame(_final_frame(result), terminal=True)
 
     async def fail(self, error: BaseException) -> None:
