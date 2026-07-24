@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
 
-from mongars.autobiography.contracts import normalize_event_payload
+from mongars.autobiography.contracts import EvidenceSnapshot, normalize_event_payload
 
 
 def test_normalizes_registered_event_payload() -> None:
@@ -47,23 +48,38 @@ def test_rejects_extra_or_malformed_event_fields() -> None:
         )
 
 
-def test_evidence_key_must_match_kind_and_locator_is_defensively_copied() -> None:
-    from mongars.autobiography.contracts import EvidenceSnapshot
-
-    locator = {"page_number": 7}
+def test_evidence_key_must_match_kind_and_locator_is_deeply_frozen() -> None:
+    locator = {
+        "page": {
+            "number": 7,
+            "labels": ["intro", "database"],
+        }
+    }
     snapshot = EvidenceSnapshot(
         key="M1",
         kind="memory",
         text="  grounded evidence  ",
         locator=locator,
     )
-    locator["page_number"] = 99
+
+    locator["page"]["number"] = 99
+    locator["page"]["labels"].append("mutated")
 
     assert snapshot.text == "grounded evidence"
     assert snapshot.locator is not None
-    assert snapshot.locator["page_number"] == 7
+    page = snapshot.locator["page"]
+    assert isinstance(page, Mapping)
+    assert page["number"] == 7
+    labels = page["labels"]
+    assert isinstance(labels, list)
+    assert labels == ["intro", "database"]
+
     with pytest.raises(TypeError):
-        snapshot.locator["page_number"] = 8  # type: ignore[index]
+        page["number"] = 8  # type: ignore[index]
+    with pytest.raises(TypeError):
+        labels[0] = "changed"
+    with pytest.raises(TypeError):
+        labels.append("changed")
 
     with pytest.raises(ValueError, match="prefix does not match"):
         EvidenceSnapshot(key="W1", kind="memory", text="bad prefix")
