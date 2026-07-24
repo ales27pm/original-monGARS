@@ -105,6 +105,15 @@ test('rejects malformed JSON and oversized unfinished lines', () => {
 });
 
 
+test('rejects an oversized individual network chunk', () => {
+  const decoder = new ChatNdjsonDecoder();
+  assert.throws(
+    () => decoder.push(new Uint8Array(2_000_001)),
+    ChatStreamProtocolError,
+  );
+});
+
+
 test('rejects non-finite locator values and invalid error codes', () => {
   assert.throws(
     () =>
