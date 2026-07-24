@@ -28,12 +28,14 @@ from mongars.dialogue import (
     DialoguePlan,
 )
 from mongars.inference.base import InferenceBackend, InferenceResponseError
+from mongars.orchestrator.cortex import ChatResult
 from mongars.orchestrator.typed_chat import TypedChatResult
 
 _MAX_FRAME_BYTES: Final = 1_000_000
 _QUEUE_END: Final = object()
 type StreamCallback = Callable[[DialoguePlan], Awaitable[None]]
 type DeltaCallback = Callable[[str], Awaitable[None]]
+type RuntimeResult = ChatResult | TypedChatResult
 
 
 class StreamingBouche(Bouche):
@@ -78,7 +80,7 @@ class StreamingBouche(Bouche):
 
 
 class ChatStreamPump:
-    """Serialize lifecycle callbacks into a bounded, cancellation-friendly frame queue."""
+    """Serialize lifecycle callbacks into a frame-bounded cancellation-friendly queue."""
 
     def __init__(self) -> None:
         self._queue: asyncio.Queue[ChatStreamFrame | object] = asyncio.Queue()
@@ -110,7 +112,7 @@ class ChatStreamPump:
         if text:
             await self._queue.put(ChatStreamDelta(text=text))
 
-    async def finish(self, result: TypedChatResult) -> None:
+    async def finish(self, result: RuntimeResult) -> None:
         if not self._started:
             self._started = True
             await self._queue.put(
@@ -188,7 +190,9 @@ def _source_from_evidence(item: EvidenceSnapshot) -> ChatStreamSource:
     )
 
 
-def _citation_payload(result: TypedChatResult) -> list[ChatCitation]:
+def _citation_payload(result: RuntimeResult) -> list[ChatCitation]:
+    if not isinstance(result, TypedChatResult):
+        return []
     return [
         ChatCitation(
             key=citation.key,
@@ -202,7 +206,7 @@ def _citation_payload(result: TypedChatResult) -> list[ChatCitation]:
     ]
 
 
-def _final_frame(result: TypedChatResult) -> ChatStreamFinal:
+def _final_frame(result: RuntimeResult) -> ChatStreamFinal:
     return ChatStreamFinal(
         trace_id=result.trace_id,
         session_id=result.session_id,
