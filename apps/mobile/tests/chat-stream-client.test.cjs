@@ -220,3 +220,17 @@ test('streamChat rejects streams that exceed the total frame ceiling', async () 
     (error) => error instanceof ApiError && error.code === 'STREAM_PROTOCOL_ERROR',
   );
 });
+
+
+test('streamChat rejects an accumulated draft above the character ceiling', async () => {
+  const frames = [
+    { type: 'start', trace_id: 'trc_large', session_id: 'session-large' },
+    { type: 'sources', sources: [] },
+    ...Array.from({ length: 1_001 }, () => ({ type: 'delta', text: 'x'.repeat(1_000) })),
+  ];
+
+  await assert.rejects(
+    testClient(frames).streamChat({ message: 'hello' }),
+    (error) => error instanceof ApiError && error.code === 'STREAM_PROTOCOL_ERROR',
+  );
+});
