@@ -16,7 +16,6 @@ function loadDecoder() {
   }).outputText;
   const module = { exports: {} };
   vm.runInNewContext(output, {
-    TextEncoder,
     exports: module.exports,
     module,
     require,
@@ -85,6 +84,20 @@ test('accepts trusted citation metadata in the final frame', () => {
   const frames = new Decoder().push(`${JSON.stringify({ type: 'final', response })}\n`);
 
   assert.equal(frames[0].response.citations[0].key, 'M1');
+});
+
+test('enforces the frame limit in UTF-8 bytes without a runtime polyfill', () => {
+  const Decoder = loadDecoder();
+  const oversized = JSON.stringify({
+    type: 'delta',
+    attempt: 1,
+    text: 'é'.repeat(500_001),
+  });
+
+  assert.throws(
+    () => new Decoder().push(`${oversized}\n`),
+    /exceeded its byte limit/,
+  );
 });
 
 test('rejects malformed and unsupported stream frames', () => {
