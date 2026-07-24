@@ -57,7 +57,9 @@ type RequestOptions = ApiCallOptions & {
 };
 
 type ChatStreamState = {
+  started: boolean;
   activeAttempt: number;
+  pendingResetAttempt: number | null;
   provisionalText: string;
   finalResponse: ChatResponse | null;
   terminal: boolean;
@@ -291,7 +293,9 @@ export class MongarsClient {
     }
 
     const state: ChatStreamState = {
+      started: false,
       activeAttempt: 0,
+      pendingResetAttempt: null,
       provisionalText: '',
       finalResponse: null,
       terminal: false,
@@ -331,7 +335,10 @@ export class MongarsClient {
         code: 'INCOMPLETE_STREAM',
       });
     }
-    if (state.provisionalText && state.provisionalText !== finalResponse.answer) {
+    if (
+      state.provisionalText &&
+      state.provisionalText.trim() !== finalResponse.answer
+    ) {
       throw new ApiError('The streamed text did not match the validated answer.', {
         status: 0,
         code: 'STREAM_MISMATCH',
@@ -450,38 +457,65 @@ function applyStreamFrame(
   callbacks: ChatStreamCallbacks,
 ): void {
   if (state.terminal) {
-    throw new ApiError('The monGARS stream continued after a terminal frame.', {
-      status: 0,
-      code: 'STREAM_PROTOCOL_ERROR',
-    });
+    throw streamProtocolError('The monGARS stream continued after a terminal frame.');
   }
   switch (frame.type) {
     case 'start':
+      if (state.started) {
+        throw streamProtocolError('The monGARS stream emitted more than one start frame.');
+      }
+      state.started = true;
       callbacks.onStart?.(frame.stream_id);
       return;
     case 'attempt':
+      if (
+        !state.started ||
+        frame.attempt !== state.activeAttempt + 1 ||
+        (state.activeAttempt === 0 && state.pendingResetAttempt !== null) ||
+        (state.activeAttempt > 0 && state.pendingResetAttempt !== frame.attempt)
+      ) {
+        throw streamProtocolError('The monGARS stream emitted an invalid attempt sequence.');
+      }
       state.activeAttempt = frame.attempt;
+      state.pendingResetAttempt = null;
       callbacks.onAttempt?.(frame.attempt);
       return;
     case 'reset':
+      if (
+        !state.started ||
+        state.activeAttempt === 0 ||
+        state.pendingResetAttempt !== null ||
+        frame.attempt !== state.activeAttempt + 1
+      ) {
+        throw streamProtocolError('The monGARS stream emitted an invalid reset sequence.');
+      }
       state.provisionalText = '';
+      state.pendingResetAttempt = frame.attempt;
       callbacks.onReset?.(frame.attempt);
       return;
     case 'delta':
-      if (frame.attempt !== state.activeAttempt) {
-        throw new ApiError('The monGARS stream delta belongs to another attempt.', {
-          status: 0,
-          code: 'STREAM_PROTOCOL_ERROR',
-        });
+      if (
+        !state.started ||
+        state.activeAttempt === 0 ||
+        state.pendingResetAttempt !== null ||
+        frame.attempt !== state.activeAttempt
+      ) {
+        throw streamProtocolError('The monGARS stream delta belongs to another attempt.');
       }
       state.provisionalText += frame.text;
       callbacks.onDelta?.(frame.text, frame.attempt);
       return;
     case 'final':
+      if (!state.started || state.pendingResetAttempt !== null) {
+        throw streamProtocolError('The monGARS stream emitted an invalid final sequence.');
+      }
       state.finalResponse = frame.response;
       state.terminal = true;
       return;
     case 'error':
+      if (!state.started) {
+        throw streamProtocolError('The monGARS stream emitted an error before it started.');
+      }
       state.provisionalText = '';
       state.terminal = true;
       throw new ApiError('The streamed monGARS response failed.', {
@@ -490,6 +524,13 @@ function applyStreamFrame(
         detail: frame,
       });
   }
+}
+
+function streamProtocolError(message: string): ApiError {
+  return new ApiError(message, {
+    status: 0,
+    code: 'STREAM_PROTOCOL_ERROR',
+  });
 }
 
 let defaultClient: MongarsClient | null = null;
