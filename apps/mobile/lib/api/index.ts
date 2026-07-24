@@ -13,13 +13,16 @@ export {
 export type {
   ApiCallOptions,
   ApiTransportSecurity,
+  ChatStreamCallbacks,
   FetchImplementation,
   MongarsClientOptions,
 } from './client';
 
 export type {
+  ChatCitation,
   ChatRequest,
   ChatResponse,
+  ChatStreamFrame,
   JsonPrimitive,
   JsonValue,
   MemoryNoteCreateRequest,
