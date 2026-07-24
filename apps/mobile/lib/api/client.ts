@@ -10,9 +10,12 @@ import {
   getMongarsApiOrigin,
   normalizeMongarsApiBaseUrl,
 } from '@/lib/api-origin';
+import { ChatNdjsonDecoder, ChatStreamProtocolError } from '@/lib/api/ndjson';
 import type {
   ChatRequest,
   ChatResponse,
+  ChatStreamFrame,
+  ChatStreamSource,
   DocumentUploadRequest,
   DocumentUploadResponse,
   MemoryNoteCreateRequest,
@@ -27,6 +30,14 @@ import type {
 export type ApiCallOptions = {
   signal?: AbortSignal;
 };
+
+export type ChatStreamHandlers = {
+  onStart?: (frame: Extract<ChatStreamFrame, { type: 'start' }>) => void | Promise<void>;
+  onSources?: (sources: ChatStreamSource[]) => void | Promise<void>;
+  onDelta?: (text: string) => void | Promise<void>;
+};
+
+export type ChatStreamOptions = ApiCallOptions & ChatStreamHandlers;
 
 export type FetchImplementation = (
   input: string,
@@ -153,17 +164,7 @@ export class MongarsClient {
     }
 
     if (authenticated) {
-      // Never read a Keychain credential until the destination is known to protect it. This makes
-      // the policy hold even when a caller bypasses the provider/UI and calls the client directly.
-      assertSecureCredentialTransport(this.baseUrl);
-      const token = await this.tokenStore.read(getMongarsApiOrigin(this.baseUrl));
-      if (!token) {
-        throw new ApiError('Enter the monGARS API token to continue.', {
-          status: 401,
-          code: 'AUTH_REQUIRED',
-        });
-      }
-      headers.set('Authorization', `Bearer ${token}`);
+      await this.authorize(headers);
     }
 
     let response: Response;
@@ -190,11 +191,7 @@ export class MongarsClient {
     const body = await readResponseBody(response);
     const accepted = response.ok || options.acceptedStatuses?.includes(response.status);
     if (!accepted) {
-      if (response.status === 401 && authenticated) {
-        // A rejected bearer credential must not be retried indefinitely. The token store publishes
-        // the change so mounted provider/UI state is invalidated at the same time.
-        await this.tokenStore.clear().catch(() => undefined);
-      }
+      await this.rejectResponse(response.status, authenticated);
       throw new ApiError(errorMessage(body, response.status), {
         status: response.status,
         code: errorCode(body, response.status),
@@ -203,6 +200,28 @@ export class MongarsClient {
     }
 
     return body as T;
+  }
+
+  private async authorize(headers: Headers): Promise<void> {
+    // Never read a Keychain credential until the destination is known to protect it. This makes
+    // the policy hold even when a caller bypasses the provider/UI and calls the client directly.
+    assertSecureCredentialTransport(this.baseUrl);
+    const token = await this.tokenStore.read(getMongarsApiOrigin(this.baseUrl));
+    if (!token) {
+      throw new ApiError('Enter the monGARS API token to continue.', {
+        status: 401,
+        code: 'AUTH_REQUIRED',
+      });
+    }
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+
+  private async rejectResponse(status: number, authenticated: boolean): Promise<void> {
+    if (status === 401 && authenticated) {
+      // A rejected bearer credential must not be retried indefinitely. The token store publishes
+      // the change so mounted provider/UI state is invalidated at the same time.
+      await this.tokenStore.clear().catch(() => undefined);
+    }
   }
 
   health(options: ApiCallOptions = {}): Promise<{ status: 'ok' }> {
@@ -218,6 +237,138 @@ export class MongarsClient {
 
   chat(request: ChatRequest, options: ApiCallOptions = {}): Promise<ChatResponse> {
     return this.request('/v1/chat', { ...options, method: 'POST', body: request });
+  }
+
+  async streamChat(
+    request: ChatRequest,
+    options: ChatStreamOptions = {},
+  ): Promise<ChatResponse> {
+    const headers = new Headers({
+      Accept: 'application/x-ndjson',
+      'Content-Type': 'application/json',
+    });
+    await this.authorize(headers);
+
+    let response: Response;
+    try {
+      response = await this.fetcher(`${this.baseUrl}/v1/chat/stream`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(request),
+        signal: options.signal,
+      });
+    } catch (error) {
+      if (isAbortError(error)) throw error;
+      throw new ApiError('Unable to reach the monGARS server.', {
+        status: 0,
+        code: 'NETWORK_ERROR',
+        cause: error,
+      });
+    }
+
+    if (!response.ok) {
+      const body = await readResponseBody(response);
+      await this.rejectResponse(response.status, true);
+      throw new ApiError(errorMessage(body, response.status), {
+        status: response.status,
+        code: errorCode(body, response.status),
+        detail: body,
+      });
+    }
+
+    const mediaType = response.headers.get('content-type')?.split(';', 1)[0]?.trim().toLowerCase();
+    if (mediaType !== 'application/x-ndjson') {
+      await response.body?.cancel().catch(() => undefined);
+      throw new ApiError('The monGARS server returned an unexpected chat stream format.', {
+        status: response.status,
+        code: 'STREAM_CONTENT_TYPE_ERROR',
+      });
+    }
+    const reader = response.body?.getReader();
+    if (!reader) {
+      throw new ApiError('The monGARS server did not provide a readable chat stream.', {
+        status: response.status,
+        code: 'STREAM_BODY_MISSING',
+      });
+    }
+
+    const decoder = new ChatNdjsonDecoder();
+    let started: Extract<ChatStreamFrame, { type: 'start' }> | null = null;
+    let sourcesSeen = false;
+    let final: ChatResponse | null = null;
+
+    const accept = async (frame: ChatStreamFrame): Promise<void> => {
+      if (final) {
+        throw new ChatStreamProtocolError('The chat stream emitted a frame after completion.');
+      }
+      if (frame.type === 'error') {
+        throw new ApiError(`The monGARS chat stream failed (${frame.code}).`, {
+          status: frame.retryable ? 503 : 422,
+          code: frame.code,
+          detail: frame,
+        });
+      }
+      if (frame.type === 'start') {
+        if (started) {
+          throw new ChatStreamProtocolError('The chat stream emitted multiple start frames.');
+        }
+        started = frame;
+        await options.onStart?.(frame);
+        return;
+      }
+      if (!started) {
+        throw new ChatStreamProtocolError('The chat stream emitted data before its start frame.');
+      }
+      if (frame.type === 'sources') {
+        if (sourcesSeen) {
+          throw new ChatStreamProtocolError('The chat stream emitted multiple source catalogs.');
+        }
+        sourcesSeen = true;
+        await options.onSources?.(frame.sources);
+        return;
+      }
+      if (!sourcesSeen) {
+        throw new ChatStreamProtocolError('The chat stream emitted content before its sources.');
+      }
+      if (frame.type === 'delta') {
+        await options.onDelta?.(frame.text);
+        return;
+      }
+      if (frame.trace_id !== started.trace_id || frame.session_id !== started.session_id) {
+        throw new ChatStreamProtocolError('The final chat frame changed the stream identity.');
+      }
+      const { type: _type, ...responseBody } = frame;
+      final = responseBody;
+    };
+
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value) {
+          for (const frame of decoder.push(value)) await accept(frame);
+        }
+      }
+      for (const frame of decoder.finish()) await accept(frame);
+    } catch (error) {
+      await reader.cancel().catch(() => undefined);
+      if (isAbortError(error) || error instanceof ApiError) throw error;
+      throw new ApiError('The monGARS chat stream violated its protocol.', {
+        status: response.status,
+        code: 'STREAM_PROTOCOL_ERROR',
+        cause: error,
+      });
+    } finally {
+      reader.releaseLock();
+    }
+
+    if (!final) {
+      throw new ApiError('The monGARS chat stream ended before a final answer.', {
+        status: response.status,
+        code: 'STREAM_INCOMPLETE',
+      });
+    }
+    return final;
   }
 
   searchMemory(
