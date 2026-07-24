@@ -58,6 +58,9 @@ type RequestOptions = ApiCallOptions & {
   acceptedStatuses?: readonly number[];
 };
 
+const MAX_STREAM_FRAMES = 10_000;
+const MAX_STREAM_ANSWER_CHARACTERS = 1_000_000;
+
 export {
   ApiConfigurationError,
   type ApiTransportSecurity,
@@ -296,8 +299,15 @@ export class MongarsClient {
     let started: Extract<ChatStreamFrame, { type: 'start' }> | null = null;
     let sourcesSeen = false;
     let final: ChatResponse | null = null;
+    let frameCount = 0;
+    let deltaCharacters = 0;
+    const deltaParts: string[] = [];
 
     const accept = async (frame: ChatStreamFrame): Promise<void> => {
+      frameCount += 1;
+      if (frameCount > MAX_STREAM_FRAMES) {
+        throw new ChatStreamProtocolError('The chat stream emitted too many frames.');
+      }
       if (final) {
         throw new ChatStreamProtocolError('The chat stream emitted a frame after completion.');
       }
@@ -331,11 +341,21 @@ export class MongarsClient {
         throw new ChatStreamProtocolError('The chat stream emitted content before its sources.');
       }
       if (frame.type === 'delta') {
+        deltaCharacters += frame.text.length;
+        if (deltaCharacters > MAX_STREAM_ANSWER_CHARACTERS) {
+          throw new ChatStreamProtocolError('The streamed answer exceeded its character ceiling.');
+        }
+        deltaParts.push(frame.text);
         await options.onDelta?.(frame.text);
         return;
       }
       if (frame.trace_id !== started.trace_id || frame.session_id !== started.session_id) {
         throw new ChatStreamProtocolError('The final chat frame changed the stream identity.');
+      }
+      if (deltaParts.join('') !== frame.answer) {
+        throw new ChatStreamProtocolError(
+          'The final chat answer does not match the displayed stream draft.',
+        );
       }
       const { type: _type, ...responseBody } = frame;
       final = responseBody;
