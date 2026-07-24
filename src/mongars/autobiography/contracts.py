@@ -6,11 +6,10 @@ import copy
 import math
 import re
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from types import MappingProxyType
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn, cast
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
@@ -33,6 +32,125 @@ _EVIDENCE_PREFIX: dict[EvidenceKind, str] = {
     "policy": "P",
 }
 _MAX_EVIDENCE_TEXT_BYTES = 1_000_000
+
+
+class _FrozenJsonDict(dict[str, JsonValue]):
+    """JSON-serializable mapping that rejects every normal mutation path."""
+
+    @staticmethod
+    def _immutable() -> NoReturn:
+        raise TypeError("frozen JSON mapping is immutable")
+
+    def __setitem__(self, *args: Any, **kwargs: Any) -> None:
+        self._immutable()
+
+    def __delitem__(self, *args: Any, **kwargs: Any) -> None:
+        self._immutable()
+
+    def clear(self) -> None:
+        self._immutable()
+
+    def pop(self, *args: Any, **kwargs: Any) -> JsonValue:
+        self._immutable()
+
+    def popitem(self) -> tuple[str, JsonValue]:
+        self._immutable()
+
+    def setdefault(self, *args: Any, **kwargs: Any) -> JsonValue:
+        self._immutable()
+
+    def update(self, *args: Any, **kwargs: Any) -> None:
+        self._immutable()
+
+    def __ior__(self, *args: Any, **kwargs: Any) -> _FrozenJsonDict:
+        self._immutable()
+
+
+class _FrozenJsonList(list[JsonValue]):
+    """JSON-serializable sequence that rejects every normal mutation path."""
+
+    @staticmethod
+    def _immutable() -> NoReturn:
+        raise TypeError("frozen JSON sequence is immutable")
+
+    def __setitem__(self, *args: Any, **kwargs: Any) -> None:
+        self._immutable()
+
+    def __delitem__(self, *args: Any, **kwargs: Any) -> None:
+        self._immutable()
+
+    def append(self, *args: Any, **kwargs: Any) -> None:
+        self._immutable()
+
+    def clear(self) -> None:
+        self._immutable()
+
+    def extend(self, *args: Any, **kwargs: Any) -> None:
+        self._immutable()
+
+    def insert(self, *args: Any, **kwargs: Any) -> None:
+        self._immutable()
+
+    def pop(self, *args: Any, **kwargs: Any) -> JsonValue:
+        self._immutable()
+
+    def remove(self, *args: Any, **kwargs: Any) -> None:
+        self._immutable()
+
+    def reverse(self) -> None:
+        self._immutable()
+
+    def sort(self, *args: Any, **kwargs: Any) -> None:
+        self._immutable()
+
+    def __iadd__(self, *args: Any, **kwargs: Any) -> _FrozenJsonList:
+        self._immutable()
+
+    def __imul__(self, *args: Any, **kwargs: Any) -> _FrozenJsonList:
+        self._immutable()
+
+
+def deep_freeze_json_mapping(value: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
+    """Return a recursive immutable deep copy that remains JSON serializable."""
+
+    if not isinstance(value, Mapping):
+        raise TypeError("JSON value must be a mapping")
+    copied = _deep_copy_json(value)
+    frozen = _deep_freeze_json(copied)
+    if not isinstance(frozen, Mapping):  # pragma: no cover - guarded by mapping input
+        raise TypeError("JSON mapping freeze produced an invalid result")
+    return cast(Mapping[str, JsonValue], frozen)
+
+
+def _deep_copy_json(value: object) -> object:
+    if isinstance(value, Mapping):
+        copied: dict[str, object] = {}
+        for key, item in value.items():
+            if not isinstance(key, str):
+                raise TypeError("JSON mapping keys must be strings")
+            copied[key] = _deep_copy_json(item)
+        return copied
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_deep_copy_json(item) for item in value]
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return copy.deepcopy(value)
+    raise TypeError("JSON value contains an unsupported type")
+
+
+def _deep_freeze_json(value: object) -> JsonValue:
+    if isinstance(value, Mapping):
+        return _FrozenJsonDict(
+            {
+                key: _deep_freeze_json(item)
+                for key, item in value.items()
+                if isinstance(key, str)
+            }
+        )
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return _FrozenJsonList(_deep_freeze_json(item) for item in value)
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return value
+    raise TypeError("JSON value contains an unsupported type")
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,11 +216,7 @@ class EvidenceSnapshot:
         if self.locator is not None:
             if not isinstance(self.locator, Mapping):
                 raise TypeError("evidence locator must be a mapping")
-            object.__setattr__(
-                self,
-                "locator",
-                MappingProxyType(copy.deepcopy(dict(self.locator))),
-            )
+            object.__setattr__(self, "locator", deep_freeze_json_mapping(self.locator))
 
 
 class StrictPayload(BaseModel):
@@ -218,5 +332,6 @@ __all__ = [
     "StoredTurn",
     "TurnRole",
     "TurnState",
+    "deep_freeze_json_mapping",
     "normalize_event_payload",
 ]
