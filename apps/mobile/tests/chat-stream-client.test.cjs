@@ -118,6 +118,14 @@ function validFrames() {
   ];
 }
 
+function testClient(frames) {
+  return new MongarsClient({
+    baseUrl: 'https://station.test',
+    fetcher: async () => streamingResponse(frames),
+    tokenStore: { async read() { return 'token'; }, async clear() {} },
+  });
+}
+
 
 test('streamChat authenticates, parses split frames, and returns only the final response', async () => {
   const requests = [];
@@ -167,14 +175,9 @@ test('streamChat authenticates, parses split frames, and returns only the final 
 test('streamChat rejects server error frames without accepting a final response', async () => {
   const frames = validFrames().slice(0, 3);
   frames.push({ type: 'error', code: 'inference_timeout', retryable: true });
-  const client = new MongarsClient({
-    baseUrl: 'https://station.test',
-    fetcher: async () => streamingResponse(frames),
-    tokenStore: { async read() { return 'token'; }, async clear() {} },
-  });
 
   await assert.rejects(
-    client.streamChat({ message: 'hello' }),
+    testClient(frames).streamChat({ message: 'hello' }),
     (error) => error instanceof ApiError && error.code === 'inference_timeout' && error.status === 503,
   );
 });
@@ -183,14 +186,37 @@ test('streamChat rejects server error frames without accepting a final response'
 test('streamChat rejects a final frame that changes the trace identity', async () => {
   const frames = validFrames();
   frames[frames.length - 1] = { ...frames[frames.length - 1], trace_id: 'trc_substituted' };
-  const client = new MongarsClient({
-    baseUrl: 'https://station.test',
-    fetcher: async () => streamingResponse(frames),
-    tokenStore: { async read() { return 'token'; }, async clear() {} },
-  });
 
   await assert.rejects(
-    client.streamChat({ message: 'hello' }),
+    testClient(frames).streamChat({ message: 'hello' }),
+    (error) => error instanceof ApiError && error.code === 'STREAM_PROTOCOL_ERROR',
+  );
+});
+
+
+test('streamChat rejects a final answer that differs from displayed deltas', async () => {
+  const frames = validFrames();
+  frames[frames.length - 1] = {
+    ...frames[frames.length - 1],
+    answer: 'Substituted final answer.',
+  };
+
+  await assert.rejects(
+    testClient(frames).streamChat({ message: 'hello' }),
+    (error) => error instanceof ApiError && error.code === 'STREAM_PROTOCOL_ERROR',
+  );
+});
+
+
+test('streamChat rejects streams that exceed the total frame ceiling', async () => {
+  const frames = [
+    { type: 'start', trace_id: 'trc_many', session_id: 'session-many' },
+    { type: 'sources', sources: [] },
+    ...Array.from({ length: 10_000 }, () => ({ type: 'delta', text: 'x' })),
+  ];
+
+  await assert.rejects(
+    testClient(frames).streamChat({ message: 'hello' }),
     (error) => error instanceof ApiError && error.code === 'STREAM_PROTOCOL_ERROR',
   );
 });
