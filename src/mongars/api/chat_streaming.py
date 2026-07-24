@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import suppress
 from typing import Final
@@ -32,6 +33,10 @@ from mongars.orchestrator.cortex import ChatResult
 from mongars.orchestrator.typed_chat import TypedChatResult
 
 _MAX_FRAME_BYTES: Final = 1_000_000
+_MAX_STREAM_FRAMES: Final = 10_000
+_MAX_STREAM_ANSWER_CHARACTERS: Final = 1_000_000
+_STREAM_QUEUE_SIZE: Final = 64
+_SAFE_ERROR_CODE = re.compile(r"^[a-z0-9_]{1,100}$")
 _QUEUE_END: Final = object()
 type StreamCallback = Callable[[DialoguePlan], Awaitable[None]]
 type DeltaCallback = Callable[[str], Awaitable[None]]
@@ -80,23 +85,28 @@ class StreamingBouche(Bouche):
 
 
 class ChatStreamPump:
-    """Serialize lifecycle callbacks into a frame-bounded cancellation-friendly queue."""
+    """Serialize lifecycle callbacks into a bounded backpressure-aware queue."""
 
     def __init__(self) -> None:
-        self._queue: asyncio.Queue[ChatStreamFrame | object] = asyncio.Queue()
+        self._queue: asyncio.Queue[bytes | object] = asyncio.Queue(
+            maxsize=_STREAM_QUEUE_SIZE
+        )
         self._started = False
+        self._terminal = False
+        self._frame_count = 0
+        self._delta_characters = 0
 
     async def on_start(self, plan: DialoguePlan) -> None:
         if self._started:
             raise RuntimeError("chat stream start was emitted more than once")
         self._started = True
-        await self._queue.put(
+        await self._put_frame(
             ChatStreamStart(
                 trace_id=plan.trace_id,
                 session_id=plan.session_id,
             )
         )
-        await self._queue.put(
+        await self._put_frame(
             ChatStreamSources(
                 sources=[
                     _source_from_evidence(item)
@@ -109,31 +119,49 @@ class ChatStreamPump:
     async def on_delta(self, text: str) -> None:
         if not self._started:
             raise RuntimeError("chat stream delta arrived before the start frame")
-        if text:
-            await self._queue.put(ChatStreamDelta(text=text))
+        if not text:
+            return
+        next_total = self._delta_characters + len(text)
+        if next_total > _MAX_STREAM_ANSWER_CHARACTERS:
+            raise InferenceResponseError(
+                "Bouche stream exceeded the answer-size ceiling.",
+                backend="application",
+                operation="chat_stream",
+                retryable=False,
+            )
+        self._delta_characters = next_total
+        await self._put_frame(ChatStreamDelta(text=text))
 
     async def finish(self, result: RuntimeResult) -> None:
         if not self._started:
             self._started = True
-            await self._queue.put(
+            await self._put_frame(
                 ChatStreamStart(
                     trace_id=result.trace_id,
                     session_id=result.session_id,
                 )
             )
-            await self._queue.put(ChatStreamSources(sources=[]))
+            await self._put_frame(ChatStreamSources(sources=[]))
             if result.answer:
-                await self._queue.put(ChatStreamDelta(text=result.answer))
-        await self._queue.put(_final_frame(result))
+                await self.on_delta(result.answer)
+        await self._put_frame(_final_frame(result), terminal=True)
 
     async def fail(self, error: BaseException) -> None:
-        code = getattr(error, "code", None)
+        if self._terminal:
+            return
+        raw_code = getattr(error, "code", None)
+        code = (
+            raw_code
+            if isinstance(raw_code, str) and _SAFE_ERROR_CODE.fullmatch(raw_code)
+            else "stream_error"
+        )
         retryable = getattr(error, "retryable", False)
-        await self._queue.put(
+        await self._put_frame(
             ChatStreamError(
-                code=code if isinstance(code, str) and code else "stream_error",
+                code=code,
                 retryable=bool(retryable),
-            )
+            ),
+            terminal=True,
         )
 
     async def close(self) -> None:
@@ -144,29 +172,33 @@ class ChatStreamPump:
             item = await self._queue.get()
             if item is _QUEUE_END:
                 return
-            if not isinstance(
-                item,
-                (
-                    ChatStreamStart,
-                    ChatStreamSources,
-                    ChatStreamDelta,
-                    ChatStreamFinal,
-                    ChatStreamError,
-                ),
-            ):
+            if not isinstance(item, bytes):
                 raise RuntimeError("chat stream queue contained an invalid item")
-            serialized = (
-                json.dumps(
-                    item.model_dump(mode="json"),
-                    ensure_ascii=False,
-                    allow_nan=False,
-                    separators=(",", ":"),
-                )
-                + "\n"
-            ).encode("utf-8")
-            if len(serialized) > _MAX_FRAME_BYTES:
-                raise RuntimeError("chat stream frame exceeds its hard byte ceiling")
-            yield serialized
+            yield item
+
+    async def _put_frame(
+        self,
+        frame: ChatStreamFrame,
+        *,
+        terminal: bool = False,
+    ) -> None:
+        if self._terminal:
+            raise RuntimeError("chat stream emitted a frame after completion")
+        maximum_before_put = (
+            _MAX_STREAM_FRAMES if terminal else _MAX_STREAM_FRAMES - 1
+        )
+        if self._frame_count >= maximum_before_put:
+            raise InferenceResponseError(
+                "Chat stream exceeded the frame-count ceiling.",
+                backend="application",
+                operation="chat_stream",
+                retryable=False,
+            )
+        serialized = _serialize_frame(frame)
+        self._frame_count += 1
+        if terminal:
+            self._terminal = True
+        await self._queue.put(serialized)
 
 
 async def cancel_and_join[T](task: asyncio.Task[T]) -> None:
@@ -176,6 +208,26 @@ async def cancel_and_join[T](task: asyncio.Task[T]) -> None:
         task.cancel()
     with suppress(asyncio.CancelledError):
         await task
+
+
+def _serialize_frame(frame: ChatStreamFrame) -> bytes:
+    serialized = (
+        json.dumps(
+            frame.model_dump(mode="json"),
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+        )
+        + "\n"
+    ).encode("utf-8")
+    if len(serialized) > _MAX_FRAME_BYTES:
+        raise InferenceResponseError(
+            "Chat stream frame exceeds its byte ceiling.",
+            backend="application",
+            operation="chat_stream",
+            retryable=False,
+        )
+    return serialized
 
 
 def _source_from_evidence(item: EvidenceSnapshot) -> ChatStreamSource:
