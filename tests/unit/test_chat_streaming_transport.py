@@ -9,6 +9,7 @@ from mongars.api.chat_streaming import ChatStreamPump
 from mongars.autobiography.contracts import EvidenceSnapshot
 from mongars.dialogue import CitationBinding, DialoguePlan
 from mongars.inference import ChatMessage
+from mongars.orchestrator.cortex import ChatResult
 from mongars.orchestrator.typed_chat import TypedChatResult
 
 
@@ -67,6 +68,28 @@ async def test_stream_pump_emits_start_sources_delta_and_final() -> None:
     assert frames[1]["sources"][0]["locator"] == {"page": 7}
     assert frames[-1]["citations"][0]["key"] == "M1"
     assert frames[-1]["answer"] == "answer [M1]"
+
+
+@pytest.mark.asyncio
+async def test_stream_pump_supports_the_lightweight_cortex_result() -> None:
+    result = ChatResult(
+        trace_id="trc_legacy",
+        session_id=uuid4(),
+        answer="legacy bounded answer",
+        model="deterministic-chat",
+        memory_hits=0,
+        web_search_status="not_requested",
+        sources=(),
+    )
+    pump = ChatStreamPump()
+
+    await pump.finish(result)
+    await pump.close()
+    frames = [json.loads(item) async for item in _decoded(pump)]
+
+    assert [frame["type"] for frame in frames] == ["start", "sources", "delta", "final"]
+    assert frames[-1]["answer"] == result.answer
+    assert frames[-1]["citations"] == []
 
 
 @pytest.mark.asyncio
