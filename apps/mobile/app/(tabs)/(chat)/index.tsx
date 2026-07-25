@@ -3,6 +3,7 @@ import { useEffect, useReducer, useState } from 'react';
 import { Alert, Linking, Pressable, Text, TextInput, View } from 'react-native';
 
 import { BrandMark } from '@/components/brand-mark';
+import { ChatFeedbackControls } from '@/components/chat-feedback-controls';
 import { ScreenScroll } from '@/components/screen-scroll';
 import { StatusPill } from '@/components/status-pill';
 import { SurfaceCard } from '@/components/surface-card';
@@ -361,6 +362,7 @@ function ConnectedChatScreen() {
         ) : null}
         {displayedMessages.map((message) => {
           const isUser = message.role === 'user';
+          const isCommittedAssistant = !isUser && message.id !== 'assistant-streaming';
           return (
             <View
               key={message.id}
@@ -446,6 +448,7 @@ function ConnectedChatScreen() {
               >
                 {message.timestamp}
               </Text>
+              {isCommittedAssistant ? <ChatFeedbackControls traceId={message.id} /> : null}
             </View>
           );
         })}
