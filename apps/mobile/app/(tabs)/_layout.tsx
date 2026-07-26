@@ -4,6 +4,10 @@ import { HapticTab } from '@/components/haptic-tab';
 import { TabGlyph } from '@/components/tab-glyph';
 import { useAppTheme } from '@/hooks/use-app-theme';
 
+const CompatibleHapticTab = (props: Record<string, unknown>) => (
+  <HapticTab {...(props as Parameters<typeof HapticTab>[0])} />
+);
+
 export default function TabLayout() {
   const theme = useAppTheme();
 
@@ -12,9 +16,9 @@ export default function TabLayout() {
       screenOptions={{
         headerShown: false,
         sceneStyle: { backgroundColor: theme.background },
-        tabBarActiveTintColor: theme.primary,
-        tabBarInactiveTintColor: theme.textTertiary,
-        tabBarButton: HapticTab,
+        tabBarActiveTintColor: theme.primary as string,
+        tabBarInactiveTintColor: theme.textTertiary as string,
+        tabBarButton: CompatibleHapticTab,
         tabBarHideOnKeyboard: true,
         tabBarLabelStyle: { fontSize: 11, fontWeight: '600' },
         tabBarStyle: {

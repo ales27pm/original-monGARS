@@ -14,7 +14,11 @@ from sqlalchemy.engine import make_url
 
 from mongars.adaptation.feedback import PreferenceFeedback
 from mongars.adaptation.mimicry import propose_profile_delta
-from mongars.adaptation.models import ExplicitFeedbackRecord, PersonalityProfileRecord, PersonalityProfileRevisionRecord
+from mongars.adaptation.models import (
+    ExplicitFeedbackRecord,
+    PersonalityProfileRecord,
+    PersonalityProfileRevisionRecord,
+)
 from mongars.adaptation.repository import PersonalityRepository
 from mongars.config import Environment, Settings
 from mongars.db.session import Database

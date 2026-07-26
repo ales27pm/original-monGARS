@@ -79,9 +79,7 @@ async def test_reconstructed_duplicate_history_retains_typed_turn_attribution() 
     journal = TypedChatJournal(
         session=_Session(),  # type: ignore[arg-type]
         autobiography=autobiography,  # type: ignore[arg-type]
-        legacy_events=_LegacyEvents(
-            (ConversationMessage(role="assistant", content="legacy"),)
-        ),  # type: ignore[arg-type]
+        legacy_events=_LegacyEvents((ConversationMessage(role="assistant", content="legacy"),)),  # type: ignore[arg-type]
     )
 
     bundle = await journal.load_history(owner_id="owner", session_id=session_id)
@@ -95,8 +93,7 @@ async def test_reconstructed_duplicate_history_retains_typed_turn_attribution() 
             {
                 "kind": "conversation_history",
                 "messages": [
-                    {"role": message.role, "content": message.content}
-                    for message in reconstructed
+                    {"role": message.role, "content": message.content} for message in reconstructed
                 ],
             }
         ),

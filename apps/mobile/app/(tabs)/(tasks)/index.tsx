@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { ActivityIndicator, Pressable, Text, View } from 'react-native';
 
 import { ScreenScroll } from '@/components/screen-scroll';
@@ -67,7 +67,6 @@ function ConnectedTasksScreen() {
   const [reviewTaskId, setReviewTaskId] = useState<string | null>(null);
   const [showFullPayload, setShowFullPayload] = useState(false);
   const [payloadPageIndex, setPayloadPageIndex] = useState(0);
-  const [payloadIntegrityFailed, setPayloadIntegrityFailed] = useState(false);
   const detail = useTaskDetail(reviewTaskId ?? '', { auto: reviewTaskId !== null });
   const payloadSummary = detail.data?.payload_summary ?? null;
   const payloadPageQuery = useTaskPayloadPage(
@@ -90,18 +89,9 @@ function ConnectedTasksScreen() {
   const activeCount = (query.data ?? []).filter((task) =>
     ['queued', 'running'].includes(task.status),
   ).length;
-
-  useEffect(() => {
-    setShowFullPayload(false);
-    setPayloadPageIndex(0);
-    setPayloadIntegrityFailed(false);
-  }, [reviewTaskId]);
-
-  useEffect(() => {
-    if (payloadPageQuery.error?.message.includes('did not match the protected review digest')) {
-      setPayloadIntegrityFailed(true);
-    }
-  }, [payloadPageQuery.error]);
+  const payloadIntegrityFailed = payloadPageQuery.error?.message.includes(
+    'did not match the protected review digest',
+  );
 
   async function approve(taskId: string) {
     if (
@@ -118,6 +108,16 @@ function ConnectedTasksScreen() {
     } catch {
       // The mutation exposes a user-readable error above the task list.
     }
+  }
+
+  function openReview(taskId: string) {
+    setReviewTaskId(taskId);
+    setShowFullPayload(false);
+    setPayloadPageIndex(0);
+  }
+
+  function closeReview() {
+    setReviewTaskId(null);
   }
 
   return (
@@ -351,7 +351,7 @@ function ConnectedTasksScreen() {
               <View style={{ flexDirection: 'row', gap: 8 }}>
                 <Pressable
                   accessibilityRole="button"
-                  onPress={() => setReviewTaskId(null)}
+                  onPress={closeReview}
                   style={{
                     alignItems: 'center',
                     backgroundColor: theme.surface,
@@ -435,7 +435,7 @@ function ConnectedTasksScreen() {
               <Pressable
                 accessibilityRole="button"
                 disabled={detail.isLoading && reviewTaskId === task.id}
-                onPress={() => setReviewTaskId(task.id)}
+                onPress={() => openReview(task.id)}
                 style={({ pressed }) => ({
                   alignItems: 'center',
                   backgroundColor: theme.warningSoft,

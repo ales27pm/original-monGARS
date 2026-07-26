@@ -60,11 +60,14 @@ class Bouche:
                         "kind": _CORRECTION_KIND,
                         "instruction": (
                             "Answer again. Cite at least one supplied web evidence key in square "
-                            "brackets. If the evidence is insufficient, state that limitation while "
+                            "brackets. If the evidence is insufficient, state that "
+                            "limitation while "
                             "citing the evidence that supports it."
                         ),
                         "allowed_web_keys": [
-                            item.key for item in plan.evidence if item.kind == "web" and item.included
+                            item.key
+                            for item in plan.evidence
+                            if item.kind == "web" and item.included
                         ],
                     },
                     ensure_ascii=False,

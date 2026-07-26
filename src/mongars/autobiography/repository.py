@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import cast
 from uuid import UUID
 
@@ -37,6 +37,7 @@ class AutobiographyStateError(RuntimeError):
 class AutobiographyRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
+        self._last_event_time: datetime | None = None
 
     async def append_turn(
         self,
@@ -237,6 +238,7 @@ class AutobiographyRepository:
         correlation_id: UUID | None = None,
         schema_version: int = 1,
     ) -> AutobiographicalEventRecord:
+        occurred_at = self._next_event_time(source_occurred_at=source_occurred_at)
         canonical = json.dumps(
             payload,
             ensure_ascii=False,
@@ -251,6 +253,7 @@ class AutobiographyRepository:
             event_type=event_type,
             schema_version=schema_version,
             actor_type=actor_type,
+            occurred_at=occurred_at,
             causation_id=causation_id,
             correlation_id=correlation_id,
             source_occurred_at=source_occurred_at,
@@ -263,6 +266,15 @@ class AutobiographyRepository:
         self._session.add(row)
         await self._session.flush()
         return row
+
+    def _next_event_time(self, source_occurred_at: datetime | None) -> datetime:
+        if source_occurred_at is None:
+            source_occurred_at = datetime.now(UTC)
+        if self._last_event_time is None or source_occurred_at > self._last_event_time:
+            self._last_event_time = source_occurred_at
+            return source_occurred_at
+        self._last_event_time += timedelta(microseconds=1)
+        return self._last_event_time
 
     async def _lock_generation(
         self,
@@ -313,8 +325,10 @@ def _bounded_content(value: str) -> str:
 
 def _safe_error_code(value: str) -> str:
     normalized = value.strip().casefold().replace("-", "_")
-    if not normalized or len(normalized) > 100 or any(
-        character not in "abcdefghijklmnopqrstuvwxyz0123456789_" for character in normalized
+    if (
+        not normalized
+        or len(normalized) > 100
+        or any(character not in "abcdefghijklmnopqrstuvwxyz0123456789_" for character in normalized)
     ):
         return "generation_error"
     return normalized

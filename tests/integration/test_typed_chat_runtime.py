@@ -174,9 +174,7 @@ async def _clean_owner(database: Database, owner_id: str) -> None:
             )
         )
         await session.execute(delete(GenerationRun).where(GenerationRun.owner_id == owner_id))
-        await session.execute(
-            delete(ConversationTurn).where(ConversationTurn.owner_id == owner_id)
-        )
+        await session.execute(delete(ConversationTurn).where(ConversationTurn.owner_id == owner_id))
         await session.execute(delete(EpisodicEvent).where(EpisodicEvent.owner_id == owner_id))
 
 
@@ -306,9 +304,7 @@ async def test_failed_chat_records_generation_without_final_assistant_turn() -> 
             )
 
         assert response.status_code == 503
-        assert response.json() == {
-            "detail": {"code": "invalid_response", "retryable": True}
-        }
+        assert response.json() == {"detail": {"code": "invalid_response", "retryable": True}}
         assert "private malformed response detail" not in response.text
 
         async with database.session_factory() as session:

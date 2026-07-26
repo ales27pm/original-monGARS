@@ -187,6 +187,24 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    # The pre-0004 application depends on legacy, uninstructed chunk embeddings.
+    # Reject this downgrade step unless every chunk still has a legacy snapshot, so
+    # we can fail without destructively dropping personality profile state.
+    op.execute(
+        sa.text(
+            "DO $$ BEGIN "
+            "IF EXISTS ("
+            "SELECT 1 FROM memory_chunks AS chunk "
+            "WHERE NOT EXISTS ("
+            "SELECT 1 FROM memory_chunk_embeddings AS embedding "
+            "WHERE embedding.chunk_id = chunk.id "
+            "AND embedding.profile_version = 'legacy-uninstructed-v0'"
+            ")"
+            ") THEN "
+            "RAISE EXCEPTION 'cannot downgrade: one or more chunks have no legacy embedding'; "
+            "END IF; END $$"
+        )
+    )
     op.drop_index(
         "ix_personality_revisions_owner_created",
         table_name="personality_profile_revisions",

@@ -93,11 +93,7 @@ fi
 readyz_tmp="$(mktemp)"
 tasks_tmp="$(mktemp)"
 readonly readyz_tmp tasks_tmp
-
-cleanup() {
-  rm -f "$readyz_tmp" "$tasks_tmp"
-}
-trap cleanup EXIT
+trap 'rm -f "$readyz_tmp" "$tasks_tmp"' EXIT
 
 curl_request() {
   local url=$1
@@ -114,7 +110,7 @@ compose_services=$(
   if command -v docker >/dev/null; then
     "${compose_command[@]}" ps --format '{{.Name}}\t{{.State}}\t{{.Health}}\t{{.Status}}' 2>/dev/null || true
   else
-    echo "docker-unavailable\tnot_available\t\t"
+    printf 'docker-unavailable\tnot_available\t\t\n'
   fi
 )
 
@@ -122,7 +118,7 @@ compose_disk_pressure=$(
   if command -v docker >/dev/null; then
     docker system df || true
   else
-    echo "docker system df unavailable"
+    printf 'docker system df unavailable\n'
   fi
 )
 

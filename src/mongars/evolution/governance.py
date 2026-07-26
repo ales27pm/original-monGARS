@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, TypeVar, cast
 from uuid import UUID, uuid4
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 from sqlalchemy import and_, select
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from mongars.config import Settings
@@ -29,6 +28,8 @@ from mongars.rm.contracts import (
     ModelRollbackPayload,
     PromotionProposalPayload,
 )
+
+_PayloadModelT = TypeVar("_PayloadModelT", bound=BaseModel)
 
 
 class ModelGovernanceError(RuntimeError):
@@ -89,7 +90,6 @@ def _model_governance_dependency(settings: Settings) -> dict[str, Any]:
     }
 
 
-
 class ModelGovernanceDisabled(ModelGovernanceError):
     """Raised when model-governance operations are disabled."""
 
@@ -117,8 +117,10 @@ def model_governance_dependency_payload(
     active_digest = (state.active_chat_digest if state is not None else None) or (
         settings.model_evolution_active_chat_digest
     )
-    active_generation = state.active_generation if state is not None else (
-        settings.model_evolution_active_generation
+    active_generation = (
+        state.active_generation
+        if state is not None
+        else (settings.model_evolution_active_generation)
     )
     prior_generation_anchor = (
         state.prior_generation_anchor
@@ -186,18 +188,23 @@ class ModelGovernanceService:
     async def resolve_active_chat_model(self, owner_id: str) -> tuple[str, str | None]:
         owner = _validate_owner_id(owner_id)
         if not self._settings.model_evolution_enabled:
-            return self._settings.ollama_chat_model, self._settings.model_evolution_active_chat_digest
+            return (
+                self._settings.ollama_chat_model,
+                self._settings.model_evolution_active_chat_digest,
+            )
 
         state = await self._get_state(owner_id=owner)
-        active_alias = (state.active_chat_alias if state is not None else None)
+        active_alias = state.active_chat_alias if state is not None else None
         if not active_alias:
             active_alias = self._settings.model_evolution_active_chat_alias
-        active_digest = (state.active_chat_digest if state is not None else None)
+        active_digest = state.active_chat_digest if state is not None else None
         if not active_digest:
             active_digest = self._settings.model_evolution_active_chat_digest
 
         resolved_alias = (
-            active_alias if isinstance(active_alias, str) and active_alias else self._settings.ollama_chat_model
+            active_alias
+            if isinstance(active_alias, str) and active_alias
+            else self._settings.ollama_chat_model
         )
         return resolved_alias, active_digest
 
@@ -218,7 +225,9 @@ class ModelGovernanceService:
         )
         if existing is not None:
             if existing.candidate_digest != payload_obj.candidate_digest:
-                raise ModelGovernanceConflict("candidate alias already exists with a different digest")
+                raise ModelGovernanceConflict(
+                    "candidate alias already exists with a different digest"
+                )
             if existing.scoring_policy_version != payload_obj.scoring_policy_version:
                 raise ModelGovernanceConflict(
                     "candidate alias already exists with a different policy version"
@@ -256,7 +265,9 @@ class ModelGovernanceService:
             raise ModelGovernanceDisabled("model evolution is disabled")
 
         payload_obj = self._parse(BenchmarkSuiteCreatePayload, payload)
-        existing = await self._session.get(ModelBenchmarkSuite, {"owner_id": owner, "suite_id": payload_obj.suite_id})
+        existing = await self._session.get(
+            ModelBenchmarkSuite, {"owner_id": owner, "suite_id": payload_obj.suite_id}
+        )
         if existing is not None:
             if (
                 existing.suite_version != payload_obj.suite_version
@@ -308,7 +319,9 @@ class ModelGovernanceService:
         if suite is None:
             raise ModelGovernanceConflict("referenced benchmark suite is not registered")
         if suite.suite_version != payload_obj.suite_version:
-            raise ModelGovernanceConflict("benchmark suite version does not match the referenced suite")
+            raise ModelGovernanceConflict(
+                "benchmark suite version does not match the referenced suite"
+            )
 
         candidate = await self._session.get(
             ModelCandidate,
@@ -319,11 +332,17 @@ class ModelGovernanceService:
 
         state = await self._get_or_bootstrap_state(owner)
         if suite.scoring_policy_version != state.scoring_policy_version:
-            raise ModelGovernanceConflict("benchmark suite policy differs from active governance policy")
+            raise ModelGovernanceConflict(
+                "benchmark suite policy differs from active governance policy"
+            )
         if payload_obj.sample_size < state.minimum_sample_size:
-            raise ModelGovernanceConflict("benchmark sample size is below minimum configured threshold")
+            raise ModelGovernanceConflict(
+                "benchmark sample size is below minimum configured threshold"
+            )
 
-        existing = await self._session.get(ModelBenchmarkRun, {"owner_id": owner, "run_id": payload_obj.run_id})
+        existing = await self._session.get(
+            ModelBenchmarkRun, {"owner_id": owner, "run_id": payload_obj.run_id}
+        )
         if existing is not None:
             if not _rows_match(ModelBenchmarkRunRecord.from_orm(existing), payload_obj):
                 raise ModelGovernanceConflict("benchmark run payload changed after creation")
@@ -375,9 +394,13 @@ class ModelGovernanceService:
             {"owner_id": owner, "suite_id": payload_obj.suite_id},
         )
         if suite is None or suite.suite_version != payload_obj.suite_version:
-            raise ModelGovernanceConflict("promotion suite no longer matches registered suite state")
+            raise ModelGovernanceConflict(
+                "promotion suite no longer matches registered suite state"
+            )
 
-        run = await self._session.get(ModelBenchmarkRun, {"owner_id": owner, "run_id": payload_obj.benchmark_run_id})
+        run = await self._session.get(
+            ModelBenchmarkRun, {"owner_id": owner, "run_id": payload_obj.benchmark_run_id}
+        )
         if run is None:
             raise ModelGovernanceConflict("promotion benchmark run is missing")
         if run.suite_id != payload_obj.suite_id:
@@ -394,7 +417,8 @@ class ModelGovernanceService:
             owner_id=owner,
             suite_id=payload_obj.suite_id,
             suite_version=payload_obj.suite_version,
-            candidate_alias=state.active_chat_alias or self._settings.model_evolution_active_chat_alias,
+            candidate_alias=state.active_chat_alias
+            or self._settings.model_evolution_active_chat_alias,
             candidate_digest=state.active_chat_digest
             if state.active_chat_digest is not None
             else self._settings.model_evolution_active_chat_digest,
@@ -423,7 +447,9 @@ class ModelGovernanceService:
                 or proposal.decision_digest != payload_obj.decision_digest
                 or proposal.decision_reason != payload_obj.decision_reason
             ):
-                raise ModelGovernanceConflict("promotion proposal already exists with different details")
+                raise ModelGovernanceConflict(
+                    "promotion proposal already exists with different details"
+                )
             return {
                 "candidate_alias": payload_obj.candidate_alias,
                 "candidate_digest": payload_obj.candidate_digest,
@@ -470,7 +496,9 @@ class ModelGovernanceService:
         if payload_obj.expected_previous_generation != state.active_generation:
             raise ModelGovernanceConflict("activation generation is stale")
         if payload_obj.generation <= state.active_generation:
-            raise ModelGovernanceConflict("activation generation must be greater than active generation")
+            raise ModelGovernanceConflict(
+                "activation generation must be greater than active generation"
+            )
 
         candidate = await self._session.get(
             ModelCandidate,
@@ -479,7 +507,9 @@ class ModelGovernanceService:
         if candidate is None or candidate.candidate_digest != payload_obj.candidate_digest:
             raise ModelGovernanceConflict("activation candidate is not registered")
         if payload_obj.prior_generation_anchor != state.prior_generation_anchor:
-            raise ModelGovernanceConflict("activation proposal is not based on current governance anchor")
+            raise ModelGovernanceConflict(
+                "activation proposal is not based on current governance anchor"
+            )
 
         previous_alias = state.active_chat_alias
         previous_digest = state.active_chat_digest
@@ -533,9 +563,13 @@ class ModelGovernanceService:
         state = await self._get_or_bootstrap_state(owner)
 
         if payload_obj.from_alias != state.active_chat_alias:
-            raise ModelGovernanceConflict("rollback source alias does not match current active model")
+            raise ModelGovernanceConflict(
+                "rollback source alias does not match current active model"
+            )
         if payload_obj.from_digest != state.active_chat_digest:
-            raise ModelGovernanceConflict("rollback source digest does not match current active model")
+            raise ModelGovernanceConflict(
+                "rollback source digest does not match current active model"
+            )
 
         candidate = await self._session.get(
             ModelCandidate,
@@ -622,9 +656,13 @@ class ModelGovernanceService:
         state.active_generation = max(1, self._settings.model_evolution_active_generation)
         state.prior_generation_anchor = self._settings.model_evolution_prior_generation_anchor
         state.scoring_policy_version = self._settings.model_evolution_scoring_policy_version
-        state.benchmarking_policy_version = self._settings.model_evolution_benchmarking_policy_version
+        state.benchmarking_policy_version = (
+            self._settings.model_evolution_benchmarking_policy_version
+        )
         state.minimum_sample_size = self._settings.model_evolution_minimum_sample_size
-        state.promotion_quality_threshold = self._settings.model_evolution_promotion_quality_threshold
+        state.promotion_quality_threshold = (
+            self._settings.model_evolution_promotion_quality_threshold
+        )
         state.rollback_quality_threshold = self._settings.model_evolution_rollback_quality_threshold
         state.rollback_target_alias = self._settings.model_evolution_last_rollback_target_alias
         state.rollback_target_digest = self._settings.model_evolution_last_rollback_target_digest
@@ -677,23 +715,17 @@ class ModelGovernanceService:
             if metric == "quality":
                 minimum_quality = incumbent_run.quality_score * (1.0 - tolerance)
                 if candidate_run.quality_score < minimum_quality:
-                    raise ModelGovernanceConflict(
-                        "candidate quality regressed beyond tolerance"
-                    )
+                    raise ModelGovernanceConflict("candidate quality regressed beyond tolerance")
                 continue
             if metric == "latency_ms_p95":
                 max_latency = incumbent_run.latency_ms_p95 * (1.0 + tolerance)
                 if candidate_run.latency_ms_p95 > max_latency:
-                    raise ModelGovernanceConflict(
-                        "candidate latency regressed beyond tolerance"
-                    )
+                    raise ModelGovernanceConflict("candidate latency regressed beyond tolerance")
                 continue
             if metric == "memory_mb_p95":
                 max_memory = incumbent_run.memory_mb_p95 * (1.0 + tolerance)
                 if candidate_run.memory_mb_p95 > max_memory:
-                    raise ModelGovernanceConflict(
-                        "candidate memory regressed beyond tolerance"
-                    )
+                    raise ModelGovernanceConflict("candidate memory regressed beyond tolerance")
                 continue
             if metric == "context_overlap":
                 minimum_context_overlap = incumbent_run.context_overlap * (1.0 - tolerance)
@@ -711,7 +743,11 @@ class ModelGovernanceService:
                 continue
             raise ModelGovernanceConflict(f"unsupported benchmark metric: {raw_metric}")
 
-    def _parse[T](self, model: type[T], payload: dict[str, Any]) -> T:
+    def _parse(
+        self,
+        model: type[_PayloadModelT],
+        payload: dict[str, Any],
+    ) -> _PayloadModelT:
         try:
             if not isinstance(payload, dict):
                 raise TypeError("payload must be a dict")
@@ -736,7 +772,7 @@ class ModelBenchmarkRunRecord:
     raw_measurements_count: int
 
     @staticmethod
-    def from_orm(row: ModelBenchmarkRun) -> "ModelBenchmarkRunRecord":
+    def from_orm(row: ModelBenchmarkRun) -> ModelBenchmarkRunRecord:
         return ModelBenchmarkRunRecord(
             suite_id=row.suite_id,
             suite_version=row.suite_version,

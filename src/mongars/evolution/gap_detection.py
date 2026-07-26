@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, UTC
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 FindingType = Literal[
@@ -33,9 +33,7 @@ class SchedulerFinding:
             "scope": self.scope,
             "confidence": round(self.confidence, 4),
             "evidence": [
-                {"key": key, "value": value}
-                for key, value in self.evidence
-                if isinstance(key, str)
+                {"key": key, "value": value} for key, value in self.evidence if isinstance(key, str)
             ],
             "required_follow_up_action": self.required_follow_up_action,
             "discovered_at": self.discovered_at.isoformat(),

@@ -11,7 +11,7 @@ from uuid import UUID
 from mongars.config import Settings
 from mongars.db.models import TaskQueue
 from mongars.events.repository import EventRepository
-from mongars.rm.contracts import task_operation_contract, normalize_task_payload
+from mongars.rm.contracts import normalize_task_payload, task_operation_contract
 from mongars.rm.repository import TaskRepository
 from mongars.security.policy import PolicyDecision, ToolPolicy
 

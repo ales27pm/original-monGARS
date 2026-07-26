@@ -24,6 +24,7 @@ from mongars.adaptation.repository import (
     FeedbackIdentityConflict,
     PersonalityProfileDataError,
     PersonalityRepository,
+    PersonalityRevision,
 )
 from mongars.adaptation.typed_feedback import (
     ResolvedResponseTarget,
@@ -103,7 +104,7 @@ def _proposal_payload(proposal: ProfileDeltaProposal) -> dict[str, object]:
     return payload
 
 
-def _revision_to_response(item) -> PersonalityRevisionResponse:
+def _revision_to_response(item: PersonalityRevision) -> PersonalityRevisionResponse:
     snapshot = PersonalitySnapshotResponse.from_model(item.snapshot)
     return PersonalityRevisionResponse(
         feedback_id=item.feedback_id,
@@ -164,7 +165,7 @@ async def create_feedback(
         ) from exc
 
     proposal_task: TaskQueue | None = None
-    if isinstance(feedback, PreferenceFeedback):
+    if isinstance(feedback, PreferenceFeedback) and receipt.applied_revision is None:
         proposal_task = await _preference_task(
             owner_id=principal.subject,
             feedback=feedback,
@@ -219,9 +220,7 @@ async def get_profile(
     session: SessionDependency,
 ) -> PersonalitySnapshotResponse:
     try:
-        snapshot = await PersonalityRepository(session).current_snapshot(
-            owner_id=principal.subject
-        )
+        snapshot = await PersonalityRepository(session).current_snapshot(owner_id=principal.subject)
     except PersonalityProfileDataError as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -316,7 +315,9 @@ async def delete_personality(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
-@router.post("/personality/apply", response_model=TaskResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/personality/apply", response_model=TaskResponse, status_code=status.HTTP_202_ACCEPTED
+)
 async def create_profile_apply_task(
     request: ProfileApplyFromFeedbackRequest,
     principal: PrincipalDependency,
@@ -325,7 +326,9 @@ async def create_profile_apply_task(
     policy: PolicyDependency,
 ) -> TaskResponse:
     repository = PersonalityRepository(session)
-    feedback = await repository.feedback(owner_id=principal.subject, feedback_id=request.feedback_id)
+    feedback = await repository.feedback(
+        owner_id=principal.subject, feedback_id=request.feedback_id
+    )
     if feedback is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="feedback not found")
     if not isinstance(feedback, PreferenceFeedback):
@@ -494,7 +497,7 @@ async def _create_preference_task(
                 dedupe_key=dedupe_key,
             )
             created = True
-    except IntegrityError:
+    except IntegrityError as exc:
         existing = await _task_by_dedupe_key(
             session=session,
             owner_id=owner_id,
@@ -504,7 +507,7 @@ async def _create_preference_task(
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail="duplicate personality proposal could not be resolved",
-            )
+            ) from exc
         _verify_feedback_task(existing, feedback)
         task = existing
 
@@ -553,7 +556,20 @@ def _verify_feedback_task(task: TaskQueue, feedback: PreferenceFeedback) -> None
             status_code=status.HTTP_409_CONFLICT,
             detail="existing feedback task payload is invalid",
         )
-    if payload.get("feedback_id") != feedback.feedback_id.hex:
+    raw_feedback_id = payload.get("feedback_id")
+    if not isinstance(raw_feedback_id, str):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="existing feedback task feedback_id is invalid",
+        )
+    try:
+        parsed_feedback_id = UUID(raw_feedback_id)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="existing feedback task feedback_id is invalid",
+        ) from exc
+    if parsed_feedback_id != feedback.feedback_id:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="existing feedback task does not match this feedback",

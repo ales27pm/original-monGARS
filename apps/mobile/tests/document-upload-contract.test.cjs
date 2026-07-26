@@ -14,8 +14,8 @@ test('document upload uses the SDK-compatible picker and streaming file APIs', (
   const memoryScreen = read('app/(tabs)/(memory)/index.tsx');
   const preparation = read('lib/document-upload.ts');
 
-  assert.match(packageJson.dependencies['expo-document-picker'], /^~14\./);
-  assert.match(packageJson.dependencies['expo-file-system'], /^~19\./);
+  assert.match(packageJson.dependencies['expo-document-picker'], /^~57\./);
+  assert.match(packageJson.dependencies['expo-file-system'], /^~57\./);
   assert.match(memoryScreen, /DocumentPicker\.getDocumentAsync\(\{/);
   assert.match(memoryScreen, /copyToCacheDirectory: true/);
   assert.match(memoryScreen, /multiple: false/);

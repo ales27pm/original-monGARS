@@ -283,8 +283,7 @@ def profile_delta_proposal_from_payload(
     if not isinstance(target_values, list):
         raise ValueError("profile task target_preferences must be a JSON array")
     target_preferences = tuple(
-        _preference_from_task_payload(item, field="target_preferences")
-        for item in target_values
+        _preference_from_task_payload(item, field="target_preferences") for item in target_values
     )
     target_snapshot = PersonalitySnapshot(
         revision=target_revision,

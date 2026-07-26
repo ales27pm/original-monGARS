@@ -129,9 +129,7 @@ async def test_stream_pump_emits_bounded_public_error() -> None:
     await pump.close()
     frames = [json.loads(item) async for item in _decoded(pump)]
 
-    assert frames == [
-        {"type": "error", "code": "inference_timeout", "retryable": True}
-    ]
+    assert frames == [{"type": "error", "code": "inference_timeout", "retryable": True}]
     assert "private" not in json.dumps(frames)
 
 

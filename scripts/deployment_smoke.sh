@@ -202,7 +202,7 @@ with open(sys.argv[1], encoding="utf-8") as handle:
     payload = json.load(handle)
 assert payload["status"] == "ok"
 assert payload["web_search_status"] == "ok"
-assert payload["answer"] == "The deterministic deployment smoke result is verified."
+assert payload["answer"] == "The deterministic deployment smoke result is verified. [W1]"
 assert payload["sources"] == [
     {
         "title": "Deterministic deployment result",
@@ -409,7 +409,8 @@ echo "HTTPS auth, required search, and approved document-ingestion deployment sm
 
 artifacts_directory="$repository_root/artifacts"
 artifacts_evidence_path="$artifacts_directory/deployment-smoke-evidence.json"
-mkdir -m 0700 -p "$artifacts_directory"
+mkdir -p "$artifacts_directory"
+chmod 0700 "$artifacts_directory"
 MONGARS_DEPLOYMENT_SMOKE_EVIDENCE_PATH="$artifacts_evidence_path" \
   http_port="$http_port" \
   https_port="$https_port" \

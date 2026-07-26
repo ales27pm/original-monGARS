@@ -56,13 +56,10 @@ class _FrozenJsonDict(dict[str, JsonValue]):
     def popitem(self) -> tuple[str, JsonValue]:
         self._immutable()
 
-    def setdefault(self, *args: Any, **kwargs: Any) -> JsonValue:
+    def setdefault(self, *args: Any, **kwargs: Any) -> Any:
         self._immutable()
 
     def update(self, *args: Any, **kwargs: Any) -> None:
-        self._immutable()
-
-    def __ior__(self, *args: Any, **kwargs: Any) -> _FrozenJsonDict:
         self._immutable()
 
 
@@ -103,12 +100,6 @@ class _FrozenJsonList(list[JsonValue]):
     def sort(self, *args: Any, **kwargs: Any) -> None:
         self._immutable()
 
-    def __iadd__(self, *args: Any, **kwargs: Any) -> _FrozenJsonList:
-        self._immutable()
-
-    def __imul__(self, *args: Any, **kwargs: Any) -> _FrozenJsonList:
-        self._immutable()
-
 
 def deep_freeze_json_mapping(value: Mapping[str, JsonValue]) -> Mapping[str, JsonValue]:
     """Return a recursive immutable deep copy that remains JSON serializable."""
@@ -140,11 +131,7 @@ def _deep_copy_json(value: object) -> object:
 def _deep_freeze_json(value: object) -> JsonValue:
     if isinstance(value, Mapping):
         return _FrozenJsonDict(
-            {
-                key: _deep_freeze_json(item)
-                for key, item in value.items()
-                if isinstance(key, str)
-            }
+            {key: _deep_freeze_json(item) for key, item in value.items() if isinstance(key, str)}
         )
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return _FrozenJsonList(_deep_freeze_json(item) for item in value)

@@ -65,9 +65,7 @@ def reserve_evidence_key_budget(settings: Settings, *, candidate_count: int) -> 
     )
     if reserve <= 0:
         return settings
-    return settings.model_copy(
-        update={"ollama_num_predict": settings.ollama_num_predict + reserve}
-    )
+    return settings.model_copy(update={"ollama_num_predict": settings.ollama_num_predict + reserve})
 
 
 def key_prompt_evidence(
@@ -148,8 +146,7 @@ def canonical_prompt_bytes(plan: DialoguePlan) -> bytes:
 
     payload = {
         "messages": [
-            {"role": message.role, "content": message.content}
-            for message in plan.messages
+            {"role": message.role, "content": message.content} for message in plan.messages
         ],
         "model_alias": plan.model_alias,
         "model_digest": plan.model_digest,
@@ -215,11 +212,7 @@ def _key_conversation_history(
                 key=key,
                 kind="conversation",
                 text=content,
-                source_id=(
-                    history_source_ids.get(source_key)
-                    if source_key is not None
-                    else None
-                ),
+                source_id=(history_source_ids.get(source_key) if source_key is not None else None),
                 title="Prior conversation turn",
                 locator={
                     "role": role,
@@ -267,9 +260,7 @@ def _key_memory_results(
                 source_id=chunk_id if isinstance(chunk_id, str) else None,
                 title=copied.get("title") if isinstance(copied.get("title"), str) else None,
                 source_uri=(
-                    copied.get("source_uri")
-                    if isinstance(copied.get("source_uri"), str)
-                    else None
+                    copied.get("source_uri") if isinstance(copied.get("source_uri"), str) else None
                 ),
                 locator=locator if isinstance(locator, Mapping) else None,
                 score=hit.score if hit is not None else None,

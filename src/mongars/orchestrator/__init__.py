@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from importlib import import_module
+from typing import Any
 
 
-def __getattr__(name: str):
+def __getattr__(name: str) -> Any:
     if name not in _ORCHESTRATOR_EXPORTS:
         raise AttributeError(f"module 'mongars.orchestrator' has no attribute {name!r}")
     module_name, attr = _ORCHESTRATOR_EXPORTS[name]
@@ -16,7 +17,7 @@ def __getattr__(name: str):
 
 
 def __dir__() -> list[str]:
-    return sorted(set(__all__ + [*globals().keys()]))
+    return sorted(set([*__all__, *globals().keys()]))
 
 
 _ORCHESTRATOR_EXPORTS = {

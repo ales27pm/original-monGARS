@@ -137,20 +137,16 @@ async def record_typed_feedback_event(
     sensitivity = cast(Sensitivity, target.sensitivity)
     retention_class = cast(RetentionClass, target.retention_class)
     autobiography = AutobiographyService(session)
-    common = {
-        "owner_id": owner_id,
-        "session_id": session_id,
-        "trace_id": target.trace_id,
-        "actor_type": "user",
-        "sensitivity": sensitivity,
-        "retention_class": retention_class,
-        "causation_id": generation_run_id,
-        "correlation_id": feedback.feedback_id,
-    }
-
     if isinstance(feedback, CorrectionFeedback):
         await autobiography.record_event(
-            **common,
+            owner_id=owner_id,
+            session_id=session_id,
+            trace_id=target.trace_id,
+            actor_type="user",
+            sensitivity=sensitivity,
+            retention_class=retention_class,
+            causation_id=generation_run_id,
+            correlation_id=feedback.feedback_id,
             event_type="correction_received",
             payload={
                 "target_turn_id": assistant_turn_id,
@@ -162,7 +158,14 @@ async def record_typed_feedback_event(
 
     if isinstance(feedback, HelpfulnessFeedback):
         await autobiography.record_event(
-            **common,
+            owner_id=owner_id,
+            session_id=session_id,
+            trace_id=target.trace_id,
+            actor_type="user",
+            sensitivity=sensitivity,
+            retention_class=retention_class,
+            causation_id=generation_run_id,
+            correlation_id=feedback.feedback_id,
             event_type="feedback_received",
             payload={
                 "target_turn_id": assistant_turn_id,
@@ -174,7 +177,14 @@ async def record_typed_feedback_event(
 
     if isinstance(feedback, PreferenceFeedback):
         await autobiography.record_event(
-            **common,
+            owner_id=owner_id,
+            session_id=session_id,
+            trace_id=target.trace_id,
+            actor_type="user",
+            sensitivity=sensitivity,
+            retention_class=retention_class,
+            causation_id=generation_run_id,
+            correlation_id=feedback.feedback_id,
             event_type="feedback_received",
             payload={
                 "target_turn_id": assistant_turn_id,

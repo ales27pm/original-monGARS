@@ -65,7 +65,7 @@ class Handler(BaseHTTPRequestHandler):
                     "model": payload.get("model", "qwen3:4b-instruct"),
                     "message": {
                         "role": "assistant",
-                        "content": "The deterministic deployment smoke result is verified.",
+                        "content": "The deterministic deployment smoke result is verified. [W1]",
                     },
                     "done": True,
                     "done_reason": "stop",

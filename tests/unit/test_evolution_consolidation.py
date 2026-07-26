@@ -43,7 +43,10 @@ def test_consolidation_filters_by_cooldown_and_keeps_evidence() -> None:
     )
 
     assert len(proposals) == 1
-    assert proposals[0].operation_id == "sommeil-proposal:legacy_embedding_coverage:memory_embedding_coverage"
+    assert (
+        proposals[0].operation_id
+        == "sommeil-proposal:legacy_embedding_coverage:memory_embedding_coverage"
+    )
     assert proposals[0].confidence == 0.6
 
 

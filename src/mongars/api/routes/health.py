@@ -10,8 +10,8 @@ from mongars.api.dependencies import PrincipalDependency
 from mongars.config import Settings
 from mongars.db.session import Database
 from mongars.embeddings.service import EmbeddingService
-from mongars.inference.base import InferenceBackend
 from mongars.evolution.governance import ModelGovernanceService
+from mongars.inference.base import HealthStatus, InferenceBackend
 from mongars.runtime import (
     DurableRuntimeReadiness,
     RuntimeHeartbeatRepository,
@@ -123,15 +123,29 @@ async def readyz(request: Request, _principal: PrincipalDependency) -> JSONRespo
         except Exception:
             return _model_governance_dependency(settings=settings)
 
-    database_status, inference_status, web_search_status, runtime_status, p2p_status, model_governance_status, executor_security_status = await asyncio.gather(
+    (
+        database_status,
+        inference_status,
+        web_search_status,
+        runtime_status,
+        p2p_status,
+        model_governance_status,
+    ) = await asyncio.gather(
         database_probe(),
         inference.health(),
         web_search_probe(),
         durable_runtime_probe(),
         p2p_probe(),
         model_governance_probe(),
-        asyncio.to_thread(_executor_security_dependency, settings=settings),
     )
+    executor_security_status = _executor_security_dependency(settings=settings)
+
+    database_status = cast(dict[str, Any], database_status)
+    inference_status = cast(HealthStatus, inference_status)
+    web_search_status = cast(WebSearchHealthStatus, web_search_status)
+    runtime_status = cast(DurableRuntimeReadiness, runtime_status)
+    p2p_status = cast(dict[str, bool | None | str], p2p_status)
+    model_governance_status = cast(dict[str, Any], model_governance_status)
     body = {
         "status": "ready"
         if (
@@ -221,7 +235,7 @@ async def readyz(request: Request, _principal: PrincipalDependency) -> JSONRespo
                 "error_code": runtime_status.embedding_space.error_code,
             },
             "evolution_scheduler": _evolution_scheduler_dependency(
-                worker_capabilities=runtime_status.worker.capabilities,
+                worker_capabilities=runtime_status.worker.capabilities or {},
                 settings=settings,
             ),
             "p2p": {
@@ -321,9 +335,7 @@ def _evolution_scheduler_dependency(
         "healthy": not settings.evolution_scheduler_enabled or scheduler.get("status") != "blocked",
         "reason": scheduler.get("reason"),
         "can_run": bool(scheduler.get("can_run", False)),
-        "budgets": scheduler.get("budgets")
-        if isinstance(scheduler.get("budgets"), dict)
-        else {},
+        "budgets": scheduler.get("budgets") if isinstance(scheduler.get("budgets"), dict) else {},
     }
 
 

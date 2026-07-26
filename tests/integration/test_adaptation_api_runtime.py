@@ -125,14 +125,10 @@ async def _clean_owner(database: Database, owner_id: str) -> None:
             )
         )
         await session.execute(
-            delete(PersonalityProfileRecord).where(
-                PersonalityProfileRecord.owner_id == owner_id
-            )
+            delete(PersonalityProfileRecord).where(PersonalityProfileRecord.owner_id == owner_id)
         )
         await session.execute(
-            delete(ExplicitFeedbackRecord).where(
-                ExplicitFeedbackRecord.owner_id == owner_id
-            )
+            delete(ExplicitFeedbackRecord).where(ExplicitFeedbackRecord.owner_id == owner_id)
         )
         await session.execute(
             delete(AutobiographicalEventRecord).where(
@@ -140,9 +136,7 @@ async def _clean_owner(database: Database, owner_id: str) -> None:
             )
         )
         await session.execute(delete(GenerationRun).where(GenerationRun.owner_id == owner_id))
-        await session.execute(
-            delete(ConversationTurn).where(ConversationTurn.owner_id == owner_id)
-        )
+        await session.execute(delete(ConversationTurn).where(ConversationTurn.owner_id == owner_id))
         await session.execute(delete(EpisodicEvent).where(EpisodicEvent.owner_id == owner_id))
         await session.execute(delete(TaskQueue).where(TaskQueue.owner_id == owner_id))
 

@@ -1,17 +1,22 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from dataclasses import dataclass
-from typing import Any, Literal, TypeAlias
+from datetime import UTC, datetime
+from typing import Any, Literal, cast
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError, field_validator
+from pydantic_core import InitErrorDetails
 
 from mongars.adaptation.mimicry import ProfileDeltaProposal
 from mongars.orchestrator._cognitive_validation import validate_sha256_digest
-from mongars.orchestrator.personality import PersonalityDimension, PersonalityPreference, PersonalitySnapshot
+from mongars.orchestrator.personality import (
+    PersonalityDimension,
+    PersonalityPreference,
+    PersonalitySnapshot,
+)
 
-TaskKind: TypeAlias = Literal[
+type TaskKind = Literal[
     "memory.search",
     "memory.note.create",
     "memory.reindex",
@@ -27,7 +32,7 @@ TaskKind: TypeAlias = Literal[
     "model.activation.apply",
     "model.rollback.apply",
 ]
-TaskPolicyKey: TypeAlias = tuple[str, str]
+type TaskPolicyKey = tuple[str, str]
 
 TASK_KIND_SCHEMA_VERSION: str = "v1"
 TASK_EXECUTOR_OPERATION_SCHEMA_VERSION: str = "exec-v1"
@@ -101,13 +106,13 @@ TASK_OPERATION_CONTRACTS: dict[TaskKind, TaskOperationContract] = {
         allow_network=False,
     ),
     "personality.profile.apply": TaskOperationContract(
-    operation_id="mains-virtuelles/personality.profile.apply@v1",
-    kind="personality.profile.apply",
-    policy_key=("personality", "profile.apply"),
-    schema_version=TASK_KIND_SCHEMA_VERSION,
-    requires_approval=True,
-    output_byte_limit=16_384,
-    allow_network=False,
+        operation_id="mains-virtuelles/personality.profile.apply@v1",
+        kind="personality.profile.apply",
+        policy_key=("personality", "profile.apply"),
+        schema_version=TASK_KIND_SCHEMA_VERSION,
+        requires_approval=True,
+        output_byte_limit=16_384,
+        allow_network=False,
     ),
     "evolution.proposal.generate": TaskOperationContract(
         operation_id="mains-virtuelles/evolution.proposal.generate@v1",
@@ -261,14 +266,14 @@ class DocumentIngestPayload(StrictPayload):
 
 class _ProfilePreferencePayload(StrictPayload):
     dimension: PersonalityDimension
-    value: float
-    confidence: float
-    evidence_count: int
+    value: float = Field(strict=True, ge=0.0, le=1.0)
+    confidence: float = Field(strict=True, ge=0.0, le=1.0)
+    evidence_count: int = Field(strict=True, ge=1, le=10_000)
 
 
 class PersonalityProfileApplyPayload(StrictPayload):
     changed_dimension: PersonalityDimension
-    conflict: bool
+    conflict: bool = Field(strict=True)
     expected_profile_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     expected_revision: int = Field(ge=0, le=2_147_483_647)
     feedback_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -307,6 +312,7 @@ class BenchmarkSuiteCreatePayload(StrictPayload):
 class BenchmarkRunPayload(StrictPayload):
     run_id: UUID
     suite_id: UUID
+    suite_version: str | None = Field(default=None, min_length=1, max_length=32)
     candidate_alias: str = Field(min_length=1, max_length=255)
     candidate_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     sample_size: int = Field(ge=1, le=1_000_000)
@@ -416,22 +422,35 @@ class ModelRollbackPayload(StrictPayload):
 
 
 def task_operation_contract(kind: str) -> TaskOperationContract:
-    contract = TASK_OPERATION_CONTRACTS.get(kind)  # type: ignore[arg-type]
-    if contract is None:
+    if kind not in TASK_OPERATION_CONTRACTS:
         raise UnsupportedTaskKind(f"unsupported task kind: {kind}")
-    return contract
+    return TASK_OPERATION_CONTRACTS[kind]
+
+
+def _normalize_task_kind(kind: str) -> TaskKind:
+    if kind not in TASK_OPERATION_CONTRACTS:
+        raise UnsupportedTaskKind(f"unsupported task kind: {kind}")
+    return kind
 
 
 def normalize_profile_apply_payload(payload: dict[str, Any]) -> ProfileDeltaProposal:
     validated = PersonalityProfileApplyPayload.model_validate(payload)
     validate_sha256_digest(
-        [
-            validated.expected_profile_digest,
-            validated.feedback_digest,
-            validated.target_profile_digest,
-        ]
+        validated.expected_profile_digest,
+        field="expected_profile_digest",
     )
-    current = ProfileDeltaProposal(
+    validate_sha256_digest(
+        validated.feedback_digest,
+        field="feedback_digest",
+    )
+    validate_sha256_digest(
+        validated.target_profile_digest,
+        field="target_profile_digest",
+    )
+    proposed = _preference_payload_to_model(validated.proposed)
+    if proposed is None:
+        raise TypeError("proposed preference is required")
+    proposal = ProfileDeltaProposal(
         feedback_id=validated.feedback_id,
         feedback_digest=validated.feedback_digest,
         expected_revision=validated.expected_revision,
@@ -452,10 +471,10 @@ def normalize_profile_apply_payload(payload: dict[str, Any]) -> ProfileDeltaProp
         ),
         changed_dimension=validated.changed_dimension,
         previous=_preference_payload_to_model(validated.previous),
-        proposed=_preference_payload_to_model(validated.proposed),
+        proposed=proposed,
         conflict=validated.conflict,
     )
-    return current
+    return proposal
 
 
 def _preference_payload_to_model(
@@ -508,15 +527,12 @@ _PAYLOAD_MODELS: dict[str, type[BaseModel]] = {
 
 
 def normalize_task_payload(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+    kind = _normalize_task_kind(kind)
     _ = task_operation_contract(kind)
-    adapter = _PAYLOAD_ADAPTERS.get(kind)
+    adapter = _PAYLOAD_ADAPTERS[kind]
     model = _PAYLOAD_MODELS[kind]
-    if adapter is None:
-        raise UnsupportedTaskKind(f"unsupported task kind schema for {kind}")
 
-    required_fields = {
-        name for name, field in model.model_fields.items() if field.is_required()
-    }
+    required_fields = {name for name, field in model.model_fields.items() if field.is_required()}
     unknown_fields = set(payload) - set(model.model_fields)
     try:
         validated = adapter.validate_python(payload)
@@ -525,21 +541,56 @@ def normalize_task_payload(kind: str, payload: dict[str, Any]) -> dict[str, Any]
             unknown = ",".join(sorted(unknown_fields))
             raise ValidationError.from_exception_data(
                 "normalize_task_payload",
-                [
-                    {
-                        "type": "extra_forbidden",
-                        "loc": ("payload",),
-                        "msg": f"extra fields are not permitted: {unknown}",
-                        "input": payload,
-                    }
-                ],
+                cast(
+                    list[InitErrorDetails],
+                    [
+                        cast(
+                            InitErrorDetails,
+                            {
+                                "type": "extra_forbidden",
+                                "loc": ("payload",),
+                                "msg": f"extra fields are not permitted: {unknown}",
+                                "input": payload,
+                            },
+                        )
+                    ],
+                ),
             ) from exc
         raise
     if not isinstance(validated, BaseModel):
         raise TypeError("task payload adapter returned an invalid value")
     payload_data = validated.model_dump(mode="json")
+    if kind == "personality.profile.apply":
+        try:
+            proposal = normalize_profile_apply_payload(payload_data)
+        except (TypeError, ValueError) as exc:
+            raise ValidationError.from_exception_data(
+                "normalize_task_payload",
+                cast(
+                    list[InitErrorDetails],
+                    [
+                        cast(
+                            InitErrorDetails,
+                            {
+                                "type": "value_error",
+                                "loc": ("payload",),
+                                "msg": str(exc),
+                                "input": payload_data,
+                                "ctx": {"error": str(exc)},
+                            },
+                        )
+                    ],
+                ),
+            ) from exc
+        payload_data = proposal.as_task_payload()
     if kind == "model.benchmark.suite.create":
         payload_data["target_metrics"] = tuple(payload_data["target_metrics"])
+    if kind == "evolution.proposal.generate":
+        payload_data["proposals"] = tuple(payload_data["proposals"])
+    if kind == "evolution.proposal.execute":
+        payload_data["proposal_ids"] = tuple(payload_data["proposal_ids"])
+    if kind == "model.benchmark.run" and payload_data.get("suite_version") is None:
+        payload_data.pop("suite_version")
     return payload_data
 
 
@@ -552,31 +603,31 @@ def supported_kind_count() -> int:
 
 
 __all__ = [
+    "SUPPORTED_TASK_KINDS",
     "TASK_EXECUTOR_OPERATION_SCHEMA_VERSION",
     "TASK_KIND_SCHEMA_VERSION",
-    "SUPPORTED_TASK_KINDS",
     "TASK_OPERATION_CONTRACTS",
     "TASK_POLICY_KEYS",
-    "TaskKind",
-    "TaskOperationContract",
-    "TaskPolicyKey",
-    "task_operation_contract",
+    "BenchmarkRunPayload",
+    "BenchmarkSuiteCreatePayload",
     "DocumentIngestPayload",
-    "PersonalityProfileApplyPayload",
+    "EvolutionProposalExecutePayload",
+    "EvolutionProposalGeneratePayload",
+    "ExecutionSandboxEchoPayload",
     "MemoryNoteCreatePayload",
     "MemoryReindexPayload",
     "MemorySearchPayload",
-    "ModelCandidateRegisterPayload",
-    "BenchmarkSuiteCreatePayload",
-    "BenchmarkRunPayload",
-    "EvolutionProposalGeneratePayload",
-    "EvolutionProposalExecutePayload",
-    "ExecutionSandboxEchoPayload",
-    "PromotionProposalPayload",
     "ModelActivationPayload",
+    "ModelCandidateRegisterPayload",
     "ModelRollbackPayload",
+    "PersonalityProfileApplyPayload",
+    "PromotionProposalPayload",
+    "TaskKind",
+    "TaskOperationContract",
+    "TaskPolicyKey",
     "UnsupportedTaskKind",
-    "normalize_profile_apply_payload",
     "ValidationError",
+    "normalize_profile_apply_payload",
     "normalize_task_payload",
+    "task_operation_contract",
 ]

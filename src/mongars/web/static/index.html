@@ -51,6 +51,14 @@
             <span>Tasks</span>
             <span class="nav-count" id="task-count" hidden>0</span>
           </button>
+          <button class="nav-item" type="button" data-view-link="adaptation" aria-current="false">
+            <span class="nav-icon" aria-hidden="true">◑</span>
+            <span>Personality</span>
+          </button>
+          <button class="nav-item" type="button" data-view-link="p2p">
+            <span class="nav-icon" aria-hidden="true">⇄</span>
+            <span>P2P</span>
+          </button>
         </nav>
 
         <section class="sidebar-status" aria-labelledby="sidebar-status-title">
@@ -69,6 +77,7 @@
               <dd id="inference-status">—</dd>
             </div>
           </dl>
+          <p id="status-callout" class="status-callout" role="status" aria-live="polite" hidden></p>
           <button class="text-button" id="refresh-status" type="button">Refresh status</button>
         </section>
 
@@ -121,13 +130,19 @@
                 <span aria-hidden="true"></span>
                 Local inference only
               </label>
+              <label class="local-toggle" title="Stream chat via NDJSON chunks for immediate partial responses">
+                <input id="chat-stream" type="checkbox">
+                <span aria-hidden="true"></span>
+                Stream response
+              </label>
               <div class="composer-actions">
                 <span class="keyboard-hint" aria-hidden="true">Enter to send</span>
-                <button class="send-button" type="submit" aria-label="Send message">
+                <button class="send-button" id="chat-send" type="submit" aria-label="Send message">
                   <span aria-hidden="true">↑</span>
                 </button>
               </div>
             </div>
+            <p class="chat-action-feedback" id="chat-action-feedback" role="status" aria-live="polite" hidden></p>
           </form>
         </section>
 
@@ -168,6 +183,7 @@
               <div class="eyebrow">Resource manager</div>
               <h1 id="tasks-title">Tasks</h1>
               <p>Review queued work, approve protected actions, and inspect outcomes.</p>
+              <p class="section-status" id="tasks-status" role="status" aria-live="polite" hidden></p>
             </div>
             <button class="secondary-button compact" id="refresh-tasks" type="button">↻ Refresh</button>
           </header>
@@ -178,8 +194,235 @@
             <button class="filter-chip" type="button" data-task-filter="running" aria-pressed="false">Running</button>
             <button class="filter-chip" type="button" data-task-filter="done" aria-pressed="false">Completed</button>
           </div>
+          <div class="tasks-quick-actions" id="tasks-empty-actions" hidden>
+            <p>Create protected task work to begin:</p>
+            <div>
+              <button class="primary-button compact" id="tasks-empty-open-document" type="button">Upload document</button>
+              <button class="secondary-button compact" id="tasks-empty-open-note" type="button">＋ Add note</button>
+            </div>
+          </div>
 
           <div class="task-list" id="task-list" aria-live="polite"></div>
+        </section>
+
+        <section class="view" id="adaptation-view" data-view="adaptation" aria-labelledby="adaptation-title" hidden>
+          <header class="view-header">
+            <div>
+              <div class="eyebrow">Adaptive cognition</div>
+              <h1 id="adaptation-title">Personality</h1>
+              <p>Review immutable snapshots, feed explicit feedback, and control approval-gated profile updates.</p>
+              <p class="section-status" id="personality-summary" role="status" aria-live="polite"></p>
+            </div>
+            <div class="view-header-actions">
+              <button class="secondary-button compact" id="refresh-personality" type="button">↻ Refresh</button>
+              <button class="secondary-button compact" id="reset-personality" type="button">Reset profile</button>
+              <button class="secondary-button compact" id="delete-personality" type="button">Delete profile</button>
+            </div>
+          </header>
+
+          <div class="field-grid">
+            <article class="memory-card">
+              <h3>Current personality snapshot</h3>
+              <p class="section-status is-muted">Last synced from <strong>/v1/adaptation/profile</strong>.</p>
+              <pre id="personality-current" class="task-result">Sign in to load profile.</pre>
+            </article>
+            <article class="memory-card">
+              <h3>Revision history</h3>
+              <p class="section-status is-muted">Most recent updates from <strong>/v1/adaptation/profile/revisions</strong>.</p>
+              <div id="personality-revisions" class="memory-results" aria-live="polite"></div>
+            </article>
+          </div>
+
+          <article class="memory-card" style="margin-top: 12px;">
+            <h3>Explicit feedback</h3>
+            <p class="section-status is-muted">
+              Submit correction, helpfulness, or preference feedback. Corrections and helpfulness are observations;
+              preferences generate a protected profile-update task for manual review.
+            </p>
+            <form class="search-bar" id="adaptation-feedback-form" style="margin-top: 10px;">
+              <label class="field-label" for="adaptation-feedback-kind">Feedback kind</label>
+              <select id="adaptation-feedback-kind">
+                <option value="correction">Correction</option>
+                <option value="helpfulness">Helpfulness</option>
+                <option value="preference">Preference</option>
+              </select>
+              <input id="adaptation-feedback-id" class="input" type="text" placeholder="Feedback ID (UUID)" required>
+              <label class="field-label" for="adaptation-response-trace-id">Response trace ID</label>
+              <input
+                id="adaptation-response-trace-id"
+                class="input"
+                type="text"
+                placeholder="trc_0123456789abcdef0123456789abcdef"
+              >
+              <label class="field-label adaptation-feedback-block" id="adaptation-correction-block" for="adaptation-correction-text">
+                Correction text
+                <textarea
+                  id="adaptation-correction-text"
+                  class="input note-textarea"
+                  rows="6"
+                  maxlength="2000"
+                  placeholder="Explain what was incorrect or what should be changed."
+                ></textarea>
+              </label>
+              <label class="field-label adaptation-feedback-block" id="adaptation-helpful-block" for="adaptation-helpful">
+                Was the answer helpful?
+                <select id="adaptation-helpful" class="input">
+                  <option value="true">Yes</option>
+                  <option value="false">No</option>
+                </select>
+              </label>
+              <label class="field-label adaptation-feedback-block" id="adaptation-dimension-label" for="adaptation-dimension">
+                Dimension
+                <select id="adaptation-dimension" class="input">
+                  <option value="brevity">Brevity</option>
+                  <option value="directness">Directness</option>
+                  <option value="formality">Formality</option>
+                  <option value="humor">Humor</option>
+                  <option value="initiative">Initiative</option>
+                  <option value="technical_depth">Technical depth</option>
+                </select>
+              </label>
+              <label class="field-label adaptation-feedback-block" id="adaptation-value-label" for="adaptation-desired-value">
+                Desired value (<span id="adaptation-desired-value-label">0.5</span>)
+                <input id="adaptation-desired-value" class="input" type="range" min="0" max="1" step="0.05" value="0.5">
+              </label>
+              <button class="primary-button compact" type="submit">Submit feedback</button>
+              <div id="adaptation-feedback-summary" class="field-error" role="alert" hidden></div>
+            </form>
+            <pre id="adaptation-feedback-result" class="task-result" hidden></pre>
+            <p id="adaptation-feedback-task-note" class="section-status is-muted" hidden></p>
+          </article>
+        </section>
+
+        <section class="view" id="p2p-view" data-view="p2p" aria-labelledby="p2p-title" hidden>
+          <header class="view-header">
+            <div>
+              <div class="eyebrow">Knowledge exchange</div>
+              <h1 id="p2p-title">P2P</h1>
+              <p>Exchange signed envelope envelopes and monitor pairing/quarantine state.</p>
+              <p class="section-status" id="p2p-summary" role="status" aria-live="polite"></p>
+            </div>
+            <button class="secondary-button compact" id="refresh-p2p" type="button">↻ Refresh status</button>
+          </header>
+
+          <div class="field-grid">
+            <article class="memory-card">
+              <h3>Pairing & status</h3>
+              <pre id="p2p-status" class="task-result">Sign in to load status.</pre>
+              <form class="search-bar" id="p2p-pair-form" style="margin-top: 11px;">
+                <label class="field-label" for="p2p-pair-peer-id">Peer ID</label>
+                <input id="p2p-pair-peer-id" class="input" type="text" required>
+                <label class="field-label" for="p2p-pair-key-id">Key ID</label>
+                <input id="p2p-pair-key-id" class="input" type="text" required>
+                <label class="field-label" for="p2p-pair-secret">Signing secret (base64)</label>
+                <input id="p2p-pair-secret" class="input" type="text" placeholder="bWltb..." required>
+                <button class="primary-button compact" type="submit">Create pair</button>
+                <p id="p2p-pair-result" class="field-error" role="alert" hidden></p>
+              </form>
+            </article>
+            <article class="memory-card">
+              <h3>Signed envelope export</h3>
+              <form id="p2p-export-form" class="search-bar" style="margin-top: 0;">
+                <label class="field-label" for="p2p-export-envelope-id">Envelope ID</label>
+                <input id="p2p-export-envelope-id" class="input" type="text" required>
+                <label class="field-label" for="p2p-export-sender-peer-id">Sender peer</label>
+                <input id="p2p-export-sender-peer-id" class="input" type="text" required>
+                <label class="field-label" for="p2p-export-recipient-peer-id">Recipient peer</label>
+                <input id="p2p-export-recipient-peer-id" class="input" type="text" required>
+                <label class="field-label" for="p2p-export-sender-key-id">Sender key ID</label>
+                <input id="p2p-export-sender-key-id" class="input" type="text" required>
+                <label class="field-label" for="p2p-export-issued-at">Issued at (ISO UTC)</label>
+                <input id="p2p-export-issued-at" class="input" type="text" required>
+                <label class="field-label" for="p2p-export-expires-at">Expires at (ISO UTC)</label>
+                <input id="p2p-export-expires-at" class="input" type="text" required>
+                <label class="field-label" for="p2p-export-nonce">Nonce</label>
+                <input id="p2p-export-nonce" class="input" type="text" required>
+                <label class="field-label" for="p2p-export-schema-version">Schema version</label>
+                <input id="p2p-export-schema-version" class="input" type="text" value="knowledge.v1" required>
+                <label class="field-label" for="p2p-export-sensitivity">Sensitivity</label>
+                <select id="p2p-export-sensitivity" class="input">
+                  <option value="private">private</option>
+                  <option value="shared">shared</option>
+                  <option value="restricted">restricted</option>
+                </select>
+                <label class="field-label" for="p2p-export-retention">Retention class</label>
+                <select id="p2p-export-retention" class="input">
+                  <option value="keep">keep</option>
+                  <option value="ttl_30d">30 days</option>
+                  <option value="ttl_90d">90 days</option>
+                  <option value="legal_hold">legal hold</option>
+                </select>
+                <label class="field-label" for="p2p-export-trust">Trust</label>
+                <input id="p2p-export-trust" class="input" type="text" value="verified" required>
+                <label class="field-label" for="p2p-export-source-time">Source time (ISO UTC)</label>
+                <input id="p2p-export-source-time" class="input" type="text" required>
+                <label class="field-label" for="p2p-export-secret">Signing secret (base64)</label>
+                <input id="p2p-export-secret" class="input" type="text" required>
+                <label class="field-label" for="p2p-export-payload">Payload JSON</label>
+                <textarea
+                  id="p2p-export-payload"
+                  class="input note-textarea"
+                  rows="5"
+                  placeholder='{"type":"note","title":"example"}'
+                ></textarea>
+                <button class="primary-button compact" type="submit">Create signed envelope</button>
+              </form>
+              <pre id="p2p-export-result" class="task-result" hidden></pre>
+            </article>
+          </div>
+
+          <article class="memory-card" style="margin-top: 12px;">
+            <h3>Signed envelope import</h3>
+            <form id="p2p-import-form" class="search-bar" style="margin-top: 0;">
+              <label class="field-label" for="p2p-import-envelope-id">Envelope ID</label>
+              <input id="p2p-import-envelope-id" class="input" type="text" required>
+              <label class="field-label" for="p2p-import-sender-peer-id">Sender peer</label>
+              <input id="p2p-import-sender-peer-id" class="input" type="text" required>
+              <label class="field-label" for="p2p-import-recipient-peer-id">Recipient peer</label>
+              <input id="p2p-import-recipient-peer-id" class="input" type="text" required>
+              <label class="field-label" for="p2p-import-owner-id">Owner ID</label>
+              <input id="p2p-import-owner-id" class="input" type="text" required>
+              <label class="field-label" for="p2p-import-sender-key-id">Sender key ID</label>
+              <input id="p2p-import-sender-key-id" class="input" type="text" required>
+              <label class="field-label" for="p2p-import-issued-at">Issued at (ISO UTC)</label>
+              <input id="p2p-import-issued-at" class="input" type="text" required>
+              <label class="field-label" for="p2p-import-expires-at">Expires at (ISO UTC)</label>
+              <input id="p2p-import-expires-at" class="input" type="text" required>
+              <label class="field-label" for="p2p-import-nonce">Nonce</label>
+              <input id="p2p-import-nonce" class="input" type="text" required>
+              <label class="field-label" for="p2p-import-schema-version">Schema version</label>
+              <input id="p2p-import-schema-version" class="input" type="text" value="knowledge.v1" required>
+              <label class="field-label" for="p2p-import-sensitivity">Sensitivity</label>
+              <select id="p2p-import-sensitivity" class="input">
+                <option value="private">private</option>
+                <option value="shared">shared</option>
+                <option value="restricted">restricted</option>
+              </select>
+              <label class="field-label" for="p2p-import-retention">Retention class</label>
+              <select id="p2p-import-retention" class="input">
+                <option value="keep">keep</option>
+                <option value="ttl_30d">30 days</option>
+                <option value="ttl_90d">90 days</option>
+                <option value="legal_hold">legal_hold</option>
+              </select>
+              <label class="field-label" for="p2p-import-trust">Trust</label>
+              <input id="p2p-import-trust" class="input" type="text" value="verified" required>
+              <label class="field-label" for="p2p-import-source-time">Source time (ISO UTC)</label>
+              <input id="p2p-import-source-time" class="input" type="text" required>
+              <label class="field-label" for="p2p-import-signature">Signature (hex)</label>
+              <input id="p2p-import-signature" class="input" type="text" required>
+              <label class="field-label" for="p2p-import-payload">Payload JSON</label>
+              <textarea
+                id="p2p-import-payload"
+                class="input note-textarea"
+                rows="5"
+                placeholder='{"type":"note","title":"example"}'
+              ></textarea>
+              <button class="primary-button compact" type="submit">Import envelope</button>
+              <p id="p2p-import-result" class="field-error" role="alert" hidden></p>
+            </form>
+            <pre id="p2p-import-result-json" class="task-result" hidden></pre>
+          </article>
         </section>
       </main>
 
@@ -193,6 +436,12 @@
         <button class="mobile-nav-item" type="button" data-view-link="tasks">
           <span aria-hidden="true">✓</span><span>Tasks</span>
           <span class="mobile-count" id="mobile-task-count" hidden>0</span>
+        </button>
+        <button class="mobile-nav-item" type="button" data-view-link="adaptation">
+          <span aria-hidden="true">◑</span><span>Personality</span>
+        </button>
+        <button class="mobile-nav-item" type="button" data-view-link="p2p">
+          <span aria-hidden="true">⇄</span><span>P2P</span>
         </button>
       </nav>
     </div>

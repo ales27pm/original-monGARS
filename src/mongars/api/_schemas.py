@@ -9,13 +9,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from mongars.db.models import MemoryDocument, TaskQueue
 from mongars.memory.repository import MemoryHit
-from mongars.rm.contracts import TaskKind
 from mongars.orchestrator.personality import (
     PersonalityDimension,
     PersonalityPreference,
-    PersonalitySource,
     PersonalitySnapshot,
+    PersonalitySource,
 )
+from mongars.rm.contracts import TaskKind
 from mongars.rm.payload_view import (
     TaskPayloadPage as RenderedTaskPayloadPage,
 )
@@ -173,7 +173,7 @@ class ExplicitFeedbackCreateHelpfulnessRequest(ApiModel):
     kind: Annotated[Literal["helpfulness"], "helpfulness"]
     feedback_id: UUID
     response_trace_id: str = Field(pattern=r"^trc_[0-9a-f]{32}$")
-    helpful: bool
+    helpful: bool = Field(strict=True)
 
 
 class ExplicitFeedbackCreatePreferenceRequest(ApiModel):
@@ -181,7 +181,7 @@ class ExplicitFeedbackCreatePreferenceRequest(ApiModel):
     feedback_id: UUID
     response_trace_id: str | None = Field(default=None, pattern=r"^trc_[0-9a-f]{32}$")
     dimension: PersonalityDimension
-    desired_value: float = Field(ge=0.0, le=1.0)
+    desired_value: float = Field(strict=True, ge=0.0, le=1.0)
 
 
 ExplicitFeedbackCreateRequest = Annotated[
@@ -328,6 +328,8 @@ class ExplicitFeedbackCreateResponse(ApiModel):
     applied_task_id: UUID | None
     applied_revision: int | None
     proposal: dict[str, Any] | None = None
+    profile: PersonalitySnapshotResponse
+    proposal_task: TaskResponse | None = None
 
 
 class ProfileApplyFromFeedbackRequest(ApiModel):
@@ -354,7 +356,6 @@ class PersonalitySnapshotResponse(ApiModel):
     revision: int
     source: PersonalitySource
     profile_digest: str | None = None
-    schema_version: str = "personality-v1"
     preferences: tuple[PersonalityPreferenceResponse, ...]
 
     @classmethod
@@ -363,7 +364,6 @@ class PersonalitySnapshotResponse(ApiModel):
             revision=snapshot.revision,
             source=snapshot.source,
             profile_digest=snapshot.profile_digest,
-            schema_version=snapshot.schema_version,
             preferences=tuple(
                 PersonalityPreferenceResponse.from_model(preference)
                 for preference in snapshot.preferences
@@ -390,6 +390,7 @@ class PersonalityExportResponse(ApiModel):
     exported_at: datetime
     current: PersonalitySnapshotResponse
     history: tuple[PersonalityRevisionResponse, ...]
+
 
 class MemorySearchRequest(ApiModel):
     query: str = Field(min_length=1, max_length=32_000)

@@ -69,9 +69,7 @@ async def test_stream_chat_rejects_invalid_ndjson() -> None:
         with pytest.raises(InferenceResponseError, match="invalid NDJSON"):
             _ = [
                 chunk
-                async for chunk in backend.stream_chat(
-                    (ChatMessage(role="user", content="hello"),)
-                )
+                async for chunk in backend.stream_chat((ChatMessage(role="user", content="hello"),))
             ]
 
 
@@ -96,9 +94,7 @@ async def test_stream_chat_requires_terminal_chunk() -> None:
         with pytest.raises(InferenceResponseError, match="terminal chunk"):
             _ = [
                 chunk
-                async for chunk in backend.stream_chat(
-                    (ChatMessage(role="user", content="hello"),)
-                )
+                async for chunk in backend.stream_chat((ChatMessage(role="user", content="hello"),))
             ]
 
 
@@ -123,7 +119,5 @@ async def test_stream_chat_rejects_model_substitution() -> None:
         with pytest.raises(InferenceResponseError, match="does not match"):
             _ = [
                 chunk
-                async for chunk in backend.stream_chat(
-                    (ChatMessage(role="user", content="hello"),)
-                )
+                async for chunk in backend.stream_chat((ChatMessage(role="user", content="hello"),))
             ]

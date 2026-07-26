@@ -1,7 +1,7 @@
-import { Text } from 'react-native';
+import { ColorValue, Text } from 'react-native';
 
 type TabGlyphProps = {
-  color: string;
+  color: ColorValue;
   glyph: 'chat' | 'memory' | 'settings' | 'tasks';
   focused: boolean;
 };

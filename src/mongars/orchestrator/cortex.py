@@ -14,11 +14,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from mongars.config import Settings
 from mongars.embeddings.service import EmbeddingService
 from mongars.events.repository import ConversationMessage, EventRepository
+from mongars.evolution.governance import ModelGovernanceService
 from mongars.ids import uuid7
 from mongars.inference.base import ChatMessage, InferenceBackend, InferenceResponseError
 from mongars.memory.repository import MemoryHit, MemoryRepository
 from mongars.memory.service import MemoryService
-from mongars.evolution.governance import ModelGovernanceService
 from mongars.orchestrator.cognitive_context import serialize_cognitive_context
 from mongars.orchestrator.emotion import AffectSignal
 from mongars.orchestrator.personality import PersonalitySnapshot

@@ -43,6 +43,7 @@ const NEXT_STATE: Record<VoiceLoopState, Record<VoiceLoopEvent, VoiceLoopState |
     interruption: null,
     cancel: null,
     network_lost: null,
+    auto_restart: null,
   },
   requesting_permission: {
     permission_granted: 'listening',
@@ -58,6 +59,7 @@ const NEXT_STATE: Record<VoiceLoopState, Record<VoiceLoopEvent, VoiceLoopState |
     tts_stopped: null,
     interruption: null,
     network_lost: 'idle',
+    auto_restart: null,
   },
   listening: {
     stop_recording: 'finalizing',
@@ -65,6 +67,7 @@ const NEXT_STATE: Record<VoiceLoopState, Record<VoiceLoopEvent, VoiceLoopState |
     recording_failed: 'idle',
     cancel: 'idle',
     network_lost: 'idle',
+    auto_restart: null,
     start_push_to_talk: null,
     permission_granted: null,
     permission_denied: null,
@@ -76,7 +79,6 @@ const NEXT_STATE: Record<VoiceLoopState, Record<VoiceLoopEvent, VoiceLoopState |
   },
   finalizing: {
     transcription_complete: 'thinking',
-    auto_restart: null,
     transcription_rejected: 'idle',
     recording_failed: 'idle',
     cancel: 'idle',
@@ -89,6 +91,7 @@ const NEXT_STATE: Record<VoiceLoopState, Record<VoiceLoopEvent, VoiceLoopState |
     tts_stopped: null,
     interruption: 'idle',
     network_lost: 'idle',
+    auto_restart: null,
   },
   thinking: {
     transcription_complete: null,
@@ -103,7 +106,8 @@ const NEXT_STATE: Record<VoiceLoopState, Record<VoiceLoopEvent, VoiceLoopState |
     silence_timeout: null,
     network_lost: 'idle',
     tts_stopped: null,
-    interruption: 'cancel',
+    interruption: 'idle',
+    auto_restart: null,
   },
   speaking: {
     speak_complete: 'idle',

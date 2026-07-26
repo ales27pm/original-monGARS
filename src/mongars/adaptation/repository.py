@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable
-from collections.abc import Sequence
+from collections.abc import Awaitable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -172,9 +171,7 @@ class PersonalityRepository:
             )
         else:
             records = await self._scalars_all(
-                select(PersonalityProfileRecord).where(
-                    PersonalityProfileRecord.owner_id == owner
-                )
+                select(PersonalityProfileRecord).where(PersonalityProfileRecord.owner_id == owner)
             )
             record = records[0] if records else None
         return _snapshot_from_record(record)
@@ -216,9 +213,7 @@ class PersonalityRepository:
             )
         )
         await self._session.execute(
-            delete(PersonalityProfileRecord).where(
-                PersonalityProfileRecord.owner_id == owner
-            )
+            delete(PersonalityProfileRecord).where(PersonalityProfileRecord.owner_id == owner)
         )
         await self._session.flush()
         return PersonalitySnapshot.default()
@@ -407,9 +402,7 @@ class PersonalityRepository:
         )
 
     async def _scalars_all(self, statement: Any) -> list[PersonalityProfileRecord]:
-        result = self._session.scalars(statement)
-        if isinstance(result, Awaitable):
-            result = await result
+        result = await self._session.scalars(statement)
         records = result.all()
         if isinstance(records, Awaitable):
             records = await records
@@ -466,7 +459,9 @@ def _preference_feedback_from_record(
 
 
 def _feedback_from_record(record: ExplicitFeedbackRecord) -> ExplicitFeedback:
-    if not isinstance(record.payload, dict) or record.payload.get("feedback_id") != str(record.feedback_id):
+    if not isinstance(record.payload, dict) or record.payload.get("feedback_id") != str(
+        record.feedback_id
+    ):
         raise PersonalityProfileDataError("persisted feedback payload is invalid")
     kind = record.payload.get("kind")
     if kind == "preference":
@@ -497,7 +492,7 @@ def _helpfulness_feedback_from_record(
     try:
         feedback = HelpfulnessFeedback(
             feedback_id=record.feedback_id,
-            response_trace_id=cast(str | None, payload.get("response_trace_id")),
+            response_trace_id=cast(str, payload.get("response_trace_id")),
             helpful=cast(bool, payload["helpful"]),
         )
     except (TypeError, ValueError) as exc:

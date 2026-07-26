@@ -291,6 +291,13 @@ select:disabled {
   box-shadow: 0 0 0 3px rgba(255, 142, 135, 0.11);
 }
 
+.status-callout {
+  margin-top: 12px;
+  color: var(--text-muted);
+  font-size: 9px;
+  line-height: 1.45;
+}
+
 .sidebar {
   grid-row: 2;
   display: flex;
@@ -782,6 +789,27 @@ select:disabled {
   padding: 8px 10px 10px 16px;
 }
 
+.chat-action-feedback {
+  grid-column: 1 / -1;
+  margin: 3px 16px 8px;
+  min-height: 16px;
+  color: var(--text-soft);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.chat-action-feedback.is-loading {
+  color: var(--warning);
+}
+
+.chat-action-feedback.is-success {
+  color: var(--success);
+}
+
+.chat-action-feedback.is-error {
+  color: var(--danger);
+}
+
 .web-search-control {
   display: inline-flex;
   align-items: center;
@@ -938,6 +966,29 @@ select:disabled {
   min-height: 56px;
 }
 
+.section-status {
+  margin: 9px 0 0;
+  color: var(--text-soft);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.section-status.is-loading {
+  color: var(--warning);
+}
+
+.section-status.is-success {
+  color: var(--success);
+}
+
+.section-status.is-error {
+  color: var(--danger);
+}
+
+.section-status.is-muted {
+  color: var(--text-muted);
+}
+
 .section-toolbar p {
   margin: 0;
   color: var(--text-muted);
@@ -949,6 +1000,20 @@ select:disabled {
   display: grid;
   gap: 11px;
   padding-bottom: 40px;
+}
+
+.task-group {
+  display: grid;
+  gap: 9px;
+}
+
+.task-group-title {
+  margin: 10px 0 2px;
+  color: var(--text-soft);
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
 }
 
 .memory-card,
@@ -974,8 +1039,8 @@ select:disabled {
 .memory-card h3,
 .task-card h3 {
   margin: 0;
-  font-size: 13px;
-  font-weight: 680;
+  font-size: 14px;
+  font-weight: 700;
   letter-spacing: -0.01em;
 }
 
@@ -1253,7 +1318,8 @@ select:disabled {
   display: block;
   margin-bottom: 8px;
   color: var(--text-soft);
-  font-size: 13px;
+  font-size: 15px;
+  letter-spacing: -0.02em;
 }
 
 .empty-state p {
@@ -1261,6 +1327,26 @@ select:disabled {
   margin: 0;
   font-size: 11px;
   line-height: 1.6;
+}
+
+.tasks-quick-actions {
+  margin: 0 0 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(20, 27, 23, 0.58);
+  color: var(--text-muted);
+}
+
+.tasks-quick-actions p {
+  margin: 0 0 9px;
+  font-size: 11px;
+}
+
+.tasks-quick-actions > div {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .skeleton-card {

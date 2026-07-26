@@ -12,7 +12,10 @@ from mongars.adaptation.mimicry import (
     profile_delta_proposal_from_payload,
     propose_profile_delta,
 )
-from mongars.api.schemas import HelpfulnessFeedbackRequest, PreferenceFeedbackRequest
+from mongars.api.schemas import (
+    ExplicitFeedbackCreateHelpfulnessRequest,
+    ExplicitFeedbackCreatePreferenceRequest,
+)
 from mongars.rm.contracts import normalize_task_payload
 
 
@@ -93,7 +96,7 @@ def test_profile_apply_task_rejects_nonboolean_conflict() -> None:
 
 def test_preference_feedback_request_rejects_boolean_desired_value() -> None:
     with pytest.raises(ValidationError):
-        PreferenceFeedbackRequest(
+        ExplicitFeedbackCreatePreferenceRequest(
             kind="preference",
             feedback_id=uuid4(),
             dimension="brevity",
@@ -103,7 +106,7 @@ def test_preference_feedback_request_rejects_boolean_desired_value() -> None:
 
 def test_helpfulness_feedback_request_rejects_integer_boolean_substitutes() -> None:
     with pytest.raises(ValidationError):
-        HelpfulnessFeedbackRequest(
+        ExplicitFeedbackCreateHelpfulnessRequest(
             kind="helpfulness",
             feedback_id=uuid4(),
             response_trace_id="trc_" + ("a" * 32),

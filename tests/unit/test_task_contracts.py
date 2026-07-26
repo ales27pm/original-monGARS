@@ -10,12 +10,12 @@ from mongars.adaptation.feedback import PreferenceFeedback
 from mongars.adaptation.mimicry import propose_profile_delta
 from mongars.orchestrator.personality import PersonalitySnapshot
 from mongars.rm.contracts import (
-    TASK_KIND_SCHEMA_VERSION,
     TASK_EXECUTOR_OPERATION_SCHEMA_VERSION,
+    TASK_KIND_SCHEMA_VERSION,
     TASK_OPERATION_CONTRACTS,
     UnsupportedTaskKind,
-    task_operation_contract,
     normalize_task_payload,
+    task_operation_contract,
 )
 
 

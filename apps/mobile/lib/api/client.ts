@@ -10,7 +10,6 @@ import {
   getMongarsApiOrigin,
   normalizeMongarsApiBaseUrl,
 } from '@/lib/api-origin';
-import { ChatNdjsonDecoder, ChatStreamProtocolError } from '@/lib/api/ndjson';
 import type {
   ChatRequest,
   ChatResponse,
@@ -60,6 +59,20 @@ type RequestOptions = ApiCallOptions & {
 
 const MAX_STREAM_FRAMES = 10_000;
 const MAX_STREAM_ANSWER_CHARACTERS = 1_000_000;
+type ChatStreamErrorClass = new (message: string, options?: ErrorOptions) => Error;
+type ChatNdjsonDecoderClass = new () => {
+  push(chunk: Uint8Array): ChatStreamFrame[];
+  finish(): ChatStreamFrame[];
+};
+type ChatNdjsonDependencies = {
+  ChatNdjsonDecoder: ChatNdjsonDecoderClass;
+  ChatStreamProtocolError: ChatStreamErrorClass;
+};
+
+function loadNdjsonDependencies(): ChatNdjsonDependencies {
+  const value = require('@/lib/api/ndjson') as ChatNdjsonDependencies;
+  return value;
+}
 
 export {
   ApiConfigurationError,
@@ -246,6 +259,8 @@ export class MongarsClient {
     request: ChatRequest,
     options: ChatStreamOptions = {},
   ): Promise<ChatResponse> {
+    const { ChatNdjsonDecoder, ChatStreamProtocolError } = loadNdjsonDependencies();
+
     const headers = new Headers({
       Accept: 'application/x-ndjson',
       'Content-Type': 'application/json',

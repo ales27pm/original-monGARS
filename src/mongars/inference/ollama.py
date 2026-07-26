@@ -389,9 +389,7 @@ def _chat_payload(
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "model": model,
-        "messages": [
-            {"role": message.role, "content": message.content} for message in messages
-        ],
+        "messages": [{"role": message.role, "content": message.content} for message in messages],
         "stream": stream,
     }
     if think is not None:

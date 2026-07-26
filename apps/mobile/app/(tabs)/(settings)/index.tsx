@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
 
 import { BrandMark } from '@/components/brand-mark';
@@ -29,13 +29,15 @@ export default function SettingsScreen() {
     tokenStorageError,
     transportSecurity,
   } = useMongars();
-  const [serverUrl, setServerUrl] = useState(baseUrl ?? '');
+  const [serverUrlInput, setServerUrlInput] = useState(baseUrl ?? '');
+  const [hasServerUrlEdits, setHasServerUrlEdits] = useState(false);
   const [serverUrlSaving, setServerUrlSaving] = useState(false);
   const [serverUrlMessage, setServerUrlMessage] = useState<string | null>(null);
   const [token, setToken] = useState('');
   const [connectionState, setConnectionState] = useState<ConnectionState>('idle');
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const credentialTransportAllowed = transportSecurity?.canSendCredentials === true;
+  const serverUrl = hasServerUrlEdits ? serverUrlInput : baseUrl ?? '';
   const draftMatchesActiveBaseUrl = isActiveMongarsApiBaseUrlDraft(serverUrl, baseUrl);
   const canTest =
     Boolean(client) &&
@@ -44,12 +46,6 @@ export default function SettingsScreen() {
     !serverUrlSaving &&
     (Boolean(token.trim()) || hasToken);
 
-  useEffect(() => {
-    if (baseUrl && !serverUrl) {
-      setServerUrl(baseUrl);
-    }
-  }, [baseUrl, serverUrl]);
-
   async function saveServerUrl() {
     if (!serverUrl.trim() || serverUrlSaving) return;
     setServerUrlSaving(true);
@@ -57,7 +53,8 @@ export default function SettingsScreen() {
     setConnectionError(null);
     try {
       const saved = await saveBaseUrl(serverUrl);
-      setServerUrl(saved);
+      setServerUrlInput(saved);
+      setHasServerUrlEdits(true);
       setToken('');
       setConnectionState('idle');
       setServerUrlMessage(
@@ -155,7 +152,8 @@ export default function SettingsScreen() {
             autoCorrect={false}
             keyboardType="url"
             onChangeText={(value) => {
-              setServerUrl(value);
+              setServerUrlInput(value);
+              setHasServerUrlEdits(true);
               setServerUrlMessage(null);
               setConnectionError(null);
               setConnectionState('idle');
