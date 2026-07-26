@@ -198,9 +198,7 @@ async def _clean_owner(database: Database, owner_id: str) -> None:
             )
         )
         await session.execute(delete(GenerationRun).where(GenerationRun.owner_id == owner_id))
-        await session.execute(
-            delete(ConversationTurn).where(ConversationTurn.owner_id == owner_id)
-        )
+        await session.execute(delete(ConversationTurn).where(ConversationTurn.owner_id == owner_id))
         await session.execute(delete(EpisodicEvent).where(EpisodicEvent.owner_id == owner_id))
 
 
@@ -247,9 +245,10 @@ async def test_authenticated_ndjson_stream_commits_one_final_assistant_turn() ->
             "delta",
             "final",
         ]
-        assert "".join(
-            frame["text"] for frame in frames if frame["type"] == "delta"
-        ) == "streamed answer"
+        assert (
+            "".join(frame["text"] for frame in frames if frame["type"] == "delta")
+            == "streamed answer"
+        )
         assert frames[-1]["answer"] == "streamed answer"
         assert frames[-1]["citations"] == []
         assert frames[-1]["trace_id"] == frames[0]["trace_id"]

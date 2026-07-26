@@ -10,8 +10,8 @@ from mongars.api.dependencies import PrincipalDependency
 from mongars.config import Settings
 from mongars.db.session import Database
 from mongars.embeddings.service import EmbeddingService
-from mongars.inference.base import InferenceBackend
 from mongars.evolution.governance import ModelGovernanceService
+from mongars.inference.base import InferenceBackend
 from mongars.runtime import (
     DurableRuntimeReadiness,
     RuntimeHeartbeatRepository,
@@ -123,15 +123,32 @@ async def readyz(request: Request, _principal: PrincipalDependency) -> JSONRespo
         except Exception:
             return _model_governance_dependency(settings=settings)
 
-    database_status, inference_status, web_search_status, runtime_status, p2p_status, model_governance_status, executor_security_status = await asyncio.gather(
-        database_probe(),
-        inference.health(),
-        web_search_probe(),
-        durable_runtime_probe(),
-        p2p_probe(),
-        model_governance_probe(),
-        asyncio.to_thread(_executor_security_dependency, settings=settings),
+    database_task = asyncio.create_task(database_probe())
+    inference_task = asyncio.create_task(inference.health())
+    web_search_task = asyncio.create_task(web_search_probe())
+    runtime_task = asyncio.create_task(durable_runtime_probe())
+    p2p_task = asyncio.create_task(p2p_probe())
+    model_governance_task = asyncio.create_task(model_governance_probe())
+    executor_security_task = asyncio.create_task(
+        asyncio.to_thread(_executor_security_dependency, settings=settings)
     )
+    await asyncio.gather(
+        database_task,
+        inference_task,
+        web_search_task,
+        runtime_task,
+        p2p_task,
+        model_governance_task,
+        executor_security_task,
+    )
+    database_status = database_task.result()
+    inference_status = inference_task.result()
+    web_search_status = web_search_task.result()
+    runtime_status = runtime_task.result()
+    p2p_status = p2p_task.result()
+    model_governance_status = model_governance_task.result()
+    executor_security_status = executor_security_task.result()
+
     body = {
         "status": "ready"
         if (
@@ -221,7 +238,7 @@ async def readyz(request: Request, _principal: PrincipalDependency) -> JSONRespo
                 "error_code": runtime_status.embedding_space.error_code,
             },
             "evolution_scheduler": _evolution_scheduler_dependency(
-                worker_capabilities=runtime_status.worker.capabilities,
+                worker_capabilities=runtime_status.worker.capabilities or {},
                 settings=settings,
             ),
             "p2p": {
@@ -321,9 +338,7 @@ def _evolution_scheduler_dependency(
         "healthy": not settings.evolution_scheduler_enabled or scheduler.get("status") != "blocked",
         "reason": scheduler.get("reason"),
         "can_run": bool(scheduler.get("can_run", False)),
-        "budgets": scheduler.get("budgets")
-        if isinstance(scheduler.get("budgets"), dict)
-        else {},
+        "budgets": scheduler.get("budgets") if isinstance(scheduler.get("budgets"), dict) else {},
     }
 
 

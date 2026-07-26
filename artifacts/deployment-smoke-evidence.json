@@ -1,0 +1,35 @@
+{
+  "api_approval_limits": {
+    "global_upload_concurrency": 2,
+    "per_owner_upload_concurrency": 1
+  },
+  "chat_model": "qwen3:4b-instruct",
+  "check": "deployment-smoke",
+  "checks": [
+    "plaintext-ca",
+    "plaintext-healthz-boundary",
+    "api-workstation-liveness",
+    "https-healthz",
+    "https-readyz-auth-boundary",
+    "https-readyz-authenticated",
+    "readyz-embedding-metadata",
+    "required-chat-web-search",
+    "document-ingest-approval-path",
+    "document-approval-and-reindex-readyz"
+  ],
+  "embedding_model": "nomic-embed-text",
+  "git_sha": "local",
+  "model": "qwen3:4b-instruct (chat) + nomic-embed-text (embedding)",
+  "ollama_context_length": 4096,
+  "parser_max_concurrency": 2,
+  "platform": "Linux-7.0.0-28-generic-x86_64-with-glibc2.43",
+  "ports": {
+    "api": 33016,
+    "http": 33017,
+    "https": 33018
+  },
+  "project_name": "mongars-ci-smoke-246970",
+  "project_root": "/home/ales27pm/original-monGARS",
+  "runner": "local",
+  "timestamp": "2026-07-26T18:19:37.876080+00:00"
+}

@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable
-from collections.abc import Sequence
+from collections.abc import Awaitable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -172,9 +171,7 @@ class PersonalityRepository:
             )
         else:
             records = await self._scalars_all(
-                select(PersonalityProfileRecord).where(
-                    PersonalityProfileRecord.owner_id == owner
-                )
+                select(PersonalityProfileRecord).where(PersonalityProfileRecord.owner_id == owner)
             )
             record = records[0] if records else None
         return _snapshot_from_record(record)
@@ -216,9 +213,7 @@ class PersonalityRepository:
             )
         )
         await self._session.execute(
-            delete(PersonalityProfileRecord).where(
-                PersonalityProfileRecord.owner_id == owner
-            )
+            delete(PersonalityProfileRecord).where(PersonalityProfileRecord.owner_id == owner)
         )
         await self._session.flush()
         return PersonalitySnapshot.default()
@@ -407,13 +402,13 @@ class PersonalityRepository:
         )
 
     async def _scalars_all(self, statement: Any) -> list[PersonalityProfileRecord]:
-        result = self._session.scalars(statement)
+        result: Any = self._session.scalars(statement)
         if isinstance(result, Awaitable):
             result = await result
-        records = result.all()
+        records: Any = result.all()
         if isinstance(records, Awaitable):
             records = await records
-        return list(records)
+        return list(cast(Sequence[PersonalityProfileRecord], records))
 
 
 def _validate_owner_id(value: object) -> str:
@@ -466,7 +461,9 @@ def _preference_feedback_from_record(
 
 
 def _feedback_from_record(record: ExplicitFeedbackRecord) -> ExplicitFeedback:
-    if not isinstance(record.payload, dict) or record.payload.get("feedback_id") != str(record.feedback_id):
+    if not isinstance(record.payload, dict) or record.payload.get("feedback_id") != str(
+        record.feedback_id
+    ):
         raise PersonalityProfileDataError("persisted feedback payload is invalid")
     kind = record.payload.get("kind")
     if kind == "preference":
@@ -482,11 +479,10 @@ def _helpfulness_feedback_from_record(
     record: ExplicitFeedbackRecord,
 ) -> HelpfulnessFeedback:
     payload = record.payload
-    required = {"feedback_id", "helpful", "kind"}
-    optional = {"response_trace_id"}
+    required = {"feedback_id", "helpful", "kind", "response_trace_id"}
     if not isinstance(payload, dict) or not required <= set(payload):
         raise PersonalityProfileDataError("persisted helpfulness feedback payload is incomplete")
-    if set(payload) - required - optional:
+    if set(payload) != required:
         raise PersonalityProfileDataError(
             "persisted helpfulness feedback payload has invalid fields"
         )
@@ -494,11 +490,15 @@ def _helpfulness_feedback_from_record(
         raise PersonalityProfileDataError("persisted feedback kind does not match its payload")
     if payload.get("feedback_id") != str(record.feedback_id):
         raise PersonalityProfileDataError("persisted feedback UUID does not match its key")
+    response_trace_id = payload.get("response_trace_id")
+    helpful = payload.get("helpful")
+    if not isinstance(response_trace_id, str) or not isinstance(helpful, bool):
+        raise PersonalityProfileDataError("persisted helpfulness feedback values are invalid")
     try:
         feedback = HelpfulnessFeedback(
             feedback_id=record.feedback_id,
-            response_trace_id=cast(str | None, payload.get("response_trace_id")),
-            helpful=cast(bool, payload["helpful"]),
+            response_trace_id=response_trace_id,
+            helpful=helpful,
         )
     except (TypeError, ValueError) as exc:
         raise PersonalityProfileDataError("persisted helpfulness feedback is invalid") from exc

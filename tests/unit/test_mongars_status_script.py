@@ -54,7 +54,10 @@ set -Eeuo pipefail
 if [[ "$1" == "compose" ]]; then
   for arg in "$@"; do
     if [[ "$arg" == "ps" ]]; then
-      echo -e "api\trunning\thealthy\tUp\nworker\trunning\thealthy\tUp\npostgres\trunning\thealthy\tUp"
+      printf '%s\n' \
+        $'api\trunning\thealthy\tUp' \
+        $'worker\trunning\thealthy\tUp' \
+        $'postgres\trunning\thealthy\tUp'
       exit 0
     fi
   done
@@ -81,7 +84,7 @@ exit 0
     environment["MONGARS_STATUS_API_TOKEN_FILE"] = str(token_file)
     environment["MONGARS_STATUS_API_TOKEN"] = ""
 
-    completed = subprocess.run(
+    completed = subprocess.run(  # noqa: S603 - fixed local Bash executable.
         [
             "/usr/bin/bash",
             str(root / "scripts" / "mongars-status.sh"),

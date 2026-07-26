@@ -62,7 +62,9 @@ class Settings(BaseSettings):
     ollama_chat_model: str = "qwen3:4b-instruct"
     model_evolution_enabled: bool = False
     model_evolution_scoring_policy_version: str = Field(default="v1", min_length=1, max_length=64)
-    model_evolution_benchmarking_policy_version: str = Field(default="v1", min_length=1, max_length=64)
+    model_evolution_benchmarking_policy_version: str = Field(
+        default="v1", min_length=1, max_length=64
+    )
     model_evolution_minimum_sample_size: int = Field(
         default=1_000,
         ge=100,
@@ -78,10 +80,14 @@ class Settings(BaseSettings):
         ge=0.0,
         le=1.0,
     )
-    model_evolution_active_chat_alias: str = Field(default="qwen3:4b-instruct", min_length=1, max_length=255)
+    model_evolution_active_chat_alias: str = Field(
+        default="qwen3:4b-instruct", min_length=1, max_length=255
+    )
     model_evolution_active_chat_digest: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     model_evolution_active_generation: int = Field(default=1, ge=1, le=2_147_483_647)
-    model_evolution_prior_generation_anchor: str = Field(default="bootstrap", min_length=1, max_length=128)
+    model_evolution_prior_generation_anchor: str = Field(
+        default="bootstrap", min_length=1, max_length=128
+    )
     model_evolution_last_rollback_target_alias: str | None = Field(default=None, max_length=255)
     model_evolution_last_rollback_target_digest: str | None = Field(
         default=None,
@@ -167,7 +173,9 @@ class Settings(BaseSettings):
     evolution_scheduler_wall_clock_seconds: int = Field(default=45, ge=5, le=300)
     evolution_scheduler_database_row_budget: int = Field(default=500, ge=1, le=100_000)
     evolution_scheduler_proposal_count_budget: int = Field(default=25, ge=1, le=1000)
-    evolution_scheduler_storage_budget_bytes: int = Field(default=20_000_000, ge=1_024, le=1_000_000_000)
+    evolution_scheduler_storage_budget_bytes: int = Field(
+        default=20_000_000, ge=1_024, le=1_000_000_000
+    )
     evolution_scheduler_cooldown_minutes: int = Field(default=30, ge=1, le=1440)
     retention_sweep_seconds: int = Field(default=300, ge=10, le=86_400)
     approval_ttl_seconds: int = Field(default=900, ge=30, le=86_400)
@@ -220,14 +228,18 @@ class Settings(BaseSettings):
         except ValueError as exc:
             raise ValueError("ollama_embedding_model_digest must be a SHA-256 digest") from exc
 
-    @field_validator("model_evolution_active_chat_alias", "model_evolution_last_rollback_target_alias")
+    @field_validator(
+        "model_evolution_active_chat_alias", "model_evolution_last_rollback_target_alias"
+    )
     @classmethod
     def trim_evolution_alias(cls, value: str | None) -> str | None:
         if value is None:
             return None
         normalized = value.strip()
         if not normalized:
-            raise ValueError("model evolution alias must be a non-empty trimmed string when present")
+            raise ValueError(
+                "model evolution alias must be a non-empty trimmed string when present"
+            )
         return normalized
 
     @model_validator(mode="after")

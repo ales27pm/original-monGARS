@@ -60,9 +60,11 @@ function loadCredentialStore(initial = {}, overrides = {}) {
 
 function loadClient(defaultTokenStore) {
   const origin = loadTypeScriptModule('lib/api-origin.ts', {});
+  const ndjson = loadTypeScriptModule('lib/api/ndjson.ts', {});
   return loadTypeScriptModule('lib/api/client.ts', {
     'expo/fetch': { fetch: () => Promise.reject(new Error('Unexpected default fetch.')) },
     '@/lib/api-origin': origin,
+    '@/lib/api/ndjson': ndjson,
     '@/lib/api-token': { apiTokenStore: defaultTokenStore },
   });
 }

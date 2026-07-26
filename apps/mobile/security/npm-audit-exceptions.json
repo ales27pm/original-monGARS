@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "exceptions": [
+    {
+      "advisory": "GHSA-mh99-v99m-4gvg",
+      "package": "brace-expansion",
+      "max_severity": "high",
+      "require_transitive": true,
+      "expires_on": "2026-08-31",
+      "reason": "Expo SDK 54 and React Native 0.81 transitively install legacy minimatch/glob consumers. The only patched brace-expansion release is a new major. Keep the exception build-tool-only and migrate Expo incrementally in a dedicated branch."
+    }
+  ]
+}

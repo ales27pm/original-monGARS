@@ -256,9 +256,7 @@ async def test_web_evidence_is_keyed_snapshotted_and_completed_after_commit() ->
             key="W1",
             kind="web",
             text="Spain won the final.",
-            source_id=(
-                "web:" + hashlib.sha256(b"https://example.test/result").hexdigest()
-            ),
+            source_id=("web:" + hashlib.sha256(b"https://example.test/result").hexdigest()),
             title="Official result",
             source_uri="https://example.test/result",
             locator={"engine": "test", "truncated": False},
@@ -462,7 +460,6 @@ async def test_disabled_required_search_commits_a_policy_response_without_infere
     assert autobiography.started[0]["model_alias"] == "cortex-policy"
     assert autobiography.completed[0]["grounding_status"] == "abstained"
     assert any(
-        event["event_type"] == "web_search_completed"
-        and event["payload"]["status"] == "disabled"
+        event["event_type"] == "web_search_completed" and event["payload"]["status"] == "disabled"
         for event in autobiography.events
     )

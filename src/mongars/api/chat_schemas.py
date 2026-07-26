@@ -55,11 +55,7 @@ class ChatStreamError(ApiModel):
 
 
 type ChatStreamFrame = (
-    ChatStreamStart
-    | ChatStreamSources
-    | ChatStreamDelta
-    | ChatStreamFinal
-    | ChatStreamError
+    ChatStreamStart | ChatStreamSources | ChatStreamDelta | ChatStreamFinal | ChatStreamError
 )
 
 

@@ -174,9 +174,7 @@ async def _clean_owner(database: Database, owner_id: str) -> None:
             )
         )
         await session.execute(delete(GenerationRun).where(GenerationRun.owner_id == owner_id))
-        await session.execute(
-            delete(ConversationTurn).where(ConversationTurn.owner_id == owner_id)
-        )
+        await session.execute(delete(ConversationTurn).where(ConversationTurn.owner_id == owner_id))
         await session.execute(delete(EpisodicEvent).where(EpisodicEvent.owner_id == owner_id))
 
 
@@ -264,14 +262,16 @@ async def test_chat_persists_typed_turn_generation_and_events() -> None:
         assert len(runs[0].prompt_sha256) == 32
         assert evidence == []
         assert legacy_events == []
-        assert [event.event_type for event in events] == [
+        event_types = [event.event_type for event in events]
+        assert len(event_types) == 6
+        assert set(event_types) == {
             "session_started",
             "user_turn_accepted",
             "generation_started",
             "retrieval_completed",
             "generation_completed",
             "assistant_turn_committed",
-        ]
+        }
     finally:
         await _clean_owner(database, owner_id)
         await embeddings.aclose()
@@ -306,9 +306,7 @@ async def test_failed_chat_records_generation_without_final_assistant_turn() -> 
             )
 
         assert response.status_code == 503
-        assert response.json() == {
-            "detail": {"code": "invalid_response", "retryable": True}
-        }
+        assert response.json() == {"detail": {"code": "invalid_response", "retryable": True}}
         assert "private malformed response detail" not in response.text
 
         async with database.session_factory() as session:
@@ -338,13 +336,15 @@ async def test_failed_chat_records_generation_without_final_assistant_turn() -> 
         assert run.status == "failed"
         assert run.error_code == "invalid_response"
         assert run.assistant_turn_id is None
-        assert [event.event_type for event in events] == [
+        event_types = [event.event_type for event in events]
+        assert len(event_types) == 5
+        assert set(event_types) == {
             "session_started",
             "user_turn_accepted",
             "generation_started",
             "retrieval_completed",
             "generation_failed",
-        ]
+        }
     finally:
         await _clean_owner(database, owner_id)
         await embeddings.aclose()

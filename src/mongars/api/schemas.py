@@ -9,13 +9,13 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from mongars.db.models import MemoryDocument, TaskQueue
 from mongars.memory.repository import MemoryHit
-from mongars.rm.contracts import TaskKind
 from mongars.orchestrator.personality import (
     PersonalityDimension,
     PersonalityPreference,
-    PersonalitySource,
     PersonalitySnapshot,
+    PersonalitySource,
 )
+from mongars.rm.contracts import TaskKind
 from mongars.rm.payload_view import (
     TaskPayloadPage as RenderedTaskPayloadPage,
 )
@@ -175,6 +175,13 @@ class ExplicitFeedbackCreateHelpfulnessRequest(ApiModel):
     response_trace_id: str = Field(pattern=r"^trc_[0-9a-f]{32}$")
     helpful: bool
 
+    @field_validator("helpful", mode="before")
+    @classmethod
+    def reject_non_boolean_helpful(cls, value: object) -> object:
+        if not isinstance(value, bool):
+            raise ValueError("helpful must be a boolean")
+        return value
+
 
 class ExplicitFeedbackCreatePreferenceRequest(ApiModel):
     kind: Annotated[Literal["preference"], "preference"]
@@ -183,6 +190,13 @@ class ExplicitFeedbackCreatePreferenceRequest(ApiModel):
     dimension: PersonalityDimension
     desired_value: float = Field(ge=0.0, le=1.0)
 
+    @field_validator("desired_value", mode="before")
+    @classmethod
+    def reject_boolean_desired_value(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("desired_value must be numeric, not boolean")
+        return value
+
 
 ExplicitFeedbackCreateRequest = Annotated[
     ExplicitFeedbackCreateCorrectionRequest
@@ -190,6 +204,11 @@ ExplicitFeedbackCreateRequest = Annotated[
     | ExplicitFeedbackCreatePreferenceRequest,
     Field(discriminator="kind"),
 ]
+
+
+# Backward-compatible request names retained for existing callers and tests.
+HelpfulnessFeedbackRequest = ExplicitFeedbackCreateHelpfulnessRequest
+PreferenceFeedbackRequest = ExplicitFeedbackCreatePreferenceRequest
 
 
 class TaskApproveRequest(ApiModel):
@@ -320,16 +339,6 @@ class TaskDetailResponse(TaskResponse):
         )
 
 
-class ExplicitFeedbackCreateResponse(ApiModel):
-    feedback_id: UUID
-    kind: Literal["correction", "helpfulness", "preference"]
-    feedback_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    created: bool
-    applied_task_id: UUID | None
-    applied_revision: int | None
-    proposal: dict[str, Any] | None = None
-
-
 class ProfileApplyFromFeedbackRequest(ApiModel):
     feedback_id: UUID
 
@@ -371,6 +380,18 @@ class PersonalitySnapshotResponse(ApiModel):
         )
 
 
+class ExplicitFeedbackCreateResponse(ApiModel):
+    feedback_id: UUID
+    kind: Literal["correction", "helpfulness", "preference"]
+    feedback_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    created: bool
+    applied_task_id: UUID | None
+    applied_revision: int | None
+    proposal: dict[str, Any] | None = None
+    profile: PersonalitySnapshotResponse
+    proposal_task: TaskResponse | None = None
+
+
 class PersonalityRevisionResponse(ApiModel):
     feedback_id: UUID
     feedback_digest: str
@@ -390,6 +411,7 @@ class PersonalityExportResponse(ApiModel):
     exported_at: datetime
     current: PersonalitySnapshotResponse
     history: tuple[PersonalityRevisionResponse, ...]
+
 
 class MemorySearchRequest(ApiModel):
     query: str = Field(min_length=1, max_length=32_000)

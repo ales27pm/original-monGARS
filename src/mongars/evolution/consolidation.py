@@ -25,9 +25,7 @@ class SchedulerProposal:
             "owner_id": self.owner_id,
             "operation_id": self.operation_id,
             "evidence": [
-                {"key": key, "value": value}
-                for key, value in self.evidence
-                if isinstance(key, str)
+                {"key": key, "value": value} for key, value in self.evidence if isinstance(key, str)
             ],
             "confidence": round(self.confidence, 4),
             "scope": self.scope,
@@ -57,7 +55,7 @@ class SchedulerProposalQueueRecord:
                 (
                     f"owner_ids:{','.join(self.owner_ids)}|operation_ids:{','.join(self.operation_ids)}|"
                     f"proposal_count:{self.proposal_count}"
-                ).encode("utf-8")
+                ).encode()
             ).hexdigest(),
         }
 
@@ -121,7 +119,7 @@ def emit_scheduler_proposals(
         max_proposals_per_owner=max_proposals_per_owner,
     )
     event_time = emitted_at or datetime.now(UTC)
-    owner_ids = tuple(dict.fromkeys((proposal.owner_id for proposal in proposals)))
+    owner_ids = tuple(dict.fromkeys(proposal.owner_id for proposal in proposals))
     operation_ids = tuple(proposal.operation_id for proposal in proposals)
     queue_record = SchedulerProposalQueueRecord(
         emitted_at=event_time,

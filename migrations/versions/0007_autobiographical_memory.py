@@ -126,8 +126,7 @@ def upgrade() -> None:
             name="ck_generation_run_status",
         ),
         sa.CheckConstraint(
-            "grounding_status IN "
-            "('not_required', 'grounded', 'partially_grounded', 'abstained')",
+            "grounding_status IN ('not_required', 'grounded', 'partially_grounded', 'abstained')",
             name="ck_generation_run_grounding",
         ),
         sa.CheckConstraint(

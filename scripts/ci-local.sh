@@ -154,6 +154,6 @@ deploy/searxng/check.sh
   npm run lint
   npm run typecheck
   npm test
-  npm audit --audit-level=high
+  npm run audit:ci
 )
 scripts/deployment_smoke.sh

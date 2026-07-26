@@ -358,9 +358,7 @@ class TypedChatRuntime:
                 session_id=resolved_session_id,
                 trace_id=trace_id,
                 generation_run_id=generation.id,
-                error_code=(
-                    exc.code if isinstance(exc, InferenceError) else type(exc).__name__
-                ),
+                error_code=(exc.code if isinstance(exc, InferenceError) else type(exc).__name__),
                 retryable=exc.retryable if isinstance(exc, InferenceError) else False,
             )
             raise
@@ -451,8 +449,7 @@ class TypedChatRuntime:
                     ChatMessage(role="user", content=user_message),
                 )
             ),
-            context_budget=self._settings.ollama_context_length
-            - self._settings.ollama_num_predict,
+            context_budget=self._settings.ollama_context_length - self._settings.ollama_num_predict,
             response_mode="abstain",
             require_web_citation=False,
             prompt_recipe_version="cortex-policy-v1",

@@ -121,9 +121,7 @@ async def test_stream_deltas_exactly_match_the_normalized_final_answer() -> None
     )
 
     events = [event async for event in Bouche(inference).stream(plan())]
-    delta_text = "".join(
-        event.text for event in events if isinstance(event, BoucheStreamDelta)
-    )
+    delta_text = "".join(event.text for event in events if isinstance(event, BoucheStreamDelta))
     final = next(event.response for event in events if isinstance(event, BoucheStreamFinal))
 
     assert delta_text == "Grounded answer [M1]."
@@ -155,9 +153,10 @@ async def test_required_web_citation_uses_validated_fallback_before_streaming() 
     events = [event async for event in Bouche(inference).stream(plan(require_web=True))]
 
     assert inference.chat_calls == 1
-    assert "".join(
-        event.text for event in events if isinstance(event, BoucheStreamDelta)
-    ) == "fallback [W1]"
+    assert (
+        "".join(event.text for event in events if isinstance(event, BoucheStreamDelta))
+        == "fallback [W1]"
+    )
     final = next(event.response for event in events if isinstance(event, BoucheStreamFinal))
     assert final.answer == "fallback [W1]"
     assert [citation.key for citation in final.citations] == ["W1"]

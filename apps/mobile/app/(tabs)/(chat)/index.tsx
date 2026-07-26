@@ -1,5 +1,5 @@
 import * as Haptics from 'expo-haptics';
-import { useEffect, useReducer, useState } from 'react';
+import { useCallback, useEffect, useReducer, useState } from 'react';
 import { Alert, Linking, Pressable, Text, TextInput, View } from 'react-native';
 
 import { BrandMark } from '@/components/brand-mark';
@@ -154,14 +154,17 @@ function ConnectedChatScreen() {
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [continuousVoiceLoop, setContinuousVoiceLoop] = useState(false);
 
-  function dispatchVoiceAction(event: VoiceLoopEvent): void {
-    if (!canTransition(voiceState, event)) {
-      setVoiceError(`Cannot transition ${voiceState} with ${event}`);
-      return;
-    }
-    setVoiceError(null);
-    dispatchVoiceEvent(event);
-  }
+  const dispatchVoiceAction = useCallback(
+    (event: VoiceLoopEvent): void => {
+      if (!canTransition(voiceState, event)) {
+        setVoiceError(`Cannot transition ${voiceState} with ${event}`);
+        return;
+      }
+      setVoiceError(null);
+      dispatchVoiceEvent(event);
+    },
+    [voiceState],
+  );
 
   const voiceVisual: string =
     voiceState === 'listening'
@@ -188,7 +191,7 @@ function ConnectedChatScreen() {
     if (!continuousVoiceLoop || voiceState !== 'speaking') return;
     const handle = setTimeout(() => dispatchVoiceAction('auto_restart'), 0);
     return () => clearTimeout(handle);
-  }, [continuousVoiceLoop, voiceState]);
+  }, [continuousVoiceLoop, dispatchVoiceAction, voiceState]);
 
   async function submitMessage() {
     const text = draft.trim();

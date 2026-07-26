@@ -41,9 +41,11 @@ function loadTypeScriptModule(relativePath, imports) {
 
 function loadClient() {
   const origin = loadTypeScriptModule('lib/api-origin.ts', {});
+  const ndjson = loadTypeScriptModule('lib/api/ndjson.ts', {});
   return loadTypeScriptModule('lib/api/client.ts', {
     'expo/fetch': { fetch: () => Promise.reject(new Error('Unexpected network request.')) },
     '@/lib/api-origin': origin,
+    '@/lib/api/ndjson': ndjson,
     '@/lib/api-token': {
       apiTokenStore: {
         clear: async () => undefined,

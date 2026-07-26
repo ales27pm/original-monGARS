@@ -13,16 +13,16 @@ from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import Insert, insert
 
 from mongars.config import Settings
-from mongars.evolution.governance import (
-    ModelGovernanceService,
-    model_governance_dependency_payload,
-)
 from mongars.db.models import RuntimeComponent
 from mongars.db.session import Database
 from mongars.embeddings.models import EmbeddingSpace
 from mongars.embeddings.service import EmbeddingService
-from mongars.ingestion.isolation import DocumentParser, ParserHealth
+from mongars.evolution.governance import (
+    ModelGovernanceService,
+    model_governance_dependency_payload,
+)
 from mongars.evolution.scheduler import describe_scheduler_state
+from mongars.ingestion.isolation import DocumentParser, ParserHealth
 from mongars.runtime import RuntimeReportedStatus
 
 logger = logging.getLogger(__name__)
@@ -189,7 +189,7 @@ class WorkerRuntimeHeartbeat:
                 state=None,
             )
         try:
-            async with self._model_governance_session() as session:
+            async with self._database.session_factory.begin() as session:
                 return await ModelGovernanceService(
                     session=session, settings=self._settings
                 ).dependency_payload(self._settings.owner_id)
@@ -199,12 +199,6 @@ class WorkerRuntimeHeartbeat:
                 extra={"error_type": type(exc).__name__},
             )
             return model_governance_dependency_payload(settings=self._settings, state=None)
-
-    def _model_governance_session(self):
-        session_factory = self._database.session_factory
-        if hasattr(session_factory, "begin"):
-            return session_factory.begin()
-        return session_factory()
 
 
 def _canonical_parser_health(health: ParserHealth) -> ParserHealth:

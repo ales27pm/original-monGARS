@@ -454,7 +454,9 @@ class ModelBenchmarkSuite(Base):
             "scoring_policy_version ~ '^.{1,32}$'",
             name="ck_model_benchmark_suite_policy_version",
         ),
-        CheckConstraint("minimum_sample_size BETWEEN 1 AND 1000000", name="ck_model_benchmark_suite_min_sample"),
+        CheckConstraint(
+            "minimum_sample_size BETWEEN 1 AND 1000000", name="ck_model_benchmark_suite_min_sample"
+        ),
         CheckConstraint(
             "regression_tolerance BETWEEN 0.0 AND 1.0",
             name="ck_model_benchmark_suite_regression_tolerance",
@@ -491,13 +493,25 @@ class ModelBenchmarkRun(Base):
 
     __tablename__ = "model_benchmark_runs"
     __table_args__ = (
-        CheckConstraint("sample_size BETWEEN 1 AND 1000000", name="ck_model_benchmark_runs_sample_size"),
-        CheckConstraint("quality_score BETWEEN 0.0 AND 1.0", name="ck_model_benchmark_runs_quality"),
-        CheckConstraint("latency_ms_p95 >= 0.0", name="ck_model_benchmark_runs_latency_nonnegative"),
+        CheckConstraint(
+            "sample_size BETWEEN 1 AND 1000000", name="ck_model_benchmark_runs_sample_size"
+        ),
+        CheckConstraint(
+            "quality_score BETWEEN 0.0 AND 1.0", name="ck_model_benchmark_runs_quality"
+        ),
+        CheckConstraint(
+            "latency_ms_p95 >= 0.0", name="ck_model_benchmark_runs_latency_nonnegative"
+        ),
         CheckConstraint("memory_mb_p95 >= 0.0", name="ck_model_benchmark_runs_memory_nonnegative"),
-        CheckConstraint("context_overlap BETWEEN 0.0 AND 1.0", name="ck_model_benchmark_runs_overlap_range"),
-        CheckConstraint("failure_rate BETWEEN 0.0 AND 1.0", name="ck_model_benchmark_runs_failure_range"),
-        CheckConstraint("raw_measurements_count >= 0", name="ck_model_benchmark_runs_measurements_nonnegative"),
+        CheckConstraint(
+            "context_overlap BETWEEN 0.0 AND 1.0", name="ck_model_benchmark_runs_overlap_range"
+        ),
+        CheckConstraint(
+            "failure_rate BETWEEN 0.0 AND 1.0", name="ck_model_benchmark_runs_failure_range"
+        ),
+        CheckConstraint(
+            "raw_measurements_count >= 0", name="ck_model_benchmark_runs_measurements_nonnegative"
+        ),
         CheckConstraint(
             "hardware_profile IS NOT NULL",
             name="ck_model_benchmark_runs_hardware_profile",

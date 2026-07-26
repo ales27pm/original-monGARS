@@ -13,8 +13,8 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import (
-    HTTPSHandler,
     HTTPRedirectHandler,
+    HTTPSHandler,
     ProxyHandler,
     Request,
     build_opener,
@@ -62,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")
-    request = Request(
+    request = Request(  # noqa: S310 - URL is restricted to validated HTTPS.
         url,
         data=payload,
         method="POST",
@@ -80,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        with opener.open(request, timeout=arguments.timeout) as response:  # noqa: S310
+        with opener.open(request, timeout=arguments.timeout) as response:
             if response.status != 200:
                 raise StreamSmokeError(f"stream returned HTTP {response.status}, expected 200")
             media_type = response.headers.get_content_type().casefold()
@@ -130,7 +130,8 @@ def _validated_stream_url(value: str) -> str:
         or parsed.path.rstrip("/") != "/v1/chat/stream"
     ):
         raise StreamSmokeError(
-            "stream URL must be an HTTPS /v1/chat/stream endpoint without credentials, query, or fragment"
+            "stream URL must be an HTTPS /v1/chat/stream endpoint "
+            "without credentials, query, or fragment"
         )
     return value.strip()
 

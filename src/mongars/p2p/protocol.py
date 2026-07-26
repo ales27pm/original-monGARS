@@ -5,9 +5,10 @@ import hashlib
 import hmac
 import json
 from collections import deque
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any, Callable, Final, Mapping
+from typing import Any, Final
 
 Clock = Callable[[], datetime]
 
@@ -194,9 +195,7 @@ class P2PEnvelope:
         if _digest_hex(payload) != self.payload_sha256:
             raise ValueError("payload_sha256 does not match payload bytes")
         signature = self.signature.lower()
-        if len(signature) != 64 or not all(
-            ch in "0123456789abcdef" for ch in signature
-        ):
+        if len(signature) != 64 or not all(ch in "0123456789abcdef" for ch in signature):
             raise ValueError("signature must be a lowercase SHA-256 hex value")
         object.__setattr__(self, "signature", signature)
 
@@ -220,7 +219,7 @@ class P2PEnvelope:
         metadata: P2PEnvelopeMetadata,
         payload: Mapping[str, Any],
         signing_key: bytes,
-    ) -> "P2PEnvelope":
+    ) -> P2PEnvelope:
         payload_bytes = _canonical_bytes(payload)
         payload_sha256 = _digest_hex(payload_bytes)
         payload_b64 = _encode_payload(payload_bytes)
@@ -550,8 +549,7 @@ class P2PQuarantineStore:
         if bytes_required > self.max_bytes:
             raise ValueError("payload exceeds quarantine capacity")
         while (
-            len(self._items) >= self.max_items
-            or self._used_bytes + bytes_required > self.max_bytes
+            len(self._items) >= self.max_items or self._used_bytes + bytes_required > self.max_bytes
         ):
             self._evict_oldest()
         record = P2PQuarantineRecord(

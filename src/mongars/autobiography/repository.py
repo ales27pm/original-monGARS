@@ -313,8 +313,10 @@ def _bounded_content(value: str) -> str:
 
 def _safe_error_code(value: str) -> str:
     normalized = value.strip().casefold().replace("-", "_")
-    if not normalized or len(normalized) > 100 or any(
-        character not in "abcdefghijklmnopqrstuvwxyz0123456789_" for character in normalized
+    if (
+        not normalized
+        or len(normalized) > 100
+        or any(character not in "abcdefghijklmnopqrstuvwxyz0123456789_" for character in normalized)
     ):
         return "generation_error"
     return normalized

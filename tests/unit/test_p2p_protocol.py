@@ -12,10 +12,10 @@ from mongars.p2p import (
     P2PExpiredEnvelope,
     P2PKeyRevoked,
     P2POwnerMismatch,
-    P2PQuarantineStore,
-    P2PReplayCache,
-    P2PRecipientMismatch,
     P2PPairingRegistry,
+    P2PQuarantineStore,
+    P2PRecipientMismatch,
+    P2PReplayCache,
     P2PReplayError,
     validate_p2p_envelope,
 )
@@ -151,7 +151,7 @@ def test_expired_envelope_is_rejected() -> None:
             pairing_registry=registry,
             replay_cache=replay_cache,
             now=clock.current,
-    )
+        )
 
 
 def test_wrong_recipient_is_rejected() -> None:
@@ -257,7 +257,7 @@ def test_quarantine_store_is_bounded_idempotent_and_records_provenance() -> None
         text="third",
     )
 
-    first, created_first = store.add(envelope=envelope_a)
+    _first, created_first = store.add(envelope=envelope_a)
     second, created_second = store.add(envelope=envelope_b)
     _, created_third = store.add(envelope=envelope_c)
     assert created_first
@@ -272,10 +272,13 @@ def test_quarantine_store_is_bounded_idempotent_and_records_provenance() -> None
         envelope_id=envelope_b.envelope_id,
         payload_sha256=envelope_b.payload_sha256,
     )
-    assert store.delete(
-        envelope_id=envelope_b.envelope_id,
-        payload_sha256=envelope_b.payload_sha256,
-    ) is False
+    assert (
+        store.delete(
+            envelope_id=envelope_b.envelope_id,
+            payload_sha256=envelope_b.payload_sha256,
+        )
+        is False
+    )
     assert store.item_count == 1
     assert second.provenance["retention_class"] == "keep"
 

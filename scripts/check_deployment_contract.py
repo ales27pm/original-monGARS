@@ -272,7 +272,7 @@ def validate_network_isolation(model: dict[str, object]) -> None:
     )
 
 
-def validate_profile_consistency(compose_text: str, model: dict[str, object]) -> None:
+def validate_profile_consistency(model: dict[str, object]) -> None:
     services = model.get("services")
     require(isinstance(services, dict), "Compose model has no services object")
     ollama_service = services.get("ollama")
@@ -295,12 +295,17 @@ def validate_profile_consistency(compose_text: str, model: dict[str, object]) ->
             f"environment override missing for {variable}",
         )
 
-    arm64_match = re.search(r"MONGARS_OLLAMA_IMAGE_ARM64", compose_text)
-    jetson_match = re.search(r"MONGARS_OLLAMA_IMAGE_JETSON", compose_text)
-    require(
-        arm64_match is not None and jetson_match is not None,
-        "compose overlays must expose ARM64/Jetson image override variables",
-    )
+    required_overlays = {
+        "compose.arm64.yaml": "MONGARS_OLLAMA_IMAGE_ARM64",
+        "compose.jetson.yaml": "MONGARS_OLLAMA_IMAGE_JETSON",
+    }
+    for overlay_path, variable in required_overlays.items():
+        overlay_text = read_text(overlay_path)
+        expected_reference = f"${{{variable}:-${{MONGARS_OLLAMA_IMAGE}}}}"
+        require(
+            expected_reference in overlay_text,
+            f"{overlay_path} must expose {variable} with MONGARS_OLLAMA_IMAGE fallback",
+        )
 
 
 def main() -> int:
@@ -308,7 +313,7 @@ def main() -> int:
         model = compose_model()
         validate_image_parity(model)
         validate_network_isolation(model)
-        validate_profile_consistency(read_text("compose.yaml"), model)
+        validate_profile_consistency(model)
     except (ContractError, json.JSONDecodeError) as error:
         print(f"deployment contract check failed: {error}", file=sys.stderr)
         return 1

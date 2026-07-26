@@ -88,9 +88,7 @@ class ChatStreamPump:
     """Serialize lifecycle callbacks into a bounded backpressure-aware queue."""
 
     def __init__(self) -> None:
-        self._queue: asyncio.Queue[bytes | object] = asyncio.Queue(
-            maxsize=_STREAM_QUEUE_SIZE
-        )
+        self._queue: asyncio.Queue[bytes | object] = asyncio.Queue(maxsize=_STREAM_QUEUE_SIZE)
         self._started = False
         self._terminal = False
         self._frame_count = 0
@@ -109,11 +107,7 @@ class ChatStreamPump:
         )
         await self._put_frame(
             ChatStreamSources(
-                sources=[
-                    _source_from_evidence(item)
-                    for item in plan.evidence
-                    if item.included
-                ]
+                sources=[_source_from_evidence(item) for item in plan.evidence if item.included]
             )
         )
 
@@ -193,9 +187,7 @@ class ChatStreamPump:
     ) -> None:
         if self._terminal:
             raise RuntimeError("chat stream emitted a frame after completion")
-        maximum_before_put = (
-            _MAX_STREAM_FRAMES if terminal else _MAX_STREAM_FRAMES - 1
-        )
+        maximum_before_put = _MAX_STREAM_FRAMES if terminal else _MAX_STREAM_FRAMES - 1
         if self._frame_count >= maximum_before_put:
             raise InferenceResponseError(
                 "Chat stream exceeded the frame-count ceiling.",

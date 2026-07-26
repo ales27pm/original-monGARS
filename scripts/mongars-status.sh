@@ -94,6 +94,8 @@ readyz_tmp="$(mktemp)"
 tasks_tmp="$(mktemp)"
 readonly readyz_tmp tasks_tmp
 
+# shellcheck disable=SC2329  # Invoked indirectly by the EXIT trap.
+# shellcheck disable=SC2329  # Invoked indirectly by the EXIT trap.
 cleanup() {
   rm -f "$readyz_tmp" "$tasks_tmp"
 }
@@ -114,7 +116,7 @@ compose_services=$(
   if command -v docker >/dev/null; then
     "${compose_command[@]}" ps --format '{{.Name}}\t{{.State}}\t{{.Health}}\t{{.Status}}' 2>/dev/null || true
   else
-    echo "docker-unavailable\tnot_available\t\t"
+    printf 'docker-unavailable\tnot_available\t\t\n'
   fi
 )
 

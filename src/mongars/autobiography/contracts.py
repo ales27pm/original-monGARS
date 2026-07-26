@@ -9,7 +9,7 @@ import unicodedata
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Literal, NoReturn, cast
+from typing import Any, Literal, NoReturn, cast, overload
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
@@ -56,13 +56,24 @@ class _FrozenJsonDict(dict[str, JsonValue]):
     def popitem(self) -> tuple[str, JsonValue]:
         self._immutable()
 
-    def setdefault(self, *args: Any, **kwargs: Any) -> JsonValue:
+    @overload
+    def setdefault(self, key: str, default: None = None, /) -> None: ...
+
+    @overload
+    def setdefault(self, key: str, default: JsonValue, /) -> JsonValue: ...
+
+    def setdefault(
+        self,
+        key: str,
+        default: JsonValue | None = None,
+        /,
+    ) -> NoReturn:
         self._immutable()
 
     def update(self, *args: Any, **kwargs: Any) -> None:
         self._immutable()
 
-    def __ior__(self, *args: Any, **kwargs: Any) -> _FrozenJsonDict:
+    def __ior__(self, other: object, /) -> NoReturn:  # type: ignore[misc]
         self._immutable()
 
 
@@ -103,10 +114,10 @@ class _FrozenJsonList(list[JsonValue]):
     def sort(self, *args: Any, **kwargs: Any) -> None:
         self._immutable()
 
-    def __iadd__(self, *args: Any, **kwargs: Any) -> _FrozenJsonList:
+    def __iadd__(self, other: object, /) -> NoReturn:  # type: ignore[misc]
         self._immutable()
 
-    def __imul__(self, *args: Any, **kwargs: Any) -> _FrozenJsonList:
+    def __imul__(self, other: object, /) -> NoReturn:
         self._immutable()
 
 
@@ -140,11 +151,7 @@ def _deep_copy_json(value: object) -> object:
 def _deep_freeze_json(value: object) -> JsonValue:
     if isinstance(value, Mapping):
         return _FrozenJsonDict(
-            {
-                key: _deep_freeze_json(item)
-                for key, item in value.items()
-                if isinstance(key, str)
-            }
+            {key: _deep_freeze_json(item) for key, item in value.items() if isinstance(key, str)}
         )
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return _FrozenJsonList(_deep_freeze_json(item) for item in value)

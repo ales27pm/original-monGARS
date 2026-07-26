@@ -67,8 +67,11 @@ test('continuous mode auto-restart transitions speaking to listening', () => {
 });
 
 test('auto_restart is not valid from non-speaking states', () => {
-  assert.throws(() => nextVoiceState('finalizing', 'auto_restart'));
+  assert.throws(() => nextVoiceState('idle', 'auto_restart'));
   assert.throws(() => nextVoiceState('requesting_permission', 'auto_restart'));
+  assert.throws(() => nextVoiceState('listening', 'auto_restart'));
+  assert.throws(() => nextVoiceState('finalizing', 'auto_restart'));
+  assert.throws(() => nextVoiceState('thinking', 'auto_restart'));
 });
 
 test('network loss sends listening and finalizing states back to idle', () => {

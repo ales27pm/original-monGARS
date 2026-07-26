@@ -12,17 +12,22 @@ from time import monotonic
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy.ext.asyncio import AsyncSession
 from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from mongars.adaptation.repository import (
+    PersonalityProfileConflict,
+    PersonalityProfileDataError,
+    PersonalityRepository,
+)
 from mongars.config import Settings, get_settings
 from mongars.db.models import DocumentStaging
 from mongars.db.session import Database
 from mongars.embeddings.errors import EmbeddingError
 from mongars.embeddings.ollama import OllamaEmbeddingProvider
 from mongars.embeddings.service import EmbeddingService
-from mongars.evolution.governance import ModelGovernanceError, ModelGovernanceService
 from mongars.events.repository import EventRepository
+from mongars.evolution.governance import ModelGovernanceError, ModelGovernanceService
 from mongars.inference.base import InferenceBackend
 from mongars.inference.ollama import OllamaBackend
 from mongars.ingestion.errors import IngestionError
@@ -36,11 +41,9 @@ from mongars.ingestion.models import (
 from mongars.ingestion.runtime import document_parser_from_settings
 from mongars.ingestion.staging import DocumentStagingRepository
 from mongars.logging import configure_logging
-from mongars.adaptation.repository import PersonalityProfileConflict, PersonalityProfileDataError
-from mongars.adaptation.repository import PersonalityRepository
-from mongars.rm.contracts import normalize_profile_apply_payload
 from mongars.memory.repository import MemoryGovernanceConflict, MemoryRepository
 from mongars.memory.service import IngestResult, MemoryService
+from mongars.rm.contracts import normalize_profile_apply_payload
 from mongars.rm.repository import TaskRepository
 from mongars.rm.runtime_heartbeat import WorkerRuntimeHeartbeat
 from mongars.rm.service import TaskIntegrityError, TaskService
@@ -380,7 +383,7 @@ class Worker:
             normalized = tuple(dict.fromkeys(proposal_ids))
             execution_seed = "|".join(normalized)
             execution_trace = hashlib.sha256(
-                f"{claim.owner_id}|{execution_seed}".encode("utf-8")
+                f"{claim.owner_id}|{execution_seed}".encode()
             ).hexdigest()
             return ExecutionOutcome(
                 result={
