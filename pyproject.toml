@@ -13,7 +13,7 @@ dependencies = [
   "alembic>=1.16,<2",
   "beautifulsoup4>=4.13,<5",
   "defusedxml>=0.7,<1",
-  "fastapi==0.139.2",
+  "fastapi==0.140.1",
   "httpx>=0.28.1,<1",
   "pgvector>=0.4.1,<1",
   "psycopg[binary,pool]>=3.2.9,<4",
@@ -34,7 +34,7 @@ dev = [
   "pytest>=8.4,<10",
   "pytest-asyncio>=1.2,<2",
   "pytest-cov>=7,<8",
-  "ruff>=0.14,<1",
+  "ruff>=0.16.0,<1",
   "types-defusedxml>=0.7,<1",
 ]
 # Kept as a compatibility marker for existing deployment commands. Native
