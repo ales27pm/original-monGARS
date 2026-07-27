@@ -1,5 +1,10 @@
 import { Stack } from 'expo-router';
 
+import {
+  AppHeaderTitle,
+  HeaderMenuButton,
+  HeaderShieldButton,
+} from '@/components/app-header';
 import { useAppTheme } from '@/hooks/use-app-theme';
 
 type TabStackProps = {
@@ -14,16 +19,16 @@ export function TabStack({ title }: TabStackProps) {
       screenOptions={{
         contentStyle: { backgroundColor: theme.background },
         headerBackButtonDisplayMode: 'minimal',
-        headerBlurEffect: 'systemChromeMaterial',
-        headerLargeTitle: true,
-        headerLargeTitleShadowVisible: false,
+        headerLargeTitle: false,
         headerShadowVisible: false,
-        headerStyle: { backgroundColor: theme.background },
-        headerTitleStyle: { color: theme.text },
-        headerTransparent: true,
+        headerStyle: { backgroundColor: theme.surface },
+        headerTitle: AppHeaderTitle,
+        headerTitleAlign: 'center',
+        headerTransparent: false,
+        headerRight: HeaderShieldButton,
       }}
     >
-      <Stack.Screen name="index" options={{ title }} />
+      <Stack.Screen name="index" options={{ headerLeft: HeaderMenuButton, title }} />
     </Stack>
   );
 }

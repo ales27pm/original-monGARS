@@ -33,11 +33,10 @@ export function SurfaceCard({
         backgroundColor: backgrounds[tone],
         borderRadius: radii.large,
         borderCurve: 'continuous',
-        borderWidth: tone === 'default' ? 1 : 0,
         borderColor: theme.border,
-        padding: 16,
-        gap: 12,
-        boxShadow: '0 8px 24px rgba(27, 20, 49, 0.06)',
+        borderWidth: 1,
+        gap: 10,
+        padding: 13,
       }}
     >
       {eyebrow || title || trailing ? (
@@ -48,9 +47,8 @@ export function SurfaceCard({
                 selectable
                 style={{
                   color: theme.textSecondary,
-                  fontSize: 11,
+                  fontSize: 10,
                   fontWeight: '700',
-                  letterSpacing: 0.7,
                   textTransform: 'uppercase',
                 }}
               >
@@ -58,7 +56,7 @@ export function SurfaceCard({
               </Text>
             ) : null}
             {title ? (
-              <Text selectable style={{ color: theme.text, fontSize: 17, fontWeight: '700' }}>
+              <Text selectable style={{ color: theme.text, fontSize: 15, fontWeight: '700' }}>
                 {title}
               </Text>
             ) : null}

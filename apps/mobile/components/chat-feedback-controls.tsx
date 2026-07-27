@@ -1,7 +1,6 @@
 import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -11,6 +10,7 @@ import {
   View,
 } from 'react-native';
 
+import { AppButton } from '@/components/app-button';
 import { radii } from '@/constants/theme';
 import { useSubmitFeedback } from '@/hooks/use-adaptation';
 import { useAppTheme } from '@/hooks/use-app-theme';
@@ -273,24 +273,13 @@ export function ChatFeedbackControls({ traceId }: Props) {
           <Text selectable style={{ color: theme.warning, fontSize: 11, lineHeight: 16 }}>
             Style changes are not active yet. Review task {proposalTaskId} before approval.
           </Text>
-          <Pressable
-            accessibilityRole="button"
+          <AppButton
+            label="Review in Tasks"
             onPress={() => router.push('/(tabs)/(tasks)')}
-            style={({ pressed }) => ({
-              alignSelf: 'flex-start',
-              backgroundColor: theme.warningSoft,
-              borderColor: theme.warning,
-              borderRadius: 999,
-              borderWidth: 1,
-              opacity: pressed ? 0.72 : 1,
-              paddingHorizontal: 10,
-              paddingVertical: 6,
-            })}
-          >
-            <Text style={{ color: theme.warning, fontSize: 11, fontWeight: '700' }}>
-              Review in Tasks
-            </Text>
-          </Pressable>
+            size="compact"
+            tone="warning"
+            variant="soft"
+          />
         </View>
       ) : null}
 
@@ -444,24 +433,15 @@ function FeedbackButton({
   label: string;
   onPress: () => void;
 }) {
-  const theme = useAppTheme();
   return (
-    <Pressable
-      accessibilityRole="button"
+    <AppButton
       disabled={disabled}
+      label={label}
       onPress={onPress}
-      style={({ pressed }) => ({
-        backgroundColor: theme.surfaceMuted,
-        borderColor: theme.border,
-        borderRadius: 999,
-        borderWidth: 1,
-        opacity: disabled ? 0.45 : pressed ? 0.72 : 1,
-        paddingHorizontal: 9,
-        paddingVertical: 5,
-      })}
-    >
-      <Text style={{ color: theme.textSecondary, fontSize: 11, fontWeight: '700' }}>{label}</Text>
-    </Pressable>
+      size="compact"
+      tone="neutral"
+      variant="soft"
+    />
   );
 }
 
@@ -552,52 +532,22 @@ function ModalActions({
   pending: boolean;
   primaryLabel: string;
 }) {
-  const theme = useAppTheme();
   return (
     <View style={{ flexDirection: 'row', gap: 10 }}>
-      <Pressable
-        accessibilityRole="button"
+      <AppButton
+        fullWidth
+        label="Cancel"
         onPress={onCancel}
-        style={({ pressed }) => ({
-          alignItems: 'center',
-          backgroundColor: theme.surface,
-          borderColor: theme.border,
-          borderRadius: 14,
-          borderWidth: 1,
-          flex: 1,
-          opacity: pressed ? 0.72 : 1,
-          padding: 13,
-        })}
-      >
-        <Text style={{ color: theme.textSecondary, fontSize: 14, fontWeight: '700' }}>Cancel</Text>
-      </Pressable>
-      <Pressable
-        accessibilityRole="button"
+        tone="neutral"
+        variant="outline"
+      />
+      <AppButton
         disabled={disabled}
+        fullWidth
+        label={primaryLabel}
+        loading={pending}
         onPress={onSubmit}
-        style={({ pressed }) => ({
-          alignItems: 'center',
-          backgroundColor: disabled ? theme.surfaceMuted : theme.primary,
-          borderRadius: 14,
-          flex: 1,
-          opacity: disabled ? 0.5 : pressed ? 0.72 : 1,
-          padding: 13,
-        })}
-      >
-        {pending ? (
-          <ActivityIndicator color={theme.primaryContrast} />
-        ) : (
-          <Text
-            style={{
-              color: disabled ? theme.textTertiary : theme.primaryContrast,
-              fontSize: 14,
-              fontWeight: '700',
-            }}
-          >
-            {primaryLabel}
-          </Text>
-        )}
-      </Pressable>
+      />
     </View>
   );
 }

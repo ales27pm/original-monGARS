@@ -1,5 +1,6 @@
-import { Alert, ActivityIndicator, Pressable, Share, Text, View } from 'react-native';
+import { Alert, ActivityIndicator, Share, Text, View } from 'react-native';
 
+import { AppButton } from '@/components/app-button';
 import { ScreenScroll } from '@/components/screen-scroll';
 import { SectionHeading } from '@/components/section-heading';
 import { StatusPill } from '@/components/status-pill';
@@ -150,10 +151,36 @@ function ConnectedPersonalityScreen() {
       </SurfaceCard>
 
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-        <ActionButton disabled={busy} label="Refresh" onPress={() => void refreshAll()} />
-        <ActionButton disabled={busy} label="Export" onPress={() => void exportProfile()} />
-        <ActionButton disabled={busy} label="Reset" onPress={confirmReset} warning />
-        <ActionButton disabled={busy} label="Delete" onPress={confirmDelete} danger />
+        <AppButton
+          disabled={busy}
+          label="Refresh"
+          onPress={() => void refreshAll()}
+          size="compact"
+          variant="soft"
+        />
+        <AppButton
+          disabled={busy}
+          label="Export"
+          onPress={() => void exportProfile()}
+          size="compact"
+          variant="soft"
+        />
+        <AppButton
+          disabled={busy}
+          label="Reset"
+          onPress={confirmReset}
+          size="compact"
+          tone="warning"
+          variant="soft"
+        />
+        <AppButton
+          disabled={busy}
+          label="Delete"
+          onPress={confirmDelete}
+          size="compact"
+          tone="danger"
+          variant="soft"
+        />
       </View>
 
       {busy ? <ActivityIndicator color={theme.primary} /> : null}
@@ -318,46 +345,5 @@ function RevisionCard({ revision }: { revision: PersonalityRevision }) {
         </Text>
       ) : null}
     </SurfaceCard>
-  );
-}
-
-function ActionButton({
-  danger = false,
-  disabled,
-  label,
-  onPress,
-  warning = false,
-}: {
-  danger?: boolean;
-  disabled: boolean;
-  label: string;
-  onPress: () => void;
-  warning?: boolean;
-}) {
-  const theme = useAppTheme();
-  const color = danger ? theme.danger : warning ? theme.warning : theme.primary;
-  const background = danger
-    ? theme.dangerSoft
-    : warning
-      ? theme.warningSoft
-      : theme.primarySoft;
-
-  return (
-    <Pressable
-      accessibilityRole="button"
-      disabled={disabled}
-      onPress={onPress}
-      style={({ pressed }) => ({
-        backgroundColor: background,
-        borderColor: color,
-        borderRadius: 999,
-        borderWidth: 1,
-        opacity: disabled ? 0.45 : pressed ? 0.72 : 1,
-        paddingHorizontal: 13,
-        paddingVertical: 8,
-      })}
-    >
-      <Text style={{ color, fontSize: 12, fontWeight: '700' }}>{label}</Text>
-    </Pressable>
   );
 }

@@ -7,7 +7,7 @@
     "orientation": "portrait",
     "icon": "./assets/images/mongars-icon.png",
     "scheme": "mongars",
-    "userInterfaceStyle": "automatic",
+    "userInterfaceStyle": "light",
     "newArchEnabled": true,
     "ios": {
       "buildNumber": "20260722140834",
@@ -75,7 +75,7 @@
           "resizeMode": "contain",
           "backgroundColor": "#ffffff",
           "dark": {
-            "backgroundColor": "#000000"
+            "backgroundColor": "#ffffff"
           }
         }
       ],
