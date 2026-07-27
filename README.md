@@ -211,6 +211,19 @@ runs as UID/GID `65534` with an empty capability set. A networkless one-shot ser
 ownership of an existing root-owned Caddy volume before startup, preserving previously enrolled
 local CAs during the non-root migration.
 
+To use certificate files that are already mounted inside the Caddy container, set both paths in
+`MONGARS_TLS_CONFIG` and point the health check at their issuing CA. Publicly trusted certificates
+use the system CA bundle:
+
+```dotenv
+MONGARS_TLS_CONFIG="/data/caddy/tls/cert.pem /data/caddy/tls/key.pem"
+MONGARS_TLS_CA_FILE=/etc/ssl/certs/ca-certificates.crt
+```
+
+The private key must remain readable only by Caddy's UID/GID `65534`; never put its contents in
+`.env`, a tracked file, an image layer, or command output. Leaving `MONGARS_TLS_CONFIG=internal`
+keeps the local-CA behavior above.
+
 Alternatively, Tailscale Serve can terminate HTTPS for a tailnet hostname and proxy to the
 loopback-only service:
 

@@ -164,7 +164,10 @@ export class MongarsClient {
 
   constructor(options: MongarsClientOptions = {}) {
     this.baseUrl = getMongarsApiBaseUrl(options.baseUrl);
-    this.fetcher = options.fetcher ?? expoFetch;
+    // Expo web re-exports Window.fetch as a bare function. Bind its receiver before storing it
+    // as an instance field; calling an unbound Window.fetch through `this.fetcher` can otherwise
+    // fail with "Illegal invocation" before the browser sends a request.
+    this.fetcher = options.fetcher ?? expoFetch.bind(globalThis);
     this.tokenStore = options.tokenStore ?? apiTokenStore;
   }
 

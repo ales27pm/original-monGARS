@@ -42,7 +42,7 @@ class ApiError extends Error {
   }
 }
 
-function loadAdaptationClient(tokenStore, fetcher) {
+function loadAdaptationClient(tokenStore, fetcher, options = {}) {
   const origin = {
     assertSecureCredentialTransport: () => undefined,
     getMongarsApiOrigin: (value) => new URL(value).origin,
@@ -59,7 +59,7 @@ function loadAdaptationClient(tokenStore, fetcher) {
   });
   return new client.AdaptationClient({
     baseUrl: 'https://control.example.test',
-    fetcher,
+    ...(options.useDefaultFetcher ? {} : { fetcher }),
     tokenStore,
   });
 }
@@ -201,4 +201,27 @@ test('clears a rejected credential after an adaptation 401 response', async () =
     return true;
   });
   assert.equal(clearCount, 1);
+});
+
+test('default adaptation fetch keeps the web global receiver', async () => {
+  const receivers = [];
+  const defaultFetcher = function () {
+    receivers.push(this);
+    return Promise.resolve(
+      jsonResponse({
+        revision: 0,
+        source: 'default',
+        profile_digest: null,
+        schema_version: 'personality-v1',
+        preferences: [],
+      }),
+    );
+  };
+  const client = loadAdaptationClient(tokenStore(), defaultFetcher, {
+    useDefaultFetcher: true,
+  });
+
+  await client.getProfile();
+
+  assert.deepEqual(receivers, [globalThis]);
 });

@@ -53,6 +53,57 @@ export type ReadinessResponse = {
       reindex_required: boolean;
       error_code: string | null;
     };
+    evolution_scheduler?: {
+      enabled: boolean;
+      status: string;
+      healthy: boolean;
+      reason: string | null;
+      can_run: boolean;
+      budgets: {
+        cpu_percent?: number;
+        memory_megabytes?: number;
+        wall_clock_seconds?: number;
+        database_row_budget?: number;
+        proposal_count_budget?: number;
+        storage_bytes?: number;
+        proposal_cooldown_minutes?: number;
+        allow_network?: boolean;
+      };
+    };
+    p2p?: {
+      enabled: boolean;
+      healthy: boolean;
+      error_code: string | null;
+    };
+    model_governance?: {
+      enabled: boolean;
+      status: string;
+      healthy: boolean;
+      reason: string | null;
+      candidate_registry: {
+        active_alias: string | null;
+        active_digest: string | null;
+        active_generation: number | null;
+        prior_generation_anchor: string | null;
+        rollback_target_alias: string | null;
+        rollback_target_digest: string | null;
+      };
+      benchmarks: {
+        scoring_policy_version: string | null;
+        benchmarking_policy_version: string | null;
+        minimum_sample_size: number | null;
+        promotion_quality_threshold: number | null;
+        rollback_quality_threshold: number | null;
+      };
+    };
+    executor_security?: {
+      enabled: boolean;
+      status: string;
+      healthy: boolean;
+      reason: string | null;
+      approved_kinds: string[];
+      requires_approval: boolean;
+    };
   };
 };
 

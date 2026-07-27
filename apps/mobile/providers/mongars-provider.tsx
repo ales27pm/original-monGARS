@@ -9,6 +9,7 @@ import {
 } from 'react';
 
 import {
+  canUseBuildTimeApiBaseUrlImmediately,
   clearApiBaseUrl,
   readApiBaseUrl,
   resolveConfiguredApiBaseUrl,
@@ -59,7 +60,9 @@ type MongarsProviderProps = PropsWithChildren<{
 
 export function MongarsProvider({ children, baseUrl: baseUrlOverride }: MongarsProviderProps) {
   const [savedBaseUrl, setSavedBaseUrl] = useState<string | null>(null);
-  const [baseUrlStatus, setBaseUrlStatus] = useState<ApiBaseUrlStatus>('loading');
+  const [baseUrlStatus, setBaseUrlStatus] = useState<ApiBaseUrlStatus>(() =>
+    canUseBuildTimeApiBaseUrlImmediately() ? 'missing' : 'loading',
+  );
   const [baseUrlStorageError, setBaseUrlStorageError] = useState<Error | null>(null);
   const configuration = useMemo(() => {
     // Do not fall back to a build-time development URL until native storage has been checked. This

@@ -63,8 +63,11 @@
     documentUploadStatus: document.querySelector("#document-upload-status"),
     documentUploadTaskId: document.querySelector("#document-upload-task-id"),
     emptyChat: document.querySelector("#empty-chat"),
+    evolutionStatus: document.querySelector("#evolution-status"),
+    executorStatus: document.querySelector("#executor-status"),
     globalStatusDot: document.querySelector("#global-status-dot"),
     globalStatusLabel: document.querySelector("#global-status-label"),
+    governanceStatus: document.querySelector("#governance-status"),
     inferenceStatus: document.querySelector("#inference-status"),
     insecureWarning: document.querySelector("#insecure-warning"),
     localOnly: document.querySelector("#local-only"),
@@ -319,6 +322,82 @@
     return String(value || "unknown").replaceAll("_", " ");
   }
 
+  function dependencyLabel(dependency, readyLabel = "Ready") {
+    if (!dependency) return "Unknown";
+    if (dependency.healthy === true) return readyLabel;
+    if (dependency.reason) return humanize(dependency.reason);
+    if (dependency.error_code) return humanize(dependency.error_code);
+    return "Blocked";
+  }
+
+  function setProtectedReadinessLabels(label) {
+    dom.databaseStatus.textContent = label;
+    dom.inferenceStatus.textContent = label;
+    dom.evolutionStatus.textContent = label;
+    dom.governanceStatus.textContent = label;
+    dom.executorStatus.textContent = label;
+  }
+
+  function readinessSidebarSummary(payload, responseOk) {
+    const dependencies = payload?.dependencies || {};
+    const database = dependencies.database;
+    const inference = dependencies.inference;
+    const scheduler = dependencies.evolution_scheduler;
+    const governance = dependencies.model_governance;
+    const executor = dependencies.executor_security;
+    const databaseConnected = database?.healthy;
+    const inferenceReady = inference?.healthy;
+    const inferenceLabel = inferenceReady
+      ? `${humanize(inference.backend)} ready`
+      : inference?.backend_reachable
+        ? "Models missing"
+        : "Unavailable";
+
+    return {
+      ready: responseOk && payload.status === "ready",
+      labels: {
+        database: databaseConnected ? "Connected" : "Unavailable",
+        inference: inferenceLabel,
+        evolution: scheduler
+          ? scheduler.enabled
+            ? dependencyLabel(
+                scheduler,
+                scheduler.can_run ? "Can run" : humanize(scheduler.status),
+              )
+            : "Disabled"
+          : "Unknown",
+        governance: governance
+          ? governance.enabled
+            ? dependencyLabel(
+                governance,
+                governance.candidate_registry?.active_alias || humanize(governance.status),
+              )
+            : "Disabled"
+          : "Unknown",
+        executor: executor
+          ? executor.enabled
+            ? dependencyLabel(executor, "Reviewed")
+            : "Restricted"
+          : "Unknown",
+      },
+      calloutPieces: [
+        databaseConnected ? "Database connected" : "Database unavailable",
+        inferenceReady ? `${humanize(inference.backend)} is ready` : "Inference backend unavailable",
+        scheduler ? `Evolution ${humanize(scheduler.status)}` : "Evolution unknown",
+        governance ? `Model ${humanize(governance.status)}` : "Model governance unknown",
+        executor ? `Executor ${humanize(executor.status)}` : "Executor security unknown",
+      ],
+    };
+  }
+
+  function applyReadinessSidebarSummary(summary) {
+    dom.databaseStatus.textContent = summary.labels.database;
+    dom.inferenceStatus.textContent = summary.labels.inference;
+    dom.evolutionStatus.textContent = summary.labels.evolution;
+    dom.governanceStatus.textContent = summary.labels.governance;
+    dom.executorStatus.textContent = summary.labels.executor;
+  }
+
   function formatDate(value) {
     if (!value) return "—";
     const parsed = new Date(value);
@@ -409,8 +488,7 @@
 
   async function refreshReadiness({ announce = false } = {}) {
     if (!state.token || !isSecureTransport()) {
-      dom.databaseStatus.textContent = "Protected";
-      dom.inferenceStatus.textContent = "Protected";
+      setProtectedReadinessLabels("Protected");
       setReadinessStatus(
         "checking",
         "Connect to inspect",
@@ -440,35 +518,18 @@
           response.status,
         );
       }
-      const database = payload.dependencies?.database;
-      const inference = payload.dependencies?.inference;
-      const databaseConnected = database?.healthy;
-      const inferenceReady = inference?.healthy;
-      const ready = response.ok && payload.status === "ready";
-
-      dom.databaseStatus.textContent = databaseConnected ? "Connected" : "Unavailable";
-      if (inferenceReady) {
-        dom.inferenceStatus.textContent = `${humanize(inference.backend)} ready`;
-      } else if (inference?.backend_reachable) {
-        dom.inferenceStatus.textContent = "Models missing";
-      } else {
-        dom.inferenceStatus.textContent = "Unavailable";
-      }
-      const calloutPieces = [
-        databaseConnected ? "Database connected" : "Database unavailable",
-        inferenceReady ? `${humanize(inference.backend)} is ready` : "Inference backend unavailable",
-      ];
+      const summary = readinessSidebarSummary(payload, response.ok);
+      applyReadinessSidebarSummary(summary);
       setReadinessStatus(
-        ready ? "ready" : "down",
-        ready ? "System ready" : "Needs attention",
-        ready
-          ? calloutPieces.join(" · ")
-          : `${calloutPieces.join(" · ")} · Refresh when ready to retry.`,
+        summary.ready ? "ready" : "down",
+        summary.ready ? "System ready" : "Needs attention",
+        summary.ready
+          ? summary.calloutPieces.join(" · ")
+          : `${summary.calloutPieces.join(" · ")} · Refresh when ready to retry.`,
       );
-      if (announce) toast(ready ? "All required services are ready." : "One or more services need attention.", ready ? "success" : "error");
+      if (announce) toast(summary.ready ? "All required services are ready." : "One or more services need attention.", summary.ready ? "success" : "error");
     } catch {
-      dom.databaseStatus.textContent = "Unavailable";
-      dom.inferenceStatus.textContent = "Unavailable";
+      setProtectedReadinessLabels("Unavailable");
       setReadinessStatus("down", "Offline", "The monGARS API is not reachable right now.");
       if (announce) toast("The monGARS API is not reachable.", "error");
     }

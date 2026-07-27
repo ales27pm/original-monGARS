@@ -58,10 +58,13 @@ function loadCredentialStore(initial = {}, overrides = {}) {
   return { deletes, origin, store, values, writes };
 }
 
-function loadClient(defaultTokenStore) {
+function loadClient(
+  defaultTokenStore,
+  defaultFetcher = () => Promise.reject(new Error('Unexpected default fetch.')),
+) {
   const origin = loadTypeScriptModule('lib/api-origin.ts', {});
   return loadTypeScriptModule('lib/api/client.ts', {
-    'expo/fetch': { fetch: () => Promise.reject(new Error('Unexpected default fetch.')) },
+    'expo/fetch': { fetch: defaultFetcher },
     '@/lib/api-origin': origin,
     '@/lib/api-token': { apiTokenStore: defaultTokenStore },
   });
@@ -217,4 +220,27 @@ test('readiness sends the origin-bound bearer token while liveness remains publi
   assert.equal(requests[1].url, 'https://control.example.test/v1/readyz');
   assert.equal(requests[1].headers.get('Authorization'), 'Bearer readiness-token');
   assert.equal(tokenReads, 1);
+});
+
+test('default Expo fetch keeps the web global receiver', async () => {
+  const receivers = [];
+  const defaultFetcher = function () {
+    receivers.push(this);
+    return Promise.resolve(
+      new Response('{"status":"ok"}', {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+  };
+  const tokenStore = {
+    clear: async () => undefined,
+    read: async () => 'receiver-token',
+  };
+  const { MongarsClient } = loadClient(tokenStore, defaultFetcher);
+  const client = new MongarsClient({ baseUrl: 'https://control.example.test', tokenStore });
+
+  await client.health();
+
+  assert.deepEqual(receivers, [globalThis]);
 });

@@ -12,7 +12,7 @@
 }
 
 https://{$MONGARS_HTTPS_HOST} {
-	tls internal
+	tls {$MONGARS_TLS_CONFIG:internal}
 
 	header {
 		-Server

@@ -64,3 +64,71 @@ test('mobile settings cannot test a token against an unsaved server URL draft', 
   assert.match(settingsScreen, /if \(!draftMatchesActiveBaseUrl\)/);
   assert.match(settingsScreen, /Save this server URL before entering or testing its API token/);
 });
+
+test('mobile web bootstrap can use the public API URL on the first render', () => {
+  const provider = fs.readFileSync(
+    path.join(repositoryRoot, 'apps/mobile/providers/mongars-provider.tsx'),
+    'utf8',
+  );
+  const baseUrlStore = fs.readFileSync(
+    path.join(repositoryRoot, 'apps/mobile/lib/api-base-url.ts'),
+    'utf8',
+  );
+
+  assert.match(provider, /canUseBuildTimeApiBaseUrlImmediately\(\) \? 'missing' : 'loading'/);
+  assert.match(baseUrlStore, /process\.env\.EXPO_OS === 'web'/);
+  assert.match(baseUrlStore, /process\.env\.EXPO_OS === 'ios'/);
+  assert.match(baseUrlStore, /process\.env\.EXPO_OS === 'android'/);
+});
+
+test('Expo Router owns navigation imports for SDK 57 static rendering', () => {
+  const rootLayout = fs.readFileSync(
+    path.join(repositoryRoot, 'apps/mobile/app/_layout.tsx'),
+    'utf8',
+  );
+  const hapticTab = fs.readFileSync(
+    path.join(repositoryRoot, 'apps/mobile/components/haptic-tab.tsx'),
+    'utf8',
+  );
+
+  assert.doesNotMatch(rootLayout, /from ['"]@react-navigation\//);
+  assert.doesNotMatch(hapticTab, /from ['"]@react-navigation\//);
+  assert.match(rootLayout, /from 'expo-router'/);
+  assert.match(hapticTab, /from 'expo-router\/react-navigation'/);
+});
+
+test('frontends surface backend evolution readiness dependencies', () => {
+  const mobileTypes = fs.readFileSync(
+    path.join(repositoryRoot, 'apps/mobile/types/mongars-api.ts'),
+    'utf8',
+  );
+  const mobileSettings = fs.readFileSync(
+    path.join(repositoryRoot, 'apps/mobile/app/(tabs)/(settings)/index.tsx'),
+    'utf8',
+  );
+  const mobileReadinessSummary = fs.readFileSync(
+    path.join(repositoryRoot, 'apps/mobile/lib/readiness-summary.ts'),
+    'utf8',
+  );
+  const browserScript = fs.readFileSync(
+    path.join(repositoryRoot, 'src/mongars/web/static/app.js'),
+    'utf8',
+  );
+  const browserHtml = fs.readFileSync(
+    path.join(repositoryRoot, 'src/mongars/web/static/index.html'),
+    'utf8',
+  );
+
+  for (const key of ['evolution_scheduler', 'model_governance', 'executor_security']) {
+    assert.match(mobileTypes, new RegExp(`${key}\\?:`));
+    assert.match(browserScript, new RegExp(`dependencies\\.${key}`));
+  }
+  for (const label of ['Evolution scheduler', 'Model governance', 'Executor security']) {
+    assert.match(mobileReadinessSummary, new RegExp(label));
+  }
+  assert.match(mobileSettings, /readinessRows\(readiness\)/);
+  for (const id of ['evolution-status', 'governance-status', 'executor-status']) {
+    assert.match(browserHtml, new RegExp(`id="${id}"`));
+    assert.match(browserScript, new RegExp(`#${id}`));
+  }
+});

@@ -8,8 +8,16 @@ import { StatusPill } from '@/components/status-pill';
 import { SurfaceCard } from '@/components/surface-card';
 import { radii } from '@/constants/theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
+import { useReadiness } from '@/hooks/use-mongars-api';
 import { isActiveMongarsApiBaseUrlDraft } from '@/lib/api-origin';
+import {
+  readinessBadge,
+  readinessFailureSummary,
+  readinessRows,
+  type ReadinessRowSummary,
+} from '@/lib/readiness-summary';
 import { useMongars } from '@/providers/mongars-provider';
+import type { ReadinessResponse } from '@/types/mongars-api';
 
 type ConnectionState = 'idle' | 'testing' | 'ready' | 'error';
 
@@ -36,6 +44,7 @@ export default function SettingsScreen() {
   const [token, setToken] = useState('');
   const [connectionState, setConnectionState] = useState<ConnectionState>('idle');
   const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [verifiedReadiness, setVerifiedReadiness] = useState<ReadinessResponse | null>(null);
   const credentialTransportAllowed = transportSecurity?.canSendCredentials === true;
   const serverUrl = hasServerUrlEdits ? serverUrlInput : baseUrl ?? '';
   const draftMatchesActiveBaseUrl = isActiveMongarsApiBaseUrlDraft(serverUrl, baseUrl);
@@ -45,12 +54,23 @@ export default function SettingsScreen() {
     draftMatchesActiveBaseUrl &&
     !serverUrlSaving &&
     (Boolean(token.trim()) || hasToken);
+  const readiness = useReadiness({
+    auto: Boolean(client && hasToken && credentialTransportAllowed && draftMatchesActiveBaseUrl),
+  });
+  const displayedReadiness =
+    draftMatchesActiveBaseUrl && credentialTransportAllowed
+      ? readiness.data ?? verifiedReadiness
+      : null;
+  const displayedReadinessBadge = displayedReadiness
+    ? readinessBadge(displayedReadiness)
+    : { label: 'Needs attention', tone: 'warning' as const };
 
   async function saveServerUrl() {
     if (!serverUrl.trim() || serverUrlSaving) return;
     setServerUrlSaving(true);
     setServerUrlMessage(null);
     setConnectionError(null);
+    setVerifiedReadiness(null);
     try {
       const saved = await saveBaseUrl(serverUrl);
       setServerUrlInput(saved);
@@ -89,8 +109,9 @@ export default function SettingsScreen() {
         await saveToken(token);
       }
       const readiness = await client.readiness();
+      setVerifiedReadiness(readiness);
       if (readiness.status !== 'ready') {
-        throw new Error('The control plane is reachable, but one or more dependencies are not ready.');
+        throw new Error(readinessFailureSummary(readiness));
       }
       await client.listTasks(1);
       setToken('');
@@ -107,6 +128,7 @@ export default function SettingsScreen() {
       setToken('');
       setConnectionState('idle');
       setConnectionError(null);
+      setVerifiedReadiness(null);
     } catch (error) {
       setConnectionState('error');
       setConnectionError(error instanceof Error ? error.message : 'Unable to clear the token.');
@@ -333,6 +355,55 @@ export default function SettingsScreen() {
         </SurfaceCard>
       ) : null}
 
+      {hasToken || displayedReadiness || readiness.error ? (
+        <>
+          <SectionHeading title="Control plane" />
+          <SurfaceCard
+            title="Readiness"
+            trailing={
+              <StatusPill
+                label={displayedReadinessBadge.label}
+                tone={displayedReadinessBadge.tone}
+              />
+            }
+          >
+            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
+              <Pressable
+                accessibilityRole="button"
+                disabled={readiness.isLoading || !hasToken}
+                onPress={() => void readiness.refresh().catch(() => undefined)}
+                style={({ pressed }) => ({
+                  backgroundColor: theme.primarySoft,
+                  borderColor: theme.primary,
+                  borderRadius: 999,
+                  borderWidth: 1,
+                  opacity: readiness.isLoading || !hasToken ? 0.45 : pressed ? 0.72 : 1,
+                  paddingHorizontal: 13,
+                  paddingVertical: 8,
+                })}
+              >
+                <Text style={{ color: theme.primary, fontSize: 12, fontWeight: '700' }}>
+                  Refresh
+                </Text>
+              </Pressable>
+              {readiness.isLoading ? <ActivityIndicator color={theme.primary} /> : null}
+            </View>
+            {readiness.error ? (
+              <Text selectable style={{ color: theme.danger, fontSize: 13, lineHeight: 19 }}>
+                {readiness.error.message}
+              </Text>
+            ) : null}
+            {displayedReadiness ? (
+              <ReadinessPanel readiness={displayedReadiness} />
+            ) : (
+              <Text selectable style={{ color: theme.textSecondary, fontSize: 13 }}>
+                No readiness snapshot loaded.
+              </Text>
+            )}
+          </SurfaceCard>
+        </>
+      ) : null}
+
       <SectionHeading detail="Control how this client may use inference." title="Privacy" />
       <SurfaceCard>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
@@ -348,5 +419,43 @@ export default function SettingsScreen() {
         </View>
       </SurfaceCard>
     </ScreenScroll>
+  );
+}
+
+function ReadinessPanel({ readiness }: { readiness: ReadinessResponse }) {
+  return (
+    <View style={{ gap: 9 }}>
+      {readinessRows(readiness).map((row) => (
+        <ReadinessRow key={row.key} row={row} />
+      ))}
+    </View>
+  );
+}
+
+function ReadinessRow({ row }: { row: ReadinessRowSummary }) {
+  const theme = useAppTheme();
+  return (
+    <View
+      style={{
+        alignItems: 'center',
+        borderTopColor: theme.border,
+        borderTopWidth: 1,
+        flexDirection: 'row',
+        gap: 12,
+        paddingTop: 9,
+      }}
+    >
+      <View style={{ flex: 1, gap: 2 }}>
+        <Text selectable style={{ color: theme.text, fontSize: 14, fontWeight: '700' }}>
+          {row.label}
+        </Text>
+        {row.detail ? (
+          <Text selectable style={{ color: theme.textTertiary, fontSize: 11, lineHeight: 16 }}>
+            {row.detail}
+          </Text>
+        ) : null}
+      </View>
+      <StatusPill label={row.value} tone={row.tone} />
+    </View>
   );
 }

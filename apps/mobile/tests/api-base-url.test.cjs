@@ -156,6 +156,42 @@ test('an empty native store resolves to an expected missing state', async () => 
   assert.equal(await store.readApiBaseUrl(), null);
 });
 
+test('web can bootstrap from the public build-time URL immediately', () => {
+  process.env.EXPO_OS = 'web';
+  const { store } = loadBaseUrlStore();
+
+  assert.equal(store.canUseBuildTimeApiBaseUrlImmediately(), true);
+  assert.equal(
+    store.resolveConfiguredApiBaseUrl({
+      persisted: null,
+      storageStatus: 'missing',
+      buildTime: 'https://control.example.test',
+    }),
+    'https://control.example.test',
+  );
+});
+
+test('static rendering can bootstrap from the public build-time URL', () => {
+  delete process.env.EXPO_OS;
+  const { store } = loadBaseUrlStore();
+
+  assert.equal(store.canUseBuildTimeApiBaseUrlImmediately(), true);
+});
+
+test('native waits for secure storage before activating a build-time URL', () => {
+  const { store } = loadBaseUrlStore();
+
+  assert.equal(store.canUseBuildTimeApiBaseUrlImmediately(), false);
+  assert.equal(
+    store.resolveConfiguredApiBaseUrl({
+      persisted: null,
+      storageStatus: 'loading',
+      buildTime: 'https://control.example.test',
+    }),
+    null,
+  );
+});
+
 test('a failed persisted URL read cannot activate the build-time fallback', () => {
   const { store } = loadBaseUrlStore();
 

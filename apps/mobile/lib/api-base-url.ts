@@ -20,6 +20,14 @@ const listeners = new Set<BaseUrlListener>();
 
 export type ApiBaseUrlStorageStatus = 'loading' | 'missing' | 'ready' | 'error';
 
+export function canUseBuildTimeApiBaseUrlImmediately(): boolean {
+  if (process.env.EXPO_OS === 'ios' || process.env.EXPO_OS === 'android') {
+    return false;
+  }
+
+  return process.env.EXPO_OS === 'web' || typeof window === 'undefined';
+}
+
 /** Select a runtime endpoint without falling back across an unverified storage state. */
 export function resolveConfiguredApiBaseUrl(options: {
   override?: string;

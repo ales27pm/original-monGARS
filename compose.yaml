@@ -263,6 +263,8 @@ services:
         condition: service_completed_successfully
     environment:
       MONGARS_HTTPS_HOST: ${MONGARS_HTTPS_HOST:-127.0.0.1}
+      MONGARS_TLS_CONFIG: ${MONGARS_TLS_CONFIG:-internal}
+      MONGARS_TLS_CA_FILE: ${MONGARS_TLS_CA_FILE:-/data/caddy/pki/authorities/local/root.crt}
       MONGARS_MAX_REQUEST_BYTES: ${MONGARS_MAX_REQUEST_BYTES:-2100000}
       MONGARS_MAX_DOCUMENT_REQUEST_BYTES: ${MONGARS_MAX_DOCUMENT_REQUEST_BYTES:-10500000}
     ports:
@@ -289,7 +291,7 @@ services:
     healthcheck:
       test:
         - CMD-SHELL
-        - 'curl --fail --silent --show-error --cacert /data/caddy/pki/authorities/local/root.crt --resolve "$${MONGARS_HTTPS_HOST}:8443:127.0.0.1" "https://$${MONGARS_HTTPS_HOST}:8443/v1/healthz" >/dev/null'
+        - 'curl --fail --silent --show-error --cacert "$${MONGARS_TLS_CA_FILE}" --resolve "$${MONGARS_HTTPS_HOST}:8443:127.0.0.1" "https://$${MONGARS_HTTPS_HOST}:8443/v1/healthz" >/dev/null'
       interval: 10s
       timeout: 5s
       retries: 12

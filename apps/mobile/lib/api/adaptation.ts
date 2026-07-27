@@ -74,7 +74,7 @@ export class AdaptationClient {
 
   constructor(options: AdaptationClientOptions) {
     this.baseUrl = normalizeMongarsApiBaseUrl(options.baseUrl);
-    this.fetcher = options.fetcher ?? expoFetch;
+    this.fetcher = options.fetcher ?? expoFetch.bind(globalThis);
     this.tokenStore = options.tokenStore ?? apiTokenStore;
   }
 

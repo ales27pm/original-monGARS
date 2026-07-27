@@ -166,6 +166,7 @@ def test_web_document_upload_uses_authenticated_browser_multipart_and_safe_rende
 
 def test_web_readiness_uses_the_session_bearer_token_and_handles_rejection() -> None:
     script = (WEB_STATIC_ROOT / "app.js").read_text(encoding="utf-8")
+    html = (WEB_STATIC_ROOT / "index.html").read_text(encoding="utf-8")
     readiness_start = script.index("async function refreshReadiness")
     readiness_end = script.index("function configureTransport", readiness_start)
     readiness_source = script[readiness_start:readiness_end]
@@ -176,6 +177,19 @@ def test_web_readiness_uses_the_session_bearer_token_and_handles_rejection() -> 
     assert "response.status === 401" in readiness_source
     assert 'openAuth("The token was rejected.' in readiness_source
     assert "response.status !== 503" in readiness_source
+    readiness_summary_start = script.index("function readinessSidebarSummary")
+    readiness_summary_end = script.index("function applyReadinessSidebarSummary", readiness_summary_start)
+    readiness_summary_source = script[readiness_summary_start:readiness_summary_end]
+    for dependency_key, element_id in (
+        ("evolution_scheduler", "evolution-status"),
+        ("model_governance", "governance-status"),
+        ("executor_security", "executor-status"),
+    ):
+        assert f'id="{element_id}"' in html
+        assert f"#{element_id}" in script
+        assert f"dependencies.{dependency_key}" in readiness_summary_source
+    assert "readinessSidebarSummary(payload, response.ok)" in readiness_source
+    assert "applyReadinessSidebarSummary(summary)" in readiness_source
 
 
 @pytest.mark.asyncio
