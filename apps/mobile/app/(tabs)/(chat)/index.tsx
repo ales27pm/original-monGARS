@@ -268,7 +268,6 @@ function ConnectedChatScreen() {
               {chat.isPending ? 'Streaming' : hasToken ? 'Ready' : 'Token needed'}
             </Text>
           </View>
-          <AppIcon color={theme.textTertiary} name="chevronRight" size={18} />
         </View>
       </SurfaceCard>
 
@@ -319,7 +318,7 @@ function ConnectedChatScreen() {
               <View
                 style={{
                   backgroundColor: isUser ? theme.primarySoft : theme.surface,
-                  borderColor: isUser ? '#D9CEF0' : theme.border,
+                  borderColor: isUser ? theme.primaryBorder : theme.border,
                   borderCurve: 'continuous',
                   borderRadius: radii.large,
                   borderWidth: 1,
@@ -522,7 +521,10 @@ function ConnectedChatScreen() {
             </Text>
             <AppButton
               label="Cancel"
-              onPress={() => dispatchVoiceAction('cancel')}
+              onPress={() => {
+                if (voiceState === 'idle') setVoiceError(null);
+                else dispatchVoiceAction('cancel');
+              }}
               size="compact"
               tone="neutral"
               variant="outline"

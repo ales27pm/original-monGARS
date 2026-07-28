@@ -158,7 +158,9 @@ function ConnectedMemoryScreen() {
         accessibilityLabel="Memory view"
         appearance="tabs"
         onChange={setView}
-        options={memoryViewOptions}
+        options={memoryViewOptions.map((option) =>
+          option.value === 'search' ? { ...option, disabled: upload.isPending } : option,
+        )}
         value={view}
       />
 

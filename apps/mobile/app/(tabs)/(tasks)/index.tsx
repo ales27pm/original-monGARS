@@ -360,13 +360,8 @@ function ConnectedTasksScreen() {
             ) : null}
             {task.status === 'waiting_approval' ? (
               <AppButton
-                disabled={detail.isLoading && reviewTaskId === task.id}
                 fullWidth
-                label={
-                  detail.isLoading && reviewTaskId === task.id
-                    ? 'Loading protected review...'
-                    : 'Review protected action'
-                }
+                label="Review protected action"
                 loading={detail.isLoading && reviewTaskId === task.id}
                 onPress={() => openReview(task.id)}
                 tone="warning"

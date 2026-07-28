@@ -8,7 +8,6 @@
     "icon": "./assets/images/mongars-icon.png",
     "scheme": "mongars",
     "userInterfaceStyle": "light",
-    "newArchEnabled": true,
     "ios": {
       "buildNumber": "20260722140834",
       "supportsTablet": false,
@@ -58,7 +57,6 @@
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false
     },
     "web": {

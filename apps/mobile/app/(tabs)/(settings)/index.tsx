@@ -47,9 +47,12 @@ export default function SettingsScreen() {
   const [connectionState, setConnectionState] = useState<ConnectionState>('idle');
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [verifiedReadiness, setVerifiedReadiness] = useState<ReadinessResponse | null>(null);
+  const isTestingConnection = connectionState === 'testing';
   const credentialTransportAllowed = transportSecurity?.canSendCredentials === true;
   const serverUrl = hasServerUrlEdits ? serverUrlInput : baseUrl ?? '';
   const draftMatchesActiveBaseUrl = isActiveMongarsApiBaseUrlDraft(serverUrl, baseUrl);
+  const canEditToken =
+    credentialTransportAllowed && draftMatchesActiveBaseUrl && !isTestingConnection;
   const canTest =
     Boolean(client) &&
     credentialTransportAllowed &&
@@ -66,9 +69,24 @@ export default function SettingsScreen() {
   const displayedReadinessBadge = displayedReadiness
     ? readinessBadge(displayedReadiness)
     : { label: 'Needs attention', tone: 'warning' as const };
+  const inferenceHealthy = displayedReadiness?.dependencies.inference.healthy;
+  const localInferenceStatus =
+    inferenceHealthy === undefined
+      ? { label: 'Unknown', tone: 'warning' as const }
+      : inferenceHealthy
+        ? { label: 'Ready', tone: 'positive' as const }
+        : { label: 'Unavailable', tone: 'danger' as const };
+  const executorRequiresApproval =
+    displayedReadiness?.dependencies.executor_security?.requires_approval;
+  const protectedModeStatus =
+    executorRequiresApproval === undefined
+      ? { label: 'Unknown', tone: 'warning' as const }
+      : executorRequiresApproval
+        ? { label: 'On', tone: 'primary' as const }
+        : { label: 'Off', tone: 'danger' as const };
 
   async function saveServerUrl() {
-    if (!serverUrl.trim() || serverUrlSaving) return;
+    if (!serverUrl.trim() || serverUrlSaving || isTestingConnection) return;
     setServerUrlSaving(true);
     setServerUrlMessage(null);
     setConnectionError(null);
@@ -100,6 +118,7 @@ export default function SettingsScreen() {
       !client ||
       !credentialTransportAllowed ||
       serverUrlSaving ||
+      isTestingConnection ||
       (!token.trim() && !hasToken)
     ) {
       return;
@@ -125,6 +144,7 @@ export default function SettingsScreen() {
   }
 
   async function forgetToken() {
+    if (isTestingConnection) return;
     try {
       await clearToken();
       setToken('');
@@ -198,6 +218,7 @@ export default function SettingsScreen() {
             accessibilityLabel="monGARS server URL"
             autoCapitalize="none"
             autoCorrect={false}
+            editable={!isTestingConnection}
             keyboardType="url"
             onChangeText={(value) => {
               setServerUrlInput(value);
@@ -221,7 +242,7 @@ export default function SettingsScreen() {
             value={serverUrl}
           />
           <AppButton
-            disabled={!serverUrl.trim() || serverUrlSaving}
+            disabled={!serverUrl.trim() || serverUrlSaving || isTestingConnection}
             fullWidth
             label="Save server URL"
             loading={serverUrlSaving}
@@ -257,7 +278,7 @@ export default function SettingsScreen() {
             accessibilityLabel="monGARS API token"
             autoCapitalize="none"
             autoCorrect={false}
-            editable={credentialTransportAllowed && draftMatchesActiveBaseUrl}
+            editable={canEditToken}
             onChangeText={setToken}
             placeholder={hasToken ? 'Enter a replacement token' : 'Paste bearer token'}
             placeholderTextColor={theme.textTertiary}
@@ -269,7 +290,7 @@ export default function SettingsScreen() {
               borderRadius: radii.medium,
               color: theme.text,
               fontSize: 13,
-              opacity: credentialTransportAllowed && draftMatchesActiveBaseUrl ? 1 : 0.55,
+              opacity: canEditToken ? 1 : 0.55,
               paddingHorizontal: 12,
               paddingVertical: 10,
             }}
@@ -283,15 +304,16 @@ export default function SettingsScreen() {
         </View>
 
         <AppButton
-          disabled={!canTest || connectionState === 'testing'}
+          disabled={!canTest || isTestingConnection}
           fullWidth
           label={token.trim() ? 'Save and test connection' : 'Test saved connection'}
-          loading={connectionState === 'testing'}
+          loading={isTestingConnection}
           onPress={() => void saveAndTestConnection()}
         />
 
         {hasToken ? (
           <AppButton
+            disabled={isTestingConnection}
             fullWidth
             label="Forget saved token"
             onPress={() => void forgetToken()}
@@ -406,7 +428,7 @@ export default function SettingsScreen() {
               Prevent requests from using a remote fallback endpoint.
             </Text>
           </View>
-          <StatusPill label="Required" tone="positive" />
+          <StatusPill label={localInferenceStatus.label} tone={localInferenceStatus.tone} />
         </View>
         <View
           style={{
@@ -427,7 +449,7 @@ export default function SettingsScreen() {
               High-risk effects require exact-action approval.
             </Text>
           </View>
-          <StatusPill label="On" tone="primary" />
+          <StatusPill label={protectedModeStatus.label} tone={protectedModeStatus.tone} />
         </View>
       </SurfaceCard>
     </ScreenScroll>
