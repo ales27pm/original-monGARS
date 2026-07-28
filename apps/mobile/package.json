@@ -12,6 +12,7 @@
     "web": "expo start --web",
     "build:development": "npx --yes eas-cli@21.0.3 build --profile development",
     "build:development:ios": "npx --yes eas-cli@21.0.3 build --platform ios --profile development",
+    "postinstall": "node scripts/patch-expo-modules-jsi.cjs",
     "lint": "expo lint",
     "test": "node --test tests/*.test.cjs",
     "typecheck": "tsc --noEmit"
@@ -33,6 +34,7 @@
     "expo-secure-store": "~57.0.1",
     "expo-splash-screen": "~57.0.5",
     "expo-status-bar": "~57.0.1",
+    "expo-symbols": "~57.0.1",
     "expo-system-ui": "~57.0.1",
     "expo-web-browser": "~57.0.2",
     "react": "19.2.3",
@@ -42,18 +44,16 @@
     "react-native-reanimated": "4.5.0",
     "react-native-safe-area-context": "~5.7.0",
     "react-native-screens": "~4.26.0",
-    "react-native-web": "~0.21.0"
+    "react-native-web": "~0.21.0",
+    "react-native-worklets": "0.10.0"
   },
   "devDependencies": {
     "@types/react": "~19.2.0",
     "eslint": "9.39.1",
     "eslint-config-expo": "~57.0.0",
-    "typescript": "~5.9.0"
+    "typescript": "~6.0.3"
   },
   "overrides": {
-    "brace-expansion": "^2.0.1",
-    "glob": "^10.0.0",
-    "minimatch": "^10.0.3",
     "eslint-config-expo": {
       "eslint-import-resolver-typescript": "^4.4.5"
     },

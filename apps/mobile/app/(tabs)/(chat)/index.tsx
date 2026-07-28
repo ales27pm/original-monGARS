@@ -1,60 +1,68 @@
 import * as Haptics from 'expo-haptics';
-import { useCallback, useEffect, useReducer, useState } from 'react';
-import { Alert, Linking, Pressable, Text, TextInput, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import {
+  AccessibilityInfo,
+  Alert,
+  KeyboardAvoidingView,
+  Linking,
+  type NativeScrollEvent,
+  type NativeSyntheticEvent,
+  Pressable,
+  ScrollView,
+  Text,
+  View,
+} from 'react-native';
 
-import { BrandMark } from '@/components/brand-mark';
+import {
+  ChatComposer,
+  type ChatWebSearchMode,
+} from '@/components/chat-composer';
+import {
+  ChatEmptyState,
+  type ChatSuggestion,
+} from '@/components/chat-empty-state';
 import { ChatFeedbackControls } from '@/components/chat-feedback-controls';
 import { ScreenScroll } from '@/components/screen-scroll';
 import { StatusPill } from '@/components/status-pill';
 import { SurfaceCard } from '@/components/surface-card';
+import { SystemIcon } from '@/components/system-icon';
 import { radii } from '@/constants/theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { useStreamingChat } from '@/hooks/use-mongars-api';
 import { useMongars } from '@/providers/mongars-provider';
 import type {
   ChatCitation,
-  ChatRequest,
   ChatResponse,
   JsonValue,
 } from '@/types/mongars-api';
-import {
-  canTransition,
-  nextLabel,
-  nextVoiceState,
-  type VoiceLoopEvent,
-  type VoiceLoopState,
-} from '@/lib/voice-state-machine';
 
-const suggestions = ['Summarize my day', 'Search project memory', 'Show active tasks'];
+const suggestions: readonly ChatSuggestion[] = [
+  {
+    detail: 'Turn recent memory into a concise brief',
+    icon: 'sparkles',
+    title: 'Summarize my day',
+  },
+  {
+    detail: 'Find decisions, notes, and prior context',
+    icon: 'memory-fill',
+    title: 'Search project memory',
+  },
+  {
+    detail: 'Review queued and running work',
+    icon: 'tasks-fill',
+    title: 'Show active tasks',
+  },
+];
 
 type DisplaySource = { label: string; url?: string };
 type ChatDisplayMessage = {
   id: string;
   role: 'assistant' | 'user';
   text: string;
-  timestamp: string;
   sources?: DisplaySource[];
 };
 
-const webSearchModes = ['off', 'auto', 'required'] as const;
-type WebSearchMode = NonNullable<ChatRequest['web_search']>;
-
-const VOICE_LIMITS = {
-  maxUtteranceSeconds: 30,
-  maxUploadBytes: 1_000_000,
-  sttProvider: 'local adapter (not yet implemented)',
-  sttModelDigest: 'pending',
-};
-
-const webSearchModeLabels: Record<WebSearchMode, string> = {
-  off: 'Off',
-  auto: 'Auto',
-  required: 'Required',
-};
-
-function voiceReducer(state: VoiceLoopState, event: VoiceLoopEvent): VoiceLoopState {
-  return nextVoiceState(state, event);
-}
+type WebSearchMode = ChatWebSearchMode;
 
 function normalizeWebSource(source: unknown): DisplaySource | null {
   if (!source || typeof source !== 'object') return null;
@@ -151,58 +159,28 @@ function ConnectedChatScreen() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatDisplayMessage[]>([]);
   const [webSearchMode, setWebSearchMode] = useState<WebSearchMode>('auto');
-  const [voiceState, dispatchVoiceEvent] = useReducer(voiceReducer, 'idle');
-  const [voiceError, setVoiceError] = useState<string | null>(null);
-  const [continuousVoiceLoop, setContinuousVoiceLoop] = useState(false);
-
-  const dispatchVoiceAction = useCallback(
-    (event: VoiceLoopEvent): void => {
-      if (!canTransition(voiceState, event)) {
-        setVoiceError(`Cannot transition ${voiceState} with ${event}`);
-        return;
-      }
-      setVoiceError(null);
-      dispatchVoiceEvent(event);
-    },
-    [voiceState],
-  );
-
-  const voiceVisual: string =
-    voiceState === 'listening'
-      ? '▁ ▂ ▂ ▄ ▅ █ █ ▃ ▁'
-      : voiceState === 'finalizing'
-        ? '⏺ finalizing transcription'
-        : voiceState === 'thinking'
-          ? '… awaiting model response'
-          : voiceState === 'speaking'
-            ? '♪ ♪ ♫ ♪'
-            : '—';
-
-  const primaryVoiceEvent: VoiceLoopEvent = (() => {
-    if (voiceState === 'idle') return 'start_push_to_talk';
-    if (voiceState === 'requesting_permission') return 'permission_granted';
-    if (voiceState === 'listening') return 'stop_recording';
-    if (voiceState === 'finalizing') return 'transcription_complete';
-    if (voiceState === 'thinking') return 'speak_complete';
-    if (voiceState === 'speaking') return continuousVoiceLoop ? 'auto_restart' : 'tts_stopped';
-    return 'speak_complete';
-  })();
+  const scrollRef = useRef<ScrollView>(null);
+  const shouldFollowConversation = useRef(true);
+  const wasPending = useRef(false);
 
   useEffect(() => {
-    if (!continuousVoiceLoop || voiceState !== 'speaking') return;
-    const handle = setTimeout(() => dispatchVoiceAction('auto_restart'), 0);
-    return () => clearTimeout(handle);
-  }, [continuousVoiceLoop, dispatchVoiceAction, voiceState]);
+    if (process.env.EXPO_OS !== 'ios' || wasPending.current === chat.isPending) return;
+    void AccessibilityInfo.announceForAccessibility(
+      chat.isPending ? 'Cortex is responding' : 'Response complete',
+    );
+    wasPending.current = chat.isPending;
+  }, [chat.isPending]);
 
   async function submitMessage() {
     const text = draft.trim();
     if (!text || chat.isPending) return;
+    shouldFollowConversation.current = true;
     if (process.env.EXPO_OS === 'ios') {
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     }
     setMessages((current) => [
       ...current,
-      { id: `user-${Date.now()}`, role: 'user', text, timestamp: 'Now' },
+      { id: `user-${Date.now()}`, role: 'user', text },
     ]);
     try {
       const response = await chat.mutate({
@@ -218,7 +196,6 @@ function ConnectedChatScreen() {
           id: response.trace_id,
           role: 'assistant',
           text: response.answer,
-          timestamp: 'Now',
           sources: responseSources(response),
         },
       ]);
@@ -234,395 +211,195 @@ function ConnectedChatScreen() {
         id: 'assistant-streaming',
         role: 'assistant',
         text: chat.draftText || '…',
-        timestamp: 'Streaming',
       }
     : null;
   const displayedMessages = transientMessage ? [...messages, transientMessage] : messages;
 
+  function handleConversationScroll(event: NativeSyntheticEvent<NativeScrollEvent>): void {
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    const distanceFromBottom = contentSize.height - contentOffset.y - layoutMeasurement.height;
+    shouldFollowConversation.current = distanceFromBottom < 80;
+  }
+
+  function selectSuggestion(suggestion: string): void {
+    setDraft(suggestion);
+    if (process.env.EXPO_OS === 'ios') {
+      void Haptics.selectionAsync();
+    }
+  }
+
   return (
-    <ScreenScroll>
-      <SurfaceCard tone="primary">
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-          <BrandMark compact />
-          <View style={{ flex: 1, gap: 3 }}>
-            <Text selectable style={{ color: theme.text, fontSize: 16, fontWeight: '700' }}>
-              Local Cortex
-            </Text>
-            <Text selectable style={{ color: theme.textSecondary, fontSize: 13 }}>
-              {chat.data?.model ?? 'Private local model'}
-            </Text>
-          </View>
-          <StatusPill
-            label={chat.isPending ? 'Streaming' : hasToken ? 'Connected' : 'Token needed'}
-            tone={chat.isPending ? 'primary' : hasToken ? 'positive' : 'warning'}
-          />
-        </View>
-        <View
-          style={{
-            borderTopWidth: 1,
-            borderColor: theme.border,
-            marginTop: 12,
-            paddingTop: 12,
-            gap: 6,
-          }}
-        >
-          <Text selectable style={{ color: theme.textSecondary, fontSize: 11, fontWeight: '700' }}>
-            VOICE LOOP (SAFE FOUNDATION)
-          </Text>
-          <Text selectable style={{ color: theme.text, fontSize: 12 }}>
-            State: {nextLabel(voiceState)}
-          </Text>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => dispatchVoiceAction(primaryVoiceEvent)}
-              style={({ pressed }) => ({
-                backgroundColor: theme.surface,
-                borderColor: theme.border,
-                borderRadius: 999,
-                borderWidth: 1,
-                paddingHorizontal: 10,
-                paddingVertical: 7,
-                opacity: pressed ? 0.75 : 1,
-              })}
-            >
-              <Text selectable style={{ color: theme.text, fontSize: 11, fontWeight: '700' }}>
-                {voiceState === 'idle'
-                  ? 'Request permission'
-                  : voiceState === 'requesting_permission'
-                    ? 'Grant permission'
-                    : voiceState === 'listening'
-                      ? 'Stop recording'
-                      : voiceState === 'finalizing'
-                        ? 'Finalize transcript'
-                        : voiceState === 'thinking'
-                          ? 'Start speaking'
-                          : voiceState === 'speaking'
-                            ? 'Stop TTS'
-                            : 'Cancel'}
-              </Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => setContinuousVoiceLoop((enabled) => !enabled)}
-              style={({ pressed }) => ({
-                backgroundColor: theme.surface,
-                borderColor: theme.border,
-                borderRadius: 999,
-                borderWidth: 1,
-                paddingHorizontal: 10,
-                paddingVertical: 7,
-                opacity: pressed ? 0.75 : 1,
-              })}
-            >
-              <Text selectable style={{ color: theme.text, fontSize: 11, fontWeight: '700' }}>
-                Continuous loop: {continuousVoiceLoop ? 'On' : 'Off'}
-              </Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => dispatchVoiceAction('cancel')}
-              style={({ pressed }) => ({
-                backgroundColor: theme.surfaceMuted,
-                borderColor: theme.border,
-                borderRadius: 999,
-                borderWidth: 1,
-                paddingHorizontal: 10,
-                paddingVertical: 7,
-                opacity: pressed ? 0.75 : 1,
-              })}
-            >
-              <Text selectable style={{ color: theme.textTertiary, fontSize: 11, fontWeight: '700' }}>
-                Cancel voice
-              </Text>
-            </Pressable>
-          </View>
-          <Text selectable accessibilityRole="text" style={{ color: theme.textTertiary, fontSize: 11 }}>
-            Waveform fallback: {voiceVisual}
-          </Text>
-          <Text selectable style={{ color: theme.textTertiary, fontSize: 11 }}>
-            Audio retention: no raw audio is persisted by default; explicit export is required.
-          </Text>
-          <Text selectable style={{ color: theme.textTertiary, fontSize: 11 }}>
-            STT identity: {VOICE_LIMITS.sttProvider} · digest: {VOICE_LIMITS.sttModelDigest}
-          </Text>
-          <Text selectable style={{ color: theme.textTertiary, fontSize: 11 }}>
-            Request limits: {VOICE_LIMITS.maxUtteranceSeconds}s max utterance,{' '}
-            {VOICE_LIMITS.maxUploadBytes} max upload bytes
-          </Text>
-          {voiceError ? <Text style={{ color: theme.warning, fontSize: 11 }}>{voiceError}</Text> : null}
-        </View>
-      </SurfaceCard>
-
-      <View style={{ gap: 12 }}>
-        {!displayedMessages.length ? (
-          <SurfaceCard title="Private, local conversation">
-            <Text selectable style={{ color: theme.textSecondary, fontSize: 14, lineHeight: 20 }}>
-              Ask Cortex to reason over your indexed memory or coordinate a local task. Nothing is
-              sent until you press Send.
-            </Text>
-          </SurfaceCard>
-        ) : null}
-        {displayedMessages.map((message) => {
-          const isUser = message.role === 'user';
-          const isCommittedAssistant = !isUser && message.id !== 'assistant-streaming';
-          return (
-            <View
-              key={message.id}
-              style={{
-                alignItems: isUser ? 'flex-end' : 'flex-start',
-                paddingLeft: isUser ? 38 : 0,
-                paddingRight: isUser ? 0 : 26,
-                gap: 5,
-              }}
-            >
-              <View
-                style={{
-                  backgroundColor: isUser ? theme.primary : theme.surface,
-                  borderColor: isUser ? theme.primary : theme.border,
-                  borderCurve: 'continuous',
-                  borderRadius: radii.large,
-                  borderBottomRightRadius: isUser ? 8 : radii.large,
-                  borderBottomLeftRadius: isUser ? radii.large : 8,
-                  borderWidth: 1,
-                  paddingHorizontal: 15,
-                  paddingVertical: 12,
-                  gap: 10,
-                  boxShadow: '0 5px 16px rgba(27, 20, 49, 0.05)',
-                }}
-              >
-                <Text
-                  selectable
-                  style={{
-                    color: isUser ? theme.primaryContrast : theme.text,
-                    fontSize: 15,
-                    lineHeight: 21,
-                  }}
-                >
-                  {message.text}
-                </Text>
-                {message.sources ? (
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
-                    {message.sources.map((source, index) => (
-                      <Pressable
-                        accessibilityRole={source.url ? 'link' : 'text'}
-                        disabled={!source.url}
-                        key={`${source.url ?? source.label}-${index}`}
-                        onPress={() =>
-                          source.url
-                            ? void Linking.openURL(source.url).catch(() => {
-                                Alert.alert(
-                                  'Could not open web result',
-                                  'The source link could not be opened on this device.',
-                                );
-                              })
-                            : undefined
-                        }
-                        style={({ pressed }) => ({
-                          backgroundColor: theme.surfaceMuted,
-                          borderRadius: 999,
-                          maxWidth: 280,
-                          opacity: pressed ? 0.7 : 1,
-                          paddingHorizontal: 9,
-                          paddingVertical: 4,
-                        })}
-                      >
-                        <Text
-                          ellipsizeMode="tail"
-                          numberOfLines={1}
-                          selectable
-                          style={{ color: theme.textSecondary, fontSize: 11, fontWeight: '600' }}
-                        >
-                          {source.label}
-                        </Text>
-                      </Pressable>
-                    ))}
-                  </View>
-                ) : null}
-              </View>
-              <Text
-                selectable
-                style={{
-                  color: theme.textTertiary,
-                  fontSize: 11,
-                  fontVariant: ['tabular-nums'],
-                  paddingHorizontal: 7,
-                }}
-              >
-                {message.timestamp}
-              </Text>
-              {isCommittedAssistant ? <ChatFeedbackControls traceId={message.id} /> : null}
-            </View>
-          );
-        })}
-      </View>
-
-      <View style={{ gap: 8 }}>
-        <Text selectable style={{ color: theme.textSecondary, fontSize: 12, fontWeight: '600' }}>
-          QUICK START
-        </Text>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-          {suggestions.map((suggestion) => (
-            <Pressable
-              accessibilityRole="button"
-              key={suggestion}
-              onPress={() => setDraft(suggestion)}
-              style={({ pressed }) => ({
-                backgroundColor: pressed ? theme.primarySoft : theme.surface,
-                borderColor: pressed ? theme.primary : theme.border,
-                borderRadius: 999,
-                borderWidth: 1,
-                paddingHorizontal: 12,
-                paddingVertical: 8,
-              })}
-            >
-              <Text style={{ color: theme.text, fontSize: 12, fontWeight: '600' }}>
-                {suggestion}
-              </Text>
-            </Pressable>
-          ))}
-        </View>
-      </View>
-
-      <View
-        style={{
-          backgroundColor: theme.surface,
-          borderColor: theme.border,
-          borderCurve: 'continuous',
-          borderRadius: radii.large,
-          borderWidth: 1,
-          padding: 10,
-          gap: 8,
-          boxShadow: '0 8px 24px rgba(27, 20, 49, 0.08)',
+    <KeyboardAvoidingView
+      behavior={process.env.EXPO_OS === 'ios' ? 'padding' : undefined}
+      style={{ backgroundColor: theme.background, flex: 1 }}
+    >
+      <ScrollView
+        contentContainerStyle={{
+          flexGrow: 1,
+          gap: 18,
+          paddingHorizontal: 16,
+          paddingTop: 14,
+          paddingBottom: 22,
         }}
+        contentInsetAdjustmentBehavior="automatic"
+        keyboardDismissMode="interactive"
+        keyboardShouldPersistTaps="handled"
+        onContentSizeChange={() => {
+          if (shouldFollowConversation.current && displayedMessages.length) {
+            scrollRef.current?.scrollToEnd({ animated: !chat.isPending });
+          }
+        }}
+        onScroll={handleConversationScroll}
+        ref={scrollRef}
+        scrollEventThrottle={16}
+        showsVerticalScrollIndicator={false}
+        style={{ backgroundColor: theme.background, flex: 1 }}
       >
-        <View style={{ gap: 6 }}>
-          <Text selectable style={{ color: theme.textSecondary, fontSize: 11, fontWeight: '700' }}>
-            WEB SEARCH
-          </Text>
-          <View accessibilityRole="radiogroup" style={{ flexDirection: 'row', gap: 6 }}>
-            {webSearchModes.map((mode) => {
-              const selected = webSearchMode === mode;
+        {chat.isPending || !hasToken ? (
+          <View accessibilityLiveRegion="polite">
+            <StatusPill
+              label={chat.isPending ? 'Streaming' : hasToken ? 'Connected' : 'Token needed'}
+              tone={chat.isPending ? 'primary' : hasToken ? 'positive' : 'warning'}
+            />
+          </View>
+        ) : null}
+
+        {!displayedMessages.length ? (
+          <ChatEmptyState onSelect={selectSuggestion} suggestions={suggestions} />
+        ) : (
+          <View style={{ gap: 22 }}>
+            {displayedMessages.map((message) => {
+              const isUser = message.role === 'user';
+              const isCommittedAssistant = !isUser && message.id !== 'assistant-streaming';
+
+              if (isUser) {
+                return (
+                  <View key={message.id} style={{ alignItems: 'flex-end', paddingLeft: 54 }}>
+                    <View
+                      style={{
+                        backgroundColor: theme.primary,
+                        borderCurve: 'continuous',
+                        borderRadius: radii.large,
+                        borderBottomRightRadius: 7,
+                        maxWidth: '92%',
+                        paddingHorizontal: 15,
+                        paddingVertical: 11,
+                      }}
+                    >
+                      <Text
+                        selectable
+                        style={{
+                          color: theme.primaryContrast,
+                          fontSize: 15,
+                          lineHeight: 21,
+                        }}
+                      >
+                        {message.text}
+                      </Text>
+                    </View>
+                  </View>
+                );
+              }
+
               return (
-                <Pressable
-                  accessibilityLabel={`${webSearchModeLabels[mode]} web search`}
-                  accessibilityRole="radio"
-                  accessibilityState={{ checked: selected }}
-                  key={mode}
-                  onPress={() => setWebSearchMode(mode)}
-                  style={({ pressed }) => ({
-                    alignItems: 'center',
-                    backgroundColor: selected ? theme.primary : theme.surfaceMuted,
-                    borderColor: selected ? theme.primary : theme.border,
-                    borderRadius: 999,
-                    borderWidth: 1,
-                    flex: 1,
-                    opacity: pressed ? 0.75 : 1,
-                    paddingHorizontal: 8,
-                    paddingVertical: 7,
-                  })}
+                <View
+                  key={message.id}
+                  style={{ alignItems: 'flex-start', flexDirection: 'row', gap: 10 }}
                 >
-                  <Text
+                  <View
                     style={{
-                      color: selected ? theme.primaryContrast : theme.textSecondary,
-                      fontSize: 11,
-                      fontWeight: '700',
+                      alignItems: 'center',
+                      backgroundColor: theme.primarySoft,
+                      borderRadius: 10,
+                      height: 30,
+                      justifyContent: 'center',
+                      marginTop: 1,
+                      width: 30,
                     }}
                   >
-                    {webSearchModeLabels[mode]}
-                  </Text>
-                </Pressable>
+                    <SystemIcon color={theme.primary} name="sparkles" size={14} />
+                  </View>
+                  <View style={{ flex: 1, gap: 10, paddingTop: 4 }}>
+                    <Text
+                      selectable
+                      style={{ color: theme.text, fontSize: 15, lineHeight: 22 }}
+                    >
+                      {message.text}
+                    </Text>
+                    {message.sources ? (
+                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6 }}>
+                        {message.sources.map((source, index) => (
+                          <Pressable
+                            accessibilityRole={source.url ? 'link' : 'text'}
+                            disabled={!source.url}
+                            key={`${source.url ?? source.label}-${index}`}
+                            onPress={() =>
+                              source.url
+                                ? void Linking.openURL(source.url).catch(() => {
+                                    Alert.alert(
+                                      'Could not open web result',
+                                      'The source link could not be opened on this device.',
+                                    );
+                                  })
+                                : undefined
+                            }
+                            style={({ pressed }) => ({
+                              backgroundColor: theme.surfaceMuted,
+                              borderRadius: 999,
+                              justifyContent: 'center',
+                              minHeight: 44,
+                              maxWidth: 280,
+                              opacity: pressed ? 0.7 : 1,
+                              paddingHorizontal: 9,
+                              paddingVertical: 5,
+                            })}
+                          >
+                            <Text
+                              ellipsizeMode="tail"
+                              numberOfLines={1}
+                              selectable
+                              style={{
+                                color: theme.textSecondary,
+                                fontSize: 11,
+                                fontWeight: '600',
+                              }}
+                            >
+                              {source.label}
+                            </Text>
+                          </Pressable>
+                        ))}
+                      </View>
+                    ) : null}
+                    {isCommittedAssistant ? (
+                      <ChatFeedbackControls traceId={message.id} />
+                    ) : null}
+                  </View>
+                </View>
               );
             })}
           </View>
-          <Text selectable style={{ color: theme.textTertiary, fontSize: 10, lineHeight: 14 }}>
-            {webSearchMode === 'off'
-              ? 'Never send a web query.'
-              : webSearchMode === 'required'
-                ? 'Search the web for this message.'
-                : 'Search only when your message explicitly asks for it.'}
-          </Text>
-        </View>
-        <TextInput
-          accessibilityLabel="Message Cortex"
-          maxLength={32_000}
-          multiline
-          onChangeText={setDraft}
-          placeholder="Message Cortex…"
-          placeholderTextColor={theme.textTertiary}
-          selectionColor={theme.primary}
-          style={{
-            color: theme.text,
-            fontSize: 16,
-            lineHeight: 22,
-            minHeight: 54,
-            maxHeight: 144,
-            paddingHorizontal: 7,
-            paddingVertical: 7,
-            textAlignVertical: 'top',
-          }}
-          value={draft}
-        />
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-          <Text selectable style={{ color: theme.textTertiary, flex: 1, fontSize: 11 }}>
-            Local inference · web search {webSearchMode}
-          </Text>
-          {chat.isPending ? (
-            <Pressable
-              accessibilityRole="button"
-              onPress={chat.cancel}
-              style={({ pressed }) => ({
-                alignItems: 'center',
-                backgroundColor: theme.surfaceMuted,
-                borderColor: theme.border,
-                borderRadius: 999,
-                borderWidth: 1,
-                height: 38,
-                justifyContent: 'center',
-                opacity: pressed ? 0.75 : 1,
-                paddingHorizontal: 14,
-              })}
-            >
-              <Text style={{ color: theme.textSecondary, fontSize: 13, fontWeight: '700' }}>
-                Cancel
-              </Text>
-            </Pressable>
-          ) : null}
-          <Pressable
-            accessibilityRole="button"
-            disabled={!draft.trim() || chat.isPending}
-            onPress={() => void submitMessage()}
-            style={({ pressed }) => ({
-              alignItems: 'center',
-              backgroundColor:
-                draft.trim() && !chat.isPending ? theme.primary : theme.surfaceMuted,
-              borderRadius: 999,
-              height: 38,
-              justifyContent: 'center',
-              opacity: pressed ? 0.75 : 1,
-              paddingHorizontal: 17,
-            })}
-          >
-            <Text
-              style={{
-                color:
-                  draft.trim() && !chat.isPending ? theme.primaryContrast : theme.textTertiary,
-                fontSize: 13,
-                fontWeight: '700',
-              }}
-            >
-              {chat.isPending ? 'Streaming…' : 'Send'}
-            </Text>
-          </Pressable>
-        </View>
-      </View>
+        )}
+      </ScrollView>
+
       {chat.error ? (
-        <SurfaceCard tone="danger" title="Response interrupted">
-          <Text selectable style={{ color: theme.danger, fontSize: 13, lineHeight: 19 }}>
-            {chat.error.message}
-          </Text>
-        </SurfaceCard>
+        <View accessibilityRole="alert" style={{ paddingHorizontal: 12, paddingTop: 8 }}>
+          <SurfaceCard tone="danger" title="Response interrupted">
+            <Text selectable style={{ color: theme.danger, fontSize: 13, lineHeight: 19 }}>
+              {chat.error.message}
+            </Text>
+          </SurfaceCard>
+        </View>
       ) : null}
-    </ScreenScroll>
+
+      <ChatComposer
+        draft={draft}
+        isPending={chat.isPending}
+        onCancel={chat.cancel}
+        onChangeDraft={setDraft}
+        onSubmit={() => void submitMessage()}
+        onWebSearchModeChange={setWebSearchMode}
+        webSearchMode={webSearchMode}
+      />
+    </KeyboardAvoidingView>
   );
 }

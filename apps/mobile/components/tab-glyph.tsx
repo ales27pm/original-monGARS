@@ -1,4 +1,6 @@
-import { ColorValue, Text } from 'react-native';
+import type { ColorValue } from 'react-native';
+
+import { SystemIcon, type SystemIconName } from '@/components/system-icon';
 
 type TabGlyphProps = {
   color: ColorValue;
@@ -6,25 +8,17 @@ type TabGlyphProps = {
   focused: boolean;
 };
 
-const glyphs = {
-  chat: '●',
-  memory: '◆',
-  tasks: '✓',
-  settings: '⚙',
+const glyphs: Record<
+  TabGlyphProps['glyph'],
+  { active: SystemIconName; inactive: SystemIconName }
+> = {
+  chat: { active: 'message-fill', inactive: 'message' },
+  memory: { active: 'memory-fill', inactive: 'memory' },
+  tasks: { active: 'tasks-fill', inactive: 'tasks' },
+  settings: { active: 'settings-fill', inactive: 'settings' },
 } as const;
 
 export function TabGlyph({ color, focused, glyph }: TabGlyphProps) {
-  return (
-    <Text
-      accessibilityElementsHidden
-      style={{
-        color,
-        fontSize: glyph === 'settings' ? 21 : 19,
-        fontWeight: focused ? '800' : '500',
-        opacity: focused ? 1 : 0.82,
-      }}
-    >
-      {glyphs[glyph]}
-    </Text>
-  );
+  const icon = glyphs[glyph];
+  return <SystemIcon color={color} name={focused ? icon.active : icon.inactive} size={21} />;
 }

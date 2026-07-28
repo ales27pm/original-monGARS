@@ -9,16 +9,16 @@
       "distribution": "internal",
       "autoIncrement": true,
       "ios": {
-        "image": "sdk-54",
-        "resourceClass": "m-medium"
+        "image": "sdk-57",
+        "resourceClass": "medium"
       }
     },
     "production": {
       "distribution": "store",
       "autoIncrement": true,
       "ios": {
-        "image": "sdk-54",
-        "resourceClass": "m-medium"
+        "image": "sdk-57",
+        "resourceClass": "medium"
       }
     }
   },
@@ -26,7 +26,8 @@
     "development": {},
     "production": {
       "ios": {
-        "ascAppId": "6757411135"
+        "ascAppId": "6757411135",
+        "appleTeamId": "52T7P32J34"
       }
     }
   }
