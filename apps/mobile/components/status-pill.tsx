@@ -24,11 +24,11 @@ export function StatusPill({ label, tone = 'neutral' }: StatusPillProps) {
         alignSelf: 'flex-start',
         backgroundColor: colors.background,
         borderRadius: 999,
-        paddingHorizontal: 10,
-        paddingVertical: 5,
+        paddingHorizontal: 8,
+        paddingVertical: 4,
       }}
     >
-      <Text selectable style={{ color: colors.foreground, fontSize: 11, fontWeight: '700' }}>
+      <Text selectable style={{ color: colors.foreground, fontSize: 10, fontWeight: '700' }}>
         {label}
       </Text>
     </View>

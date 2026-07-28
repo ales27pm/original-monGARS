@@ -1,11 +1,13 @@
 import { useState } from 'react';
-import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
+import { Text, TextInput, View } from 'react-native';
 
-import { BrandMark } from '@/components/brand-mark';
+import { AppButton } from '@/components/app-button';
+import { AppIcon } from '@/components/app-icon';
 import { ScreenScroll } from '@/components/screen-scroll';
 import { SectionHeading } from '@/components/section-heading';
 import { StatusPill } from '@/components/status-pill';
 import { SurfaceCard } from '@/components/surface-card';
+import { VisualAsset } from '@/components/visual-asset';
 import { radii } from '@/constants/theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { useReadiness } from '@/hooks/use-mongars-api';
@@ -45,9 +47,12 @@ export default function SettingsScreen() {
   const [connectionState, setConnectionState] = useState<ConnectionState>('idle');
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [verifiedReadiness, setVerifiedReadiness] = useState<ReadinessResponse | null>(null);
+  const isTestingConnection = connectionState === 'testing';
   const credentialTransportAllowed = transportSecurity?.canSendCredentials === true;
   const serverUrl = hasServerUrlEdits ? serverUrlInput : baseUrl ?? '';
   const draftMatchesActiveBaseUrl = isActiveMongarsApiBaseUrlDraft(serverUrl, baseUrl);
+  const canEditToken =
+    credentialTransportAllowed && draftMatchesActiveBaseUrl && !isTestingConnection;
   const canTest =
     Boolean(client) &&
     credentialTransportAllowed &&
@@ -64,9 +69,24 @@ export default function SettingsScreen() {
   const displayedReadinessBadge = displayedReadiness
     ? readinessBadge(displayedReadiness)
     : { label: 'Needs attention', tone: 'warning' as const };
+  const inferenceHealthy = displayedReadiness?.dependencies.inference.healthy;
+  const localInferenceStatus =
+    inferenceHealthy === undefined
+      ? { label: 'Unknown', tone: 'warning' as const }
+      : inferenceHealthy
+        ? { label: 'Ready', tone: 'positive' as const }
+        : { label: 'Unavailable', tone: 'danger' as const };
+  const executorRequiresApproval =
+    displayedReadiness?.dependencies.executor_security?.requires_approval;
+  const protectedModeStatus =
+    executorRequiresApproval === undefined
+      ? { label: 'Unknown', tone: 'warning' as const }
+      : executorRequiresApproval
+        ? { label: 'On', tone: 'primary' as const }
+        : { label: 'Off', tone: 'danger' as const };
 
   async function saveServerUrl() {
-    if (!serverUrl.trim() || serverUrlSaving) return;
+    if (!serverUrl.trim() || serverUrlSaving || isTestingConnection) return;
     setServerUrlSaving(true);
     setServerUrlMessage(null);
     setConnectionError(null);
@@ -98,6 +118,7 @@ export default function SettingsScreen() {
       !client ||
       !credentialTransportAllowed ||
       serverUrlSaving ||
+      isTestingConnection ||
       (!token.trim() && !hasToken)
     ) {
       return;
@@ -123,6 +144,7 @@ export default function SettingsScreen() {
   }
 
   async function forgetToken() {
+    if (isTestingConnection) return;
     try {
       await clearToken();
       setToken('');
@@ -137,30 +159,54 @@ export default function SettingsScreen() {
 
   return (
     <ScreenScroll>
-      <SurfaceCard tone="primary">
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
-          <BrandMark />
-          <View style={{ flex: 1, alignItems: 'flex-end', gap: 5 }}>
+      <SectionHeading level="screen" title="Settings" />
+      <Text style={{ color: theme.primary, fontSize: 10, fontWeight: '700' }}>LOCAL CORTEX</Text>
+      <SurfaceCard>
+        <View style={{ alignItems: 'center', flexDirection: 'row', gap: 11 }}>
+          <VisualAsset
+            accessibilityLabel="Local cortex security emblem"
+            name="cortexEmblem"
+            size={48}
+          />
+          <View style={{ flex: 1, gap: 3 }}>
+            <Text selectable style={{ color: theme.text, fontSize: 14, fontWeight: '700' }}>
+              Private local model
+            </Text>
+            <Text
+              ellipsizeMode="middle"
+              numberOfLines={1}
+              selectable
+              style={{ color: theme.textSecondary, fontSize: 10 }}
+            >
+              {baseUrl ?? 'No server configured'}
+            </Text>
+          </View>
+          <View style={{ alignItems: 'flex-end', gap: 4 }}>
+            <Text style={{ color: theme.textTertiary, fontSize: 9 }}>READINESS</Text>
             <StatusPill
               label={
                 connectionState === 'ready'
-                  ? 'Connected'
+                  ? 'Ready'
                   : hasToken
-                    ? 'Token saved'
+                    ? displayedReadinessBadge.label
                     : 'Setup'
               }
-              tone={connectionState === 'ready' ? 'positive' : hasToken ? 'primary' : 'warning'}
+              tone={
+                connectionState === 'ready'
+                  ? 'positive'
+                  : hasToken
+                    ? displayedReadinessBadge.tone
+                    : 'warning'
+              }
             />
-            <Text selectable style={{ color: theme.textSecondary, fontSize: 11 }}>
-              Expo SDK 54 · iOS
-            </Text>
           </View>
+          <AppIcon color={theme.textTertiary} name="chevronRight" size={17} />
         </View>
       </SurfaceCard>
 
       <SectionHeading
-        detail="Choose your HTTPS control-plane address. The server and token stay in the device Keychain."
-        title="Connection"
+        detail="The HTTPS server and token remain on this device."
+        title="Connections"
       />
 
       <SurfaceCard>
@@ -172,6 +218,7 @@ export default function SettingsScreen() {
             accessibilityLabel="monGARS server URL"
             autoCapitalize="none"
             autoCorrect={false}
+            editable={!isTestingConnection}
             keyboardType="url"
             onChangeText={(value) => {
               setServerUrlInput(value);
@@ -188,38 +235,20 @@ export default function SettingsScreen() {
               borderCurve: 'continuous',
               borderRadius: radii.medium,
               color: theme.text,
-              fontSize: 14,
-              paddingHorizontal: 13,
-              paddingVertical: 12,
+              fontSize: 13,
+              paddingHorizontal: 12,
+              paddingVertical: 10,
             }}
             value={serverUrl}
           />
-          <Pressable
-            accessibilityRole="button"
-            disabled={!serverUrl.trim() || serverUrlSaving}
+          <AppButton
+            disabled={!serverUrl.trim() || serverUrlSaving || isTestingConnection}
+            fullWidth
+            label="Save server URL"
+            loading={serverUrlSaving}
             onPress={() => void saveServerUrl()}
-            style={({ pressed }) => ({
-              alignItems: 'center',
-              backgroundColor: serverUrl.trim() ? theme.primarySoft : theme.surfaceMuted,
-              borderRadius: 14,
-              opacity: pressed || serverUrlSaving ? 0.72 : 1,
-              padding: 12,
-            })}
-          >
-            {serverUrlSaving ? (
-              <ActivityIndicator color={theme.primary} />
-            ) : (
-              <Text
-                style={{
-                  color: serverUrl.trim() ? theme.primary : theme.textTertiary,
-                  fontSize: 14,
-                  fontWeight: '700',
-                }}
-              >
-                Save server URL
-              </Text>
-            )}
-          </Pressable>
+            variant="soft"
+          />
           <Text selectable style={{ color: theme.textTertiary, fontSize: 11 }}>
             {baseUrlStatus === 'loading'
               ? 'Loading saved server…'
@@ -249,7 +278,7 @@ export default function SettingsScreen() {
             accessibilityLabel="monGARS API token"
             autoCapitalize="none"
             autoCorrect={false}
-            editable={credentialTransportAllowed && draftMatchesActiveBaseUrl}
+            editable={canEditToken}
             onChangeText={setToken}
             placeholder={hasToken ? 'Enter a replacement token' : 'Paste bearer token'}
             placeholderTextColor={theme.textTertiary}
@@ -260,10 +289,10 @@ export default function SettingsScreen() {
               borderCurve: 'continuous',
               borderRadius: radii.medium,
               color: theme.text,
-              fontSize: 14,
-              opacity: credentialTransportAllowed && draftMatchesActiveBaseUrl ? 1 : 0.55,
-              paddingHorizontal: 13,
-              paddingVertical: 12,
+              fontSize: 13,
+              opacity: canEditToken ? 1 : 0.55,
+              paddingHorizontal: 12,
+              paddingVertical: 10,
             }}
             value={token}
           />
@@ -274,39 +303,23 @@ export default function SettingsScreen() {
           ) : null}
         </View>
 
-        <Pressable
-          accessibilityRole="button"
-          disabled={!canTest || connectionState === 'testing'}
+        <AppButton
+          disabled={!canTest || isTestingConnection}
+          fullWidth
+          label={token.trim() ? 'Save and test connection' : 'Test saved connection'}
+          loading={isTestingConnection}
           onPress={() => void saveAndTestConnection()}
-          style={({ pressed }) => ({
-            alignItems: 'center',
-            backgroundColor: canTest ? theme.primary : theme.surfaceMuted,
-            borderRadius: 14,
-            opacity: pressed || connectionState === 'testing' ? 0.72 : 1,
-            padding: 13,
-          })}
-        >
-          {connectionState === 'testing' ? (
-            <ActivityIndicator color={theme.primaryContrast} />
-          ) : (
-            <Text
-              style={{
-                color: canTest ? theme.primaryContrast : theme.textTertiary,
-                fontSize: 14,
-                fontWeight: '700',
-              }}
-            >
-              {token.trim() ? 'Save and test connection' : 'Test saved connection'}
-            </Text>
-          )}
-        </Pressable>
+        />
 
         {hasToken ? (
-          <Pressable accessibilityRole="button" onPress={() => void forgetToken()}>
-            <Text style={{ color: theme.danger, fontSize: 13, fontWeight: '600', textAlign: 'center' }}>
-              Forget saved token
-            </Text>
-          </Pressable>
+          <AppButton
+            disabled={isTestingConnection}
+            fullWidth
+            label="Forget saved token"
+            onPress={() => void forgetToken()}
+            tone="danger"
+            variant="soft"
+          />
         ) : null}
       </SurfaceCard>
 
@@ -368,25 +381,14 @@ export default function SettingsScreen() {
             }
           >
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-              <Pressable
-                accessibilityRole="button"
+              <AppButton
                 disabled={readiness.isLoading || !hasToken}
+                label="Refresh"
+                loading={readiness.isLoading}
                 onPress={() => void readiness.refresh().catch(() => undefined)}
-                style={({ pressed }) => ({
-                  backgroundColor: theme.primarySoft,
-                  borderColor: theme.primary,
-                  borderRadius: 999,
-                  borderWidth: 1,
-                  opacity: readiness.isLoading || !hasToken ? 0.45 : pressed ? 0.72 : 1,
-                  paddingHorizontal: 13,
-                  paddingVertical: 8,
-                })}
-              >
-                <Text style={{ color: theme.primary, fontSize: 12, fontWeight: '700' }}>
-                  Refresh
-                </Text>
-              </Pressable>
-              {readiness.isLoading ? <ActivityIndicator color={theme.primary} /> : null}
+                size="compact"
+                variant="soft"
+              />
             </View>
             {readiness.error ? (
               <Text selectable style={{ color: theme.danger, fontSize: 13, lineHeight: 19 }}>
@@ -396,26 +398,58 @@ export default function SettingsScreen() {
             {displayedReadiness ? (
               <ReadinessPanel readiness={displayedReadiness} />
             ) : (
-              <Text selectable style={{ color: theme.textSecondary, fontSize: 13 }}>
-                No readiness snapshot loaded.
-              </Text>
+              <View style={{ alignItems: 'center', flexDirection: 'row', gap: 14 }}>
+                <VisualAsset
+                  accessibilityLabel="Readiness security visual"
+                  name="readinessSecurity"
+                  size={76}
+                />
+                <Text
+                  selectable
+                  style={{ color: theme.textSecondary, flex: 1, fontSize: 13, lineHeight: 19 }}
+                >
+                  No readiness snapshot loaded.
+                </Text>
+              </View>
             )}
           </SurfaceCard>
         </>
       ) : null}
 
-      <SectionHeading detail="Control how this client may use inference." title="Privacy" />
+      <SectionHeading detail="Protected defaults for local work." title="Security" />
       <SurfaceCard>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
-          <View style={{ flex: 1, gap: 4 }}>
-            <Text selectable style={{ color: theme.text, fontSize: 16, fontWeight: '600' }}>
+        <View style={{ alignItems: 'center', flexDirection: 'row', gap: 11 }}>
+          <AppIcon color={theme.textSecondary} name="shield" size={20} />
+          <View style={{ flex: 1, gap: 2 }}>
+            <Text selectable style={{ color: theme.text, fontSize: 13, fontWeight: '700' }}>
               Require local inference
             </Text>
-            <Text selectable style={{ color: theme.textSecondary, fontSize: 13, lineHeight: 18 }}>
+            <Text selectable style={{ color: theme.textSecondary, fontSize: 11, lineHeight: 16 }}>
               Prevent requests from using a remote fallback endpoint.
             </Text>
           </View>
-          <StatusPill label="Required" tone="positive" />
+          <StatusPill label={localInferenceStatus.label} tone={localInferenceStatus.tone} />
+        </View>
+        <View
+          style={{
+            alignItems: 'center',
+            borderTopColor: theme.border,
+            borderTopWidth: 1,
+            flexDirection: 'row',
+            gap: 11,
+            paddingTop: 10,
+          }}
+        >
+          <AppIcon color={theme.textSecondary} name="lock" size={20} />
+          <View style={{ flex: 1, gap: 2 }}>
+            <Text selectable style={{ color: theme.text, fontSize: 13, fontWeight: '700' }}>
+              Protected mode
+            </Text>
+            <Text selectable style={{ color: theme.textSecondary, fontSize: 11, lineHeight: 16 }}>
+              High-risk effects require exact-action approval.
+            </Text>
+          </View>
+          <StatusPill label={protectedModeStatus.label} tone={protectedModeStatus.tone} />
         </View>
       </SurfaceCard>
     </ScreenScroll>

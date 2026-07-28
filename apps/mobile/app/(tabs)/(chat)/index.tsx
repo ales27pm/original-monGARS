@@ -1,12 +1,19 @@
 import * as Haptics from 'expo-haptics';
+import { useRouter } from 'expo-router';
 import { useCallback, useEffect, useReducer, useState } from 'react';
 import { Alert, Linking, Pressable, Text, TextInput, View } from 'react-native';
 
-import { BrandMark } from '@/components/brand-mark';
+import { AppButton } from '@/components/app-button';
+import { AppIcon } from '@/components/app-icon';
 import { ChatFeedbackControls } from '@/components/chat-feedback-controls';
+import { IconButton } from '@/components/icon-button';
 import { ScreenScroll } from '@/components/screen-scroll';
-import { StatusPill } from '@/components/status-pill';
+import {
+  SegmentedControl,
+  type SegmentedControlOption,
+} from '@/components/segmented-control';
 import { SurfaceCard } from '@/components/surface-card';
+import { VisualAsset } from '@/components/visual-asset';
 import { radii } from '@/constants/theme';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import { useStreamingChat } from '@/hooks/use-mongars-api';
@@ -39,18 +46,18 @@ type ChatDisplayMessage = {
 const webSearchModes = ['off', 'auto', 'required'] as const;
 type WebSearchMode = NonNullable<ChatRequest['web_search']>;
 
-const VOICE_LIMITS = {
-  maxUtteranceSeconds: 30,
-  maxUploadBytes: 1_000_000,
-  sttProvider: 'local adapter (not yet implemented)',
-  sttModelDigest: 'pending',
-};
-
 const webSearchModeLabels: Record<WebSearchMode, string> = {
   off: 'Off',
   auto: 'Auto',
   required: 'Required',
 };
+const webSearchOptions: readonly SegmentedControlOption<WebSearchMode>[] = webSearchModes.map(
+  (mode) => ({
+    accessibilityLabel: `${webSearchModeLabels[mode]} web search`,
+    label: webSearchModeLabels[mode],
+    value: mode,
+  }),
+);
 
 function voiceReducer(state: VoiceLoopState, event: VoiceLoopEvent): VoiceLoopState {
   return nextVoiceState(state, event);
@@ -145,6 +152,7 @@ export default function ChatScreen() {
 
 function ConnectedChatScreen() {
   const theme = useAppTheme();
+  const router = useRouter();
   const { hasToken } = useMongars();
   const chat = useStreamingChat();
   const [draft, setDraft] = useState('');
@@ -166,17 +174,6 @@ function ConnectedChatScreen() {
     },
     [voiceState],
   );
-
-  const voiceVisual: string =
-    voiceState === 'listening'
-      ? '▁ ▂ ▂ ▄ ▅ █ █ ▃ ▁'
-      : voiceState === 'finalizing'
-        ? '⏺ finalizing transcription'
-        : voiceState === 'thinking'
-          ? '… awaiting model response'
-          : voiceState === 'speaking'
-            ? '♪ ♪ ♫ ♪'
-            : '—';
 
   const primaryVoiceEvent: VoiceLoopEvent = (() => {
     if (voiceState === 'idle') return 'start_push_to_talk';
@@ -241,127 +238,69 @@ function ConnectedChatScreen() {
 
   return (
     <ScreenScroll>
-      <SurfaceCard tone="primary">
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
-          <BrandMark compact />
-          <View style={{ flex: 1, gap: 3 }}>
-            <Text selectable style={{ color: theme.text, fontSize: 16, fontWeight: '700' }}>
+      <SurfaceCard>
+        <View style={{ alignItems: 'center', flexDirection: 'row', gap: 10 }}>
+          <View
+            style={{
+              backgroundColor: hasToken ? theme.positive : theme.warning,
+              borderRadius: 999,
+              height: 10,
+              width: 10,
+            }}
+          />
+          <View style={{ flex: 1, gap: 2 }}>
+            <Text selectable style={{ color: theme.text, fontSize: 14, fontWeight: '700' }}>
               Local Cortex
             </Text>
-            <Text selectable style={{ color: theme.textSecondary, fontSize: 13 }}>
+            <Text selectable style={{ color: theme.textSecondary, fontSize: 11 }}>
               {chat.data?.model ?? 'Private local model'}
             </Text>
           </View>
-          <StatusPill
-            label={chat.isPending ? 'Streaming' : hasToken ? 'Connected' : 'Token needed'}
-            tone={chat.isPending ? 'primary' : hasToken ? 'positive' : 'warning'}
-          />
-        </View>
-        <View
-          style={{
-            borderTopWidth: 1,
-            borderColor: theme.border,
-            marginTop: 12,
-            paddingTop: 12,
-            gap: 6,
-          }}
-        >
-          <Text selectable style={{ color: theme.textSecondary, fontSize: 11, fontWeight: '700' }}>
-            VOICE LOOP (SAFE FOUNDATION)
-          </Text>
-          <Text selectable style={{ color: theme.text, fontSize: 12 }}>
-            State: {nextLabel(voiceState)}
-          </Text>
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => dispatchVoiceAction(primaryVoiceEvent)}
-              style={({ pressed }) => ({
-                backgroundColor: theme.surface,
-                borderColor: theme.border,
-                borderRadius: 999,
-                borderWidth: 1,
-                paddingHorizontal: 10,
-                paddingVertical: 7,
-                opacity: pressed ? 0.75 : 1,
-              })}
+          <View style={{ alignItems: 'flex-end', gap: 2 }}>
+            <Text style={{ color: theme.textTertiary, fontSize: 9 }}>READINESS</Text>
+            <Text
+              style={{
+                color: chat.isPending ? theme.primary : hasToken ? theme.positive : theme.warning,
+                fontSize: 11,
+                fontWeight: '700',
+              }}
             >
-              <Text selectable style={{ color: theme.text, fontSize: 11, fontWeight: '700' }}>
-                {voiceState === 'idle'
-                  ? 'Request permission'
-                  : voiceState === 'requesting_permission'
-                    ? 'Grant permission'
-                    : voiceState === 'listening'
-                      ? 'Stop recording'
-                      : voiceState === 'finalizing'
-                        ? 'Finalize transcript'
-                        : voiceState === 'thinking'
-                          ? 'Start speaking'
-                          : voiceState === 'speaking'
-                            ? 'Stop TTS'
-                            : 'Cancel'}
-              </Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => setContinuousVoiceLoop((enabled) => !enabled)}
-              style={({ pressed }) => ({
-                backgroundColor: theme.surface,
-                borderColor: theme.border,
-                borderRadius: 999,
-                borderWidth: 1,
-                paddingHorizontal: 10,
-                paddingVertical: 7,
-                opacity: pressed ? 0.75 : 1,
-              })}
-            >
-              <Text selectable style={{ color: theme.text, fontSize: 11, fontWeight: '700' }}>
-                Continuous loop: {continuousVoiceLoop ? 'On' : 'Off'}
-              </Text>
-            </Pressable>
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => dispatchVoiceAction('cancel')}
-              style={({ pressed }) => ({
-                backgroundColor: theme.surfaceMuted,
-                borderColor: theme.border,
-                borderRadius: 999,
-                borderWidth: 1,
-                paddingHorizontal: 10,
-                paddingVertical: 7,
-                opacity: pressed ? 0.75 : 1,
-              })}
-            >
-              <Text selectable style={{ color: theme.textTertiary, fontSize: 11, fontWeight: '700' }}>
-                Cancel voice
-              </Text>
-            </Pressable>
+              {chat.isPending ? 'Streaming' : hasToken ? 'Ready' : 'Token needed'}
+            </Text>
           </View>
-          <Text selectable accessibilityRole="text" style={{ color: theme.textTertiary, fontSize: 11 }}>
-            Waveform fallback: {voiceVisual}
-          </Text>
-          <Text selectable style={{ color: theme.textTertiary, fontSize: 11 }}>
-            Audio retention: no raw audio is persisted by default; explicit export is required.
-          </Text>
-          <Text selectable style={{ color: theme.textTertiary, fontSize: 11 }}>
-            STT identity: {VOICE_LIMITS.sttProvider} · digest: {VOICE_LIMITS.sttModelDigest}
-          </Text>
-          <Text selectable style={{ color: theme.textTertiary, fontSize: 11 }}>
-            Request limits: {VOICE_LIMITS.maxUtteranceSeconds}s max utterance,{' '}
-            {VOICE_LIMITS.maxUploadBytes} max upload bytes
-          </Text>
-          {voiceError ? <Text style={{ color: theme.warning, fontSize: 11 }}>{voiceError}</Text> : null}
         </View>
       </SurfaceCard>
 
-      <View style={{ gap: 12 }}>
+      <View style={{ gap: 10 }}>
         {!displayedMessages.length ? (
-          <SurfaceCard title="Private, local conversation">
-            <Text selectable style={{ color: theme.textSecondary, fontSize: 14, lineHeight: 20 }}>
-              Ask Cortex to reason over your indexed memory or coordinate a local task. Nothing is
-              sent until you press Send.
-            </Text>
-          </SurfaceCard>
+          <View style={{ alignItems: 'flex-start', flexDirection: 'row', gap: 8 }}>
+            <VisualAsset
+              accessibilityLabel="Local cortex visual"
+              name="cortexEmblem"
+              size={42}
+            />
+            <View
+              style={{
+                backgroundColor: theme.surface,
+                borderColor: theme.border,
+                borderRadius: radii.large,
+                borderWidth: 1,
+                flex: 1,
+                gap: 5,
+                padding: 12,
+              }}
+            >
+              <Text selectable style={{ color: theme.text, fontSize: 13, fontWeight: '700' }}>
+                Private, local conversation
+              </Text>
+              <Text
+                selectable
+                style={{ color: theme.textSecondary, fontSize: 13, lineHeight: 18 }}
+              >
+                Ask Cortex to reason over indexed memory or coordinate a protected local task.
+              </Text>
+            </View>
+          </View>
         ) : null}
         {displayedMessages.map((message) => {
           const isUser = message.role === 'user';
@@ -378,25 +317,22 @@ function ConnectedChatScreen() {
             >
               <View
                 style={{
-                  backgroundColor: isUser ? theme.primary : theme.surface,
-                  borderColor: isUser ? theme.primary : theme.border,
+                  backgroundColor: isUser ? theme.primarySoft : theme.surface,
+                  borderColor: isUser ? theme.primaryBorder : theme.border,
                   borderCurve: 'continuous',
                   borderRadius: radii.large,
-                  borderBottomRightRadius: isUser ? 8 : radii.large,
-                  borderBottomLeftRadius: isUser ? radii.large : 8,
                   borderWidth: 1,
-                  paddingHorizontal: 15,
-                  paddingVertical: 12,
-                  gap: 10,
-                  boxShadow: '0 5px 16px rgba(27, 20, 49, 0.05)',
+                  gap: 8,
+                  paddingHorizontal: 13,
+                  paddingVertical: 11,
                 }}
               >
                 <Text
                   selectable
                   style={{
-                    color: isUser ? theme.primaryContrast : theme.text,
-                    fontSize: 15,
-                    lineHeight: 21,
+                    color: theme.text,
+                    fontSize: 14,
+                    lineHeight: 20,
                   }}
                 >
                   {message.text}
@@ -457,29 +393,20 @@ function ConnectedChatScreen() {
         })}
       </View>
 
-      <View style={{ gap: 8 }}>
-        <Text selectable style={{ color: theme.textSecondary, fontSize: 12, fontWeight: '600' }}>
+      <View style={{ gap: 7 }}>
+        <Text selectable style={{ color: theme.textSecondary, fontSize: 10, fontWeight: '700' }}>
           QUICK START
         </Text>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
           {suggestions.map((suggestion) => (
-            <Pressable
-              accessibilityRole="button"
+            <AppButton
               key={suggestion}
+              label={suggestion}
               onPress={() => setDraft(suggestion)}
-              style={({ pressed }) => ({
-                backgroundColor: pressed ? theme.primarySoft : theme.surface,
-                borderColor: pressed ? theme.primary : theme.border,
-                borderRadius: 999,
-                borderWidth: 1,
-                paddingHorizontal: 12,
-                paddingVertical: 8,
-              })}
-            >
-              <Text style={{ color: theme.text, fontSize: 12, fontWeight: '600' }}>
-                {suggestion}
-              </Text>
-            </Pressable>
+              size="compact"
+              tone="neutral"
+              variant="outline"
+            />
           ))}
         </View>
       </View>
@@ -491,58 +418,10 @@ function ConnectedChatScreen() {
           borderCurve: 'continuous',
           borderRadius: radii.large,
           borderWidth: 1,
-          padding: 10,
           gap: 8,
-          boxShadow: '0 8px 24px rgba(27, 20, 49, 0.08)',
+          padding: 10,
         }}
       >
-        <View style={{ gap: 6 }}>
-          <Text selectable style={{ color: theme.textSecondary, fontSize: 11, fontWeight: '700' }}>
-            WEB SEARCH
-          </Text>
-          <View accessibilityRole="radiogroup" style={{ flexDirection: 'row', gap: 6 }}>
-            {webSearchModes.map((mode) => {
-              const selected = webSearchMode === mode;
-              return (
-                <Pressable
-                  accessibilityLabel={`${webSearchModeLabels[mode]} web search`}
-                  accessibilityRole="radio"
-                  accessibilityState={{ checked: selected }}
-                  key={mode}
-                  onPress={() => setWebSearchMode(mode)}
-                  style={({ pressed }) => ({
-                    alignItems: 'center',
-                    backgroundColor: selected ? theme.primary : theme.surfaceMuted,
-                    borderColor: selected ? theme.primary : theme.border,
-                    borderRadius: 999,
-                    borderWidth: 1,
-                    flex: 1,
-                    opacity: pressed ? 0.75 : 1,
-                    paddingHorizontal: 8,
-                    paddingVertical: 7,
-                  })}
-                >
-                  <Text
-                    style={{
-                      color: selected ? theme.primaryContrast : theme.textSecondary,
-                      fontSize: 11,
-                      fontWeight: '700',
-                    }}
-                  >
-                    {webSearchModeLabels[mode]}
-                  </Text>
-                </Pressable>
-              );
-            })}
-          </View>
-          <Text selectable style={{ color: theme.textTertiary, fontSize: 10, lineHeight: 14 }}>
-            {webSearchMode === 'off'
-              ? 'Never send a web query.'
-              : webSearchMode === 'required'
-                ? 'Search the web for this message.'
-                : 'Search only when your message explicitly asks for it.'}
-          </Text>
-        </View>
         <TextInput
           accessibilityLabel="Message Cortex"
           maxLength={32_000}
@@ -553,68 +432,105 @@ function ConnectedChatScreen() {
           selectionColor={theme.primary}
           style={{
             color: theme.text,
-            fontSize: 16,
-            lineHeight: 22,
-            minHeight: 54,
-            maxHeight: 144,
-            paddingHorizontal: 7,
-            paddingVertical: 7,
+            fontSize: 15,
+            lineHeight: 21,
+            maxHeight: 126,
+            minHeight: 48,
+            paddingHorizontal: 5,
+            paddingVertical: 5,
             textAlignVertical: 'top',
           }}
           value={draft}
         />
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-          <Text selectable style={{ color: theme.textTertiary, flex: 1, fontSize: 11 }}>
-            Local inference · web search {webSearchMode}
+        <View style={{ alignItems: 'center', flexDirection: 'row', gap: 8 }}>
+          <AppIcon color={theme.textSecondary} name="globe" size={17} />
+          <Text style={{ color: theme.textSecondary, fontSize: 11, fontWeight: '600' }}>
+            Web search
           </Text>
-          {chat.isPending ? (
-            <Pressable
-              accessibilityRole="button"
-              onPress={chat.cancel}
-              style={({ pressed }) => ({
-                alignItems: 'center',
-                backgroundColor: theme.surfaceMuted,
-                borderColor: theme.border,
-                borderRadius: 999,
-                borderWidth: 1,
-                height: 38,
-                justifyContent: 'center',
-                opacity: pressed ? 0.75 : 1,
-                paddingHorizontal: 14,
-              })}
-            >
-              <Text style={{ color: theme.textSecondary, fontSize: 13, fontWeight: '700' }}>
-                Cancel
-              </Text>
-            </Pressable>
-          ) : null}
-          <Pressable
-            accessibilityRole="button"
-            disabled={!draft.trim() || chat.isPending}
-            onPress={() => void submitMessage()}
-            style={({ pressed }) => ({
-              alignItems: 'center',
-              backgroundColor:
-                draft.trim() && !chat.isPending ? theme.primary : theme.surfaceMuted,
-              borderRadius: 999,
-              height: 38,
-              justifyContent: 'center',
-              opacity: pressed ? 0.75 : 1,
-              paddingHorizontal: 17,
-            })}
-          >
-            <Text
-              style={{
-                color:
-                  draft.trim() && !chat.isPending ? theme.primaryContrast : theme.textTertiary,
-                fontSize: 13,
-                fontWeight: '700',
-              }}
-            >
-              {chat.isPending ? 'Streaming…' : 'Send'}
-            </Text>
-          </Pressable>
+          <SegmentedControl
+            accessibilityLabel="Web search mode"
+            fill={false}
+            onChange={setWebSearchMode}
+            options={webSearchOptions}
+            size="compact"
+            value={webSearchMode}
+          />
         </View>
+        <View
+          style={{
+            alignItems: 'center',
+            borderTopColor: theme.border,
+            borderTopWidth: 1,
+            flexDirection: 'row',
+            gap: 4,
+            paddingTop: 7,
+          }}
+        >
+          <IconButton
+            accessibilityLabel="Open document memory"
+            icon="paperclip"
+            onPress={() => router.navigate('/(tabs)/(memory)')}
+            size="compact"
+          />
+          <IconButton
+            accessibilityLabel={`Voice: ${nextLabel(voiceState)}`}
+            icon="microphone"
+            onPress={() => dispatchVoiceAction(primaryVoiceEvent)}
+            selected={voiceState !== 'idle'}
+            size="compact"
+            tone="primary"
+            variant="soft"
+          />
+          <AppButton
+            label={continuousVoiceLoop ? 'Loop on' : 'Loop off'}
+            onPress={() => setContinuousVoiceLoop((enabled) => !enabled)}
+            size="compact"
+            tone={continuousVoiceLoop ? 'primary' : 'neutral'}
+            variant="soft"
+          />
+          <Text style={{ color: theme.textTertiary, flex: 1, fontSize: 10 }}>
+            Local inference
+          </Text>
+          <IconButton
+            accessibilityLabel={chat.isPending ? 'Cancel response' : 'Send message'}
+            disabled={!chat.isPending && !draft.trim()}
+            icon={chat.isPending ? 'close' : 'send'}
+            onPress={() => {
+              if (chat.isPending) chat.cancel();
+              else void submitMessage();
+            }}
+            size="compact"
+            tone={chat.isPending ? 'danger' : 'primary'}
+            variant="solid"
+          />
+        </View>
+        {voiceState !== 'idle' || voiceError ? (
+          <View
+            style={{
+              alignItems: 'center',
+              backgroundColor: theme.surfaceMuted,
+              borderRadius: radii.small,
+              flexDirection: 'row',
+              gap: 8,
+              paddingHorizontal: 9,
+              paddingVertical: 7,
+            }}
+          >
+            <Text style={{ color: voiceError ? theme.warning : theme.textSecondary, flex: 1, fontSize: 10 }}>
+              {voiceError ?? `Voice ${nextLabel(voiceState)} · no raw audio is persisted`}
+            </Text>
+            <AppButton
+              label="Cancel"
+              onPress={() => {
+                if (voiceState === 'idle') setVoiceError(null);
+                else dispatchVoiceAction('cancel');
+              }}
+              size="compact"
+              tone="neutral"
+              variant="outline"
+            />
+          </View>
+        ) : null}
       </View>
       {chat.error ? (
         <SurfaceCard tone="danger" title="Response interrupted">

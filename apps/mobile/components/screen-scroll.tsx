@@ -13,7 +13,14 @@ export function ScreenScroll({ children, ...props }: ScreenScrollProps) {
   return (
     <ScrollView
       contentInsetAdjustmentBehavior="automatic"
-      contentContainerStyle={{ padding: 16, paddingBottom: 40, gap: 16 }}
+      contentContainerStyle={{
+        alignSelf: 'center',
+        gap: 12,
+        maxWidth: 620,
+        padding: 14,
+        paddingBottom: 104,
+        width: '100%',
+      }}
       keyboardDismissMode="interactive"
       keyboardShouldPersistTaps="handled"
       showsVerticalScrollIndicator={false}

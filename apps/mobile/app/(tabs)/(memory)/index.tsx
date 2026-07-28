@@ -2,8 +2,15 @@ import * as DocumentPicker from 'expo-document-picker';
 import { useState } from 'react';
 import { ActivityIndicator, Pressable, Text, TextInput, View } from 'react-native';
 
+import { AppButton } from '@/components/app-button';
+import { AppIcon } from '@/components/app-icon';
+import { IconButton } from '@/components/icon-button';
 import { ScreenScroll } from '@/components/screen-scroll';
 import { SectionHeading } from '@/components/section-heading';
+import {
+  SegmentedControl,
+  type SegmentedControlOption,
+} from '@/components/segmented-control';
 import { StatusPill } from '@/components/status-pill';
 import { SurfaceCard } from '@/components/surface-card';
 import { radii } from '@/constants/theme';
@@ -42,6 +49,20 @@ function optionLabel(value: DocumentSensitivity | DocumentRetentionClass): strin
   return value.replaceAll('_', ' ');
 }
 
+const sensitivityControlOptions: readonly SegmentedControlOption<DocumentSensitivity>[] =
+  sensitivityOptions.map((option) => ({ label: optionLabel(option), value: option }));
+const retentionControlOptions: readonly SegmentedControlOption<DocumentRetentionClass>[] =
+  retentionOptions.map((option) => ({ label: optionLabel(option), value: option }));
+const searchModeOptions: readonly SegmentedControlOption<'hybrid' | 'semantic'>[] = [
+  { label: 'Hybrid', value: 'hybrid' },
+  { label: 'Semantic', value: 'semantic' },
+];
+type MemoryView = 'documents' | 'search';
+const memoryViewOptions: readonly SegmentedControlOption<MemoryView>[] = [
+  { label: 'Documents', value: 'documents' },
+  { label: 'Search', value: 'search' },
+];
+
 export default function MemoryScreen() {
   const { client, configurationError } = useMongars();
   const theme = useAppTheme();
@@ -68,6 +89,7 @@ function ConnectedMemoryScreen() {
   const upload = useDocumentUpload();
   const [query, setQuery] = useState('');
   const [mode, setMode] = useState<'hybrid' | 'semantic'>('hybrid');
+  const [view, setView] = useState<MemoryView>('documents');
   const [selectedDocument, setSelectedDocument] = useState<PreparedDocumentUpload | null>(null);
   const [title, setTitle] = useState('');
   const [sensitivity, setSensitivity] = useState<DocumentSensitivity>('private');
@@ -131,388 +153,299 @@ function ConnectedMemoryScreen() {
 
   return (
     <ScreenScroll>
-      <SectionHeading
-        detail="TXT, Markdown, HTML, PDF, or DOCX · 10 MB maximum"
-        title="Import a document"
+      <SectionHeading level="screen" title="Memory" />
+      <SegmentedControl
+        accessibilityLabel="Memory view"
+        appearance="tabs"
+        onChange={setView}
+        options={memoryViewOptions.map((option) =>
+          option.value === 'search' ? { ...option, disabled: upload.isPending } : option,
+        )}
+        value={view}
       />
 
-      <SurfaceCard
-        tone={upload.data ? 'positive' : 'default'}
-        title={upload.data ? 'Approval required' : 'Main document ingestion'}
-        trailing={
-          upload.data ? (
-            <StatusPill label="Waiting" tone="warning" />
-          ) : selectedDocument ? (
-            <StatusPill label={readableSize(selectedDocument.size)} tone="primary" />
-          ) : null
-        }
-      >
-        {upload.data ? (
-          <>
-            <Text selectable style={{ color: theme.positive, fontSize: 14, lineHeight: 20 }}>
-              The exact ingestion metadata is queued for review. Open Tasks to inspect the action
-              digest and approve parsing.
-            </Text>
-            <Text
-              selectable
-              style={{
-                color: theme.textSecondary,
-                fontFamily: process.env.EXPO_OS === 'ios' ? 'Menlo' : 'monospace',
-                fontSize: 11,
-                lineHeight: 17,
-              }}
+      {view === 'documents' ? (
+        <>
+          {upload.data ? (
+            <SurfaceCard
+              tone="positive"
+              title="Approval required"
+              trailing={<StatusPill label="Waiting" tone="warning" />}
             >
-              {upload.data.action_digest}
-            </Text>
-            <Pressable
-              accessibilityRole="button"
-              onPress={() => {
-                upload.reset();
-                setSelectedDocument(null);
-                setTitle('');
-              }}
-              style={({ pressed }) => ({
-                alignItems: 'center',
-                backgroundColor: theme.surface,
-                borderColor: theme.border,
-                borderRadius: radii.medium,
-                borderWidth: 1,
-                opacity: pressed ? 0.72 : 1,
-                paddingVertical: 11,
-              })}
-            >
-              <Text style={{ color: theme.text, fontSize: 13, fontWeight: '700' }}>
-                Import another document
+              <Text selectable style={{ color: theme.positive, fontSize: 13, lineHeight: 18 }}>
+                The exact ingestion metadata is queued for protected review in Tasks.
               </Text>
-            </Pressable>
-          </>
-        ) : (
-          <>
-            <Pressable
-              accessibilityRole="button"
-              disabled={isPicking || upload.isPending}
-              onPress={() => void chooseDocument()}
-              style={({ pressed }) => ({
-                alignItems: 'center',
-                backgroundColor: theme.primarySoft,
-                borderColor: theme.primary,
-                borderRadius: radii.medium,
-                borderWidth: 1,
-                opacity: isPicking || upload.isPending ? 0.55 : pressed ? 0.72 : 1,
-                paddingVertical: 13,
-              })}
-            >
-              {isPicking ? (
-                <ActivityIndicator color={theme.primary} />
-              ) : (
-                <Text style={{ color: theme.primary, fontSize: 14, fontWeight: '700' }}>
-                  {selectedDocument ? 'Choose a different document' : 'Choose document'}
-                </Text>
-              )}
-            </Pressable>
-
-            {selectedDocument ? (
-              <View style={{ gap: 4 }}>
-                <Text selectable style={{ color: theme.text, fontSize: 14, fontWeight: '700' }}>
-                  {selectedDocument.filename}
-                </Text>
-                <Text selectable style={{ color: theme.textTertiary, fontSize: 11 }}>
-                  {selectedDocument.mimeType} · {readableSize(selectedDocument.size)}
-                </Text>
-              </View>
-            ) : (
-              <Text selectable style={{ color: theme.textSecondary, fontSize: 13, lineHeight: 19 }}>
-                The file stays local until you submit it. Parsing starts only after you review and
-                approve the durable task.
-              </Text>
-            )}
-
-            {selectedDocument ? (
-              <>
-                <View style={{ gap: 6 }}>
-                  <Text style={{ color: theme.textSecondary, fontSize: 11, fontWeight: '700' }}>
-                    OPTIONAL TITLE
-                  </Text>
-                  <TextInput
-                    accessibilityLabel="Document title"
-                    maxLength={500}
-                    onChangeText={setTitle}
-                    placeholder="Title for durable memory"
-                    placeholderTextColor={theme.textTertiary}
-                    selectionColor={theme.primary}
-                    style={{
-                      backgroundColor: theme.input,
-                      borderRadius: radii.medium,
-                      color: theme.text,
-                      fontSize: 15,
-                      paddingHorizontal: 14,
-                      paddingVertical: 11,
-                    }}
-                    value={title}
-                  />
-                </View>
-
-                <View style={{ gap: 7 }}>
-                  <Text style={{ color: theme.textSecondary, fontSize: 11, fontWeight: '700' }}>
-                    SENSITIVITY
-                  </Text>
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-                    {sensitivityOptions.map((option) => {
-                      const selected = option === sensitivity;
-                      return (
-                        <Pressable
-                          accessibilityRole="button"
-                          key={option}
-                          onPress={() => setSensitivity(option)}
-                          style={{
-                            backgroundColor: selected ? theme.primary : theme.surface,
-                            borderColor: selected ? theme.primary : theme.border,
-                            borderRadius: 999,
-                            borderWidth: 1,
-                            paddingHorizontal: 12,
-                            paddingVertical: 8,
-                          }}
-                        >
-                          <Text
-                            style={{
-                              color: selected ? theme.primaryContrast : theme.textSecondary,
-                              fontSize: 12,
-                              fontWeight: '600',
-                              textTransform: 'capitalize',
-                            }}
-                          >
-                            {optionLabel(option)}
-                          </Text>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                </View>
-
-                <View style={{ gap: 7 }}>
-                  <Text style={{ color: theme.textSecondary, fontSize: 11, fontWeight: '700' }}>
-                    RETENTION
-                  </Text>
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
-                    {retentionOptions.map((option) => {
-                      const selected = option === retentionClass;
-                      return (
-                        <Pressable
-                          accessibilityRole="button"
-                          key={option}
-                          onPress={() => setRetentionClass(option)}
-                          style={{
-                            backgroundColor: selected ? theme.primary : theme.surface,
-                            borderColor: selected ? theme.primary : theme.border,
-                            borderRadius: 999,
-                            borderWidth: 1,
-                            paddingHorizontal: 12,
-                            paddingVertical: 8,
-                          }}
-                        >
-                          <Text
-                            style={{
-                              color: selected ? theme.primaryContrast : theme.textSecondary,
-                              fontSize: 12,
-                              fontWeight: '600',
-                              textTransform: 'capitalize',
-                            }}
-                          >
-                            {optionLabel(option)}
-                          </Text>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                </View>
-
-                {!hasToken ? (
-                  <Text selectable style={{ color: theme.warning, fontSize: 12, lineHeight: 18 }}>
-                    {tokenStatus === 'loading'
-                      ? 'Checking the saved API token…'
-                      : 'Save this server’s API token in Settings before uploading.'}
-                  </Text>
-                ) : null}
-
-                {upload.isPending ? (
-                  <View
-                    accessibilityLiveRegion="polite"
-                    style={{ alignItems: 'center', flexDirection: 'row', gap: 10 }}
-                  >
-                    <ActivityIndicator color={theme.primary} />
-                    <Text style={{ color: theme.textSecondary, flex: 1, fontSize: 13 }}>
-                      Uploading {selectedDocument.filename} securely…
-                    </Text>
-                    <Pressable accessibilityRole="button" onPress={upload.cancel}>
-                      <Text style={{ color: theme.danger, fontSize: 13, fontWeight: '700' }}>
-                        Cancel
-                      </Text>
-                    </Pressable>
-                  </View>
-                ) : (
-                  <Pressable
-                    accessibilityRole="button"
-                    disabled={!hasToken}
-                    onPress={() => void uploadDocument()}
-                    style={({ pressed }) => ({
-                      alignItems: 'center',
-                      backgroundColor: hasToken ? theme.primary : theme.surfaceMuted,
-                      borderRadius: radii.medium,
-                      opacity: pressed ? 0.75 : 1,
-                      paddingVertical: 13,
-                    })}
-                  >
-                    <Text
-                      style={{
-                        color: hasToken ? theme.primaryContrast : theme.textTertiary,
-                        fontSize: 14,
-                        fontWeight: '700',
-                      }}
-                    >
-                      Upload for approval
-                    </Text>
-                  </Pressable>
-                )}
-              </>
-            ) : null}
-          </>
-        )}
-
-        {selectionError || upload.error ? (
-          <Text selectable style={{ color: theme.danger, fontSize: 12, lineHeight: 18 }}>
-            {(upload.error ?? selectionError)?.message}
-          </Text>
-        ) : null}
-      </SurfaceCard>
-
-      <SectionHeading detail="Semantic and lexical retrieval" title="Search memory" />
-
-      <View style={{ flexDirection: 'row', gap: 8 }}>
-        <TextInput
-          accessibilityLabel="Search memory"
-          maxLength={32_000}
-          onChangeText={setQuery}
-          onSubmitEditing={() => void runSearch()}
-          placeholder="Search memory"
-          placeholderTextColor={theme.textTertiary}
-          returnKeyType="search"
-          selectionColor={theme.primary}
-          style={{
-            backgroundColor: theme.input,
-            borderCurve: 'continuous',
-            borderRadius: radii.medium,
-            color: theme.text,
-            flex: 1,
-            fontSize: 16,
-            paddingHorizontal: 15,
-            paddingVertical: 12,
-          }}
-          value={query}
-        />
-        <Pressable
-          accessibilityRole="button"
-          disabled={!query.trim() || search.isPending}
-          onPress={() => void runSearch()}
-          style={({ pressed }) => ({
-            alignItems: 'center',
-            backgroundColor: query.trim() ? theme.primary : theme.surfaceMuted,
-            borderRadius: radii.medium,
-            justifyContent: 'center',
-            opacity: pressed ? 0.75 : 1,
-            paddingHorizontal: 16,
-          })}
-        >
-          {search.isPending ? (
-            <ActivityIndicator color={theme.primaryContrast} />
-          ) : (
-            <Text style={{ color: theme.primaryContrast, fontSize: 13, fontWeight: '700' }}>
-              Search
-            </Text>
-          )}
-        </Pressable>
-      </View>
-
-      <View style={{ flexDirection: 'row', gap: 8 }}>
-        {(['hybrid', 'semantic'] as const).map((option) => {
-          const selected = mode === option;
-          return (
-            <Pressable
-              accessibilityRole="button"
-              key={option}
-              onPress={() => setMode(option)}
-              style={{
-                backgroundColor: selected ? theme.primary : theme.surface,
-                borderColor: selected ? theme.primary : theme.border,
-                borderRadius: 999,
-                borderWidth: 1,
-                paddingHorizontal: 14,
-                paddingVertical: 8,
-              }}
-            >
               <Text
+                selectable
                 style={{
-                  color: selected ? theme.primaryContrast : theme.textSecondary,
-                  fontSize: 12,
-                  fontWeight: '600',
-                  textTransform: 'capitalize',
+                  color: theme.textSecondary,
+                  fontFamily: process.env.EXPO_OS === 'ios' ? 'Menlo' : 'monospace',
+                  fontSize: 10,
+                  lineHeight: 15,
                 }}
               >
-                {option}
+                {upload.data.action_digest}
               </Text>
-            </Pressable>
-          );
-        })}
-      </View>
+              <AppButton
+                fullWidth
+                label="Import another document"
+                onPress={() => {
+                  upload.reset();
+                  setSelectedDocument(null);
+                  setTitle('');
+                }}
+                tone="neutral"
+                variant="outline"
+              />
+            </SurfaceCard>
+          ) : (
+            <SurfaceCard title="Import a document">
+              <Pressable
+                accessibilityLabel="Import a document"
+                accessibilityRole="button"
+                disabled={isPicking || upload.isPending}
+                onPress={() => void chooseDocument()}
+                style={({ pressed }) => ({
+                  alignItems: 'center',
+                  backgroundColor: pressed ? theme.primarySoft : theme.surface,
+                  borderColor: theme.primary,
+                  borderRadius: radii.large,
+                  borderStyle: 'dashed',
+                  borderWidth: 1,
+                  gap: 5,
+                  opacity: isPicking || upload.isPending ? 0.5 : 1,
+                  paddingHorizontal: 14,
+                  paddingVertical: 18,
+                })}
+              >
+                {isPicking ? (
+                  <ActivityIndicator color={theme.primary} />
+                ) : (
+                  <AppIcon color={theme.primary} name="upload" size={30} />
+                )}
+                <Text style={{ color: theme.primary, fontSize: 13, fontWeight: '700' }}>
+                  {selectedDocument ? 'Choose a different document' : 'Choose document'}
+                </Text>
+                <Text style={{ color: theme.textTertiary, fontSize: 10 }}>
+                  PDF, DOCX, TXT, Markdown, or HTML · 10 MB maximum
+                </Text>
+              </Pressable>
 
-      {search.error ? (
-        <SurfaceCard tone="danger" title="Memory search failed">
-          <Text selectable style={{ color: theme.danger, fontSize: 13, lineHeight: 19 }}>
-            {search.error.message}
-          </Text>
-        </SurfaceCard>
-      ) : null}
+              {selectedDocument ? (
+                <>
+                  <View style={{ gap: 3 }}>
+                    <Text selectable style={{ color: theme.text, fontSize: 13, fontWeight: '700' }}>
+                      {selectedDocument.filename}
+                    </Text>
+                    <Text selectable style={{ color: theme.textTertiary, fontSize: 10 }}>
+                      {selectedDocument.mimeType} · {readableSize(selectedDocument.size)}
+                    </Text>
+                  </View>
+                  <View style={{ gap: 5 }}>
+                    <Text style={{ color: theme.textSecondary, fontSize: 10, fontWeight: '700' }}>
+                      OPTIONAL TITLE
+                    </Text>
+                    <TextInput
+                      accessibilityLabel="Document title"
+                      maxLength={500}
+                      onChangeText={setTitle}
+                      placeholder="Title for durable memory"
+                      placeholderTextColor={theme.textTertiary}
+                      selectionColor={theme.primary}
+                      style={{
+                        backgroundColor: theme.input,
+                        borderRadius: radii.medium,
+                        color: theme.text,
+                        fontSize: 14,
+                        paddingHorizontal: 12,
+                        paddingVertical: 10,
+                      }}
+                      value={title}
+                    />
+                  </View>
+                  <View style={{ gap: 6 }}>
+                    <Text style={{ color: theme.textSecondary, fontSize: 10, fontWeight: '700' }}>
+                      SENSITIVITY
+                    </Text>
+                    <SegmentedControl
+                      accessibilityLabel="Document sensitivity"
+                      fill={false}
+                      onChange={setSensitivity}
+                      options={sensitivityControlOptions}
+                      size="compact"
+                      value={sensitivity}
+                      wrap
+                    />
+                  </View>
+                  <View style={{ gap: 6 }}>
+                    <Text style={{ color: theme.textSecondary, fontSize: 10, fontWeight: '700' }}>
+                      RETENTION
+                    </Text>
+                    <SegmentedControl
+                      accessibilityLabel="Document retention"
+                      fill={false}
+                      onChange={setRetentionClass}
+                      options={retentionControlOptions}
+                      size="compact"
+                      value={retentionClass}
+                      wrap
+                    />
+                  </View>
+                  {!hasToken ? (
+                    <Text selectable style={{ color: theme.warning, fontSize: 11, lineHeight: 16 }}>
+                      {tokenStatus === 'loading'
+                        ? 'Checking the saved API token…'
+                        : 'Save this server’s API token in Settings before uploading.'}
+                    </Text>
+                  ) : null}
+                  {upload.isPending ? (
+                    <View
+                      accessibilityLiveRegion="polite"
+                      style={{ alignItems: 'center', flexDirection: 'row', gap: 9 }}
+                    >
+                      <ActivityIndicator color={theme.primary} />
+                      <Text style={{ color: theme.textSecondary, flex: 1, fontSize: 12 }}>
+                        Uploading {selectedDocument.filename} securely…
+                      </Text>
+                      <AppButton
+                        label="Cancel"
+                        onPress={upload.cancel}
+                        size="compact"
+                        tone="danger"
+                        variant="soft"
+                      />
+                    </View>
+                  ) : (
+                    <AppButton
+                      disabled={!hasToken}
+                      fullWidth
+                      label="Upload for approval"
+                      onPress={() => void uploadDocument()}
+                    />
+                  )}
+                </>
+              ) : null}
+              {selectionError || upload.error ? (
+                <Text selectable style={{ color: theme.danger, fontSize: 11, lineHeight: 16 }}>
+                  {(upload.error ?? selectionError)?.message}
+                </Text>
+              ) : null}
+            </SurfaceCard>
+          )}
 
-      <SectionHeading
-        detail={
-          search.data
-            ? `${search.data.hits.length} ${search.data.hits.length === 1 ? 'result' : 'results'}`
-            : 'Searches stay inside your configured control plane'
-        }
-        title={search.data ? 'Results' : 'Hippocampus'}
-      />
-
-      {!search.data ? (
-        <SurfaceCard tone="primary" title="Search durable memory">
-          <Text selectable style={{ color: theme.textSecondary, fontSize: 14, lineHeight: 20 }}>
-            Hybrid search combines semantic similarity with lexical matching and preserves source
-            provenance for every hit.
-          </Text>
-        </SurfaceCard>
-      ) : null}
-
-      {search.data?.hits.map((hit, index) => (
-        <SurfaceCard
-          key={hit.chunk_id}
-          eyebrow={`Result ${index + 1}`}
-          title={hit.title ?? 'Untitled memory'}
-          trailing={<StatusPill label={`${Math.round(hit.score * 100)}%`} tone="primary" />}
-        >
-          <Text selectable style={{ color: theme.textSecondary, fontSize: 14, lineHeight: 20 }}>
-            {hit.text}
-          </Text>
-          <Text selectable style={{ color: theme.textTertiary, fontSize: 11 }}>
-            {hit.source_uri ?? `Document ${hit.document_id.slice(0, 8)}`}
-          </Text>
-        </SurfaceCard>
-      ))}
-
-      {search.data && !search.data.hits.length ? (
-        <SurfaceCard title="No matching memories">
-          <Text selectable style={{ color: theme.textSecondary, fontSize: 14 }}>
-            Try another phrase or switch search modes.
-          </Text>
-        </SurfaceCard>
-      ) : null}
+          <SectionHeading title="Local ingestion" />
+          <SurfaceCard>
+            <View style={{ alignItems: 'center', flexDirection: 'row', gap: 11 }}>
+              <AppIcon color={theme.primary} name="lock" size={21} />
+              <View style={{ flex: 1, gap: 2 }}>
+                <Text style={{ color: theme.text, fontSize: 13, fontWeight: '700' }}>
+                  Protected by approval
+                </Text>
+                <Text style={{ color: theme.textSecondary, fontSize: 11, lineHeight: 16 }}>
+                  Files remain local. Parsing starts only after the durable task is reviewed.
+                </Text>
+              </View>
+              <AppIcon color={theme.textTertiary} name="chevronRight" size={17} />
+            </View>
+          </SurfaceCard>
+        </>
+      ) : (
+        <>
+          <View style={{ alignItems: 'center', flexDirection: 'row', gap: 8 }}>
+            <View
+              style={{
+                alignItems: 'center',
+                backgroundColor: theme.input,
+                borderRadius: radii.medium,
+                flex: 1,
+                flexDirection: 'row',
+                gap: 8,
+                paddingHorizontal: 12,
+              }}
+            >
+              <AppIcon color={theme.textTertiary} name="search" size={18} />
+              <TextInput
+                accessibilityLabel="Search memory"
+                maxLength={32_000}
+                onChangeText={setQuery}
+                onSubmitEditing={() => void runSearch()}
+                placeholder="Search memory"
+                placeholderTextColor={theme.textTertiary}
+                returnKeyType="search"
+                selectionColor={theme.primary}
+                style={{
+                  color: theme.text,
+                  flex: 1,
+                  fontSize: 14,
+                  paddingVertical: 11,
+                }}
+                value={query}
+              />
+            </View>
+            <IconButton
+              accessibilityLabel="Search memory"
+              disabled={!query.trim() || search.isPending}
+              icon="search"
+              onPress={() => void runSearch()}
+              tone="primary"
+              variant="solid"
+            />
+          </View>
+          <SegmentedControl
+            accessibilityLabel="Memory search mode"
+            fill={false}
+            onChange={setMode}
+            options={searchModeOptions}
+            size="compact"
+            value={mode}
+          />
+          {search.error ? (
+            <SurfaceCard tone="danger" title="Memory search failed">
+              <Text selectable style={{ color: theme.danger, fontSize: 12, lineHeight: 17 }}>
+                {search.error.message}
+              </Text>
+            </SurfaceCard>
+          ) : null}
+          <SectionHeading
+            detail={
+              search.data
+                ? `${search.data.hits.length} ${search.data.hits.length === 1 ? 'result' : 'results'}`
+                : 'Semantic and lexical retrieval with source provenance'
+            }
+            title={search.data ? 'Results' : 'Search durable memory'}
+          />
+          {!search.data ? (
+            <SurfaceCard>
+              <Text selectable style={{ color: theme.textSecondary, fontSize: 12, lineHeight: 17 }}>
+                Searches stay inside your configured control plane and preserve the source of every
+                retrieved passage.
+              </Text>
+            </SurfaceCard>
+          ) : null}
+          {search.data?.hits.map((hit, index) => (
+            <SurfaceCard
+              key={hit.chunk_id}
+              eyebrow={`Result ${index + 1}`}
+              title={hit.title ?? 'Untitled memory'}
+              trailing={<StatusPill label={`${Math.round(hit.score * 100)}%`} tone="primary" />}
+            >
+              <Text selectable style={{ color: theme.textSecondary, fontSize: 13, lineHeight: 18 }}>
+                {hit.text}
+              </Text>
+              <Text selectable style={{ color: theme.textTertiary, fontSize: 10 }}>
+                {hit.source_uri ?? `Document ${hit.document_id.slice(0, 8)}`}
+              </Text>
+            </SurfaceCard>
+          ))}
+          {search.data && !search.data.hits.length ? (
+            <SurfaceCard title="No matching memories">
+              <Text selectable style={{ color: theme.textSecondary, fontSize: 12 }}>
+                Try another phrase or switch search modes.
+              </Text>
+            </SurfaceCard>
+          ) : null}
+        </>
+      )}
     </ScreenScroll>
   );
 }

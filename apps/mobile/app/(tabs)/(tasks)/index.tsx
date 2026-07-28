@@ -1,10 +1,17 @@
 import { useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, Text, View } from 'react-native';
+import { ActivityIndicator, Text, View } from 'react-native';
 
+import { AppButton } from '@/components/app-button';
+import { IconButton } from '@/components/icon-button';
 import { ScreenScroll } from '@/components/screen-scroll';
 import { SectionHeading } from '@/components/section-heading';
+import {
+  SegmentedControl,
+  type SegmentedControlOption,
+} from '@/components/segmented-control';
 import { StatusPill } from '@/components/status-pill';
 import { SurfaceCard } from '@/components/surface-card';
+import { VisualAsset } from '@/components/visual-asset';
 import { useAppTheme } from '@/hooks/use-app-theme';
 import {
   useApproveTask,
@@ -16,13 +23,15 @@ import { formatPayloadBytes, payloadSummaryPreview } from '@/lib/task-payload-pr
 import { useMongars } from '@/providers/mongars-provider';
 import type { TaskResponse } from '@/types/mongars-api';
 
-const taskFilters = ['All', 'Active', 'Approval', 'Done'] as const;
+const taskFilters = ['All', 'Pending review', 'History'] as const;
 type TaskFilter = (typeof taskFilters)[number];
+const taskFilterOptions: readonly SegmentedControlOption<TaskFilter>[] = taskFilters.map(
+  (filter) => ({ label: filter, value: filter }),
+);
 
 function matchesFilter(task: TaskResponse, filter: TaskFilter) {
   if (filter === 'All') return true;
-  if (filter === 'Active') return ['queued', 'running'].includes(task.status);
-  if (filter === 'Approval') return task.status === 'waiting_approval';
+  if (filter === 'Pending review') return task.status === 'waiting_approval';
   return ['done', 'failed', 'cancelled'].includes(task.status);
 }
 
@@ -89,6 +98,9 @@ function ConnectedTasksScreen() {
   const activeCount = (query.data ?? []).filter((task) =>
     ['queued', 'running'].includes(task.status),
   ).length;
+  const approvalCount = (query.data ?? []).filter(
+    (task) => task.status === 'waiting_approval',
+  ).length;
   const payloadIntegrityFailed = payloadPageQuery.error?.message.includes(
     'did not match the protected review digest',
   );
@@ -122,59 +134,36 @@ function ConnectedTasksScreen() {
 
   return (
     <ScreenScroll>
-      <SurfaceCard tone="primary">
-        <View style={{ flexDirection: 'row', alignItems: 'flex-end', gap: 12 }}>
-          <View style={{ flex: 1, gap: 4 }}>
-            <Text selectable style={{ color: theme.textSecondary, fontSize: 12, fontWeight: '600' }}>
-              RM QUEUE
-            </Text>
-            <Text
-              selectable
-              style={{ color: theme.text, fontSize: 28, fontWeight: '800', fontVariant: ['tabular-nums'] }}
-            >
-              {activeCount} active
-            </Text>
-          </View>
-          <Pressable accessibilityRole="button" onPress={() => void query.refresh()}>
-            {query.isLoading ? (
-              <ActivityIndicator color={theme.primary} />
-            ) : (
-              <StatusPill label="Refresh" tone="primary" />
-            )}
-          </Pressable>
+      <SectionHeading level="screen" title="Tasks" />
+      <SegmentedControl
+        accessibilityLabel="Task status filter"
+        appearance="tabs"
+        onChange={setFilter}
+        options={taskFilterOptions}
+        size="compact"
+        value={filter}
+      />
+      <View style={{ alignItems: 'center', flexDirection: 'row', gap: 12 }}>
+        <View style={{ flex: 1, gap: 2 }}>
+          <Text selectable style={{ color: theme.text, fontSize: 15, fontWeight: '700' }}>
+            {filter === 'Pending review'
+              ? 'Protected approval review'
+              : filter === 'History'
+                ? 'Completed activity'
+                : 'Control-plane activity'}
+          </Text>
+          <Text selectable style={{ color: theme.textSecondary, fontSize: 11, lineHeight: 16 }}>
+            {approvalCount} pending review · {activeCount} active
+          </Text>
         </View>
-      </SurfaceCard>
-
-      <View style={{ flexDirection: 'row', gap: 8 }}>
-        {taskFilters.map((option) => {
-          const selected = filter === option;
-          return (
-            <Pressable
-              accessibilityRole="button"
-              key={option}
-              onPress={() => setFilter(option)}
-              style={{
-                backgroundColor: selected ? theme.primary : theme.surface,
-                borderColor: selected ? theme.primary : theme.border,
-                borderRadius: 999,
-                borderWidth: 1,
-                flex: 1,
-                paddingVertical: 8,
-              }}
-            >
-              <Text
-                style={{
-                  color: selected ? theme.primaryContrast : theme.textSecondary,
-                  fontSize: 11,
-                  fontWeight: '600',
-                  textAlign: 'center',
-                }}
-              >
-                {option}
-              </Text>
-            </Pressable>
-          );
-        })}
+        <IconButton
+          accessibilityLabel="Refresh tasks"
+          disabled={query.isLoading}
+          icon="refresh"
+          onPress={() => void query.refresh()}
+          tone="primary"
+          variant="soft"
+        />
       </View>
 
       {query.error || approval.error ? (
@@ -228,30 +217,33 @@ function ConnectedTasksScreen() {
                     />
                     <StatusPill label={`${payloadSummary.page_count} pages`} tone="primary" />
                   </View>
-                <Text selectable style={{ color: theme.textSecondary, fontSize: 11, fontWeight: '700' }}>
+                  <Text
+                    selectable
+                    style={{ color: theme.textSecondary, fontSize: 11, fontWeight: '700' }}
+                  >
                     {showFullPayload
                       ? `EXACT PAYLOAD PAGE ${payloadPageIndex + 1} OF ${payloadSummary.page_count}`
                       : 'BOUNDED PAYLOAD PREVIEW'}
-                </Text>
-                <Text
-                  selectable
-                  style={{
-                    backgroundColor: theme.surface,
-                    borderRadius: 12,
-                    color: theme.text,
-                    fontFamily: process.env.EXPO_OS === 'ios' ? 'Menlo' : 'monospace',
-                    fontSize: 11,
-                    lineHeight: 17,
-                    padding: 11,
-                  }}
-                >
+                  </Text>
+                  <Text
+                    selectable
+                    style={{
+                      backgroundColor: theme.surface,
+                      borderRadius: 12,
+                      color: theme.text,
+                      fontFamily: process.env.EXPO_OS === 'ios' ? 'Menlo' : 'monospace',
+                      fontSize: 11,
+                      lineHeight: 17,
+                      padding: 11,
+                    }}
+                  >
                     {showFullPayload
                       ? currentPayloadPage?.content ??
                         (payloadPageQuery.isLoading
                           ? 'Loading this exact payload page…'
                           : 'This payload page is unavailable.')
                       : payloadSummaryPreview(payloadSummary)}
-                </Text>
+                  </Text>
                   {payloadPageQuery.error ? (
                     <Text selectable style={{ color: theme.danger, fontSize: 12, lineHeight: 18 }}>
                       {payloadPageQuery.error.message}
@@ -260,138 +252,73 @@ function ConnectedTasksScreen() {
                   <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8 }}>
                     {showFullPayload ? (
                       <>
-                        <Pressable
-                          accessibilityRole="button"
+                        <AppButton
                           disabled={
                             payloadPageIndex === 0 ||
                             payloadPageQuery.isLoading ||
                             payloadIntegrityFailed
                           }
+                          label="Previous page"
                           onPress={() => setPayloadPageIndex((current) => Math.max(0, current - 1))}
-                          style={({ pressed }) => ({
-                            backgroundColor: theme.surface,
-                            borderColor: theme.border,
-                            borderRadius: 10,
-                            borderWidth: 1,
-                            opacity:
-                              payloadPageIndex === 0 ||
-                              payloadPageQuery.isLoading ||
-                              payloadIntegrityFailed
-                                ? 0.45
-                                : pressed
-                                  ? 0.7
-                                  : 1,
-                            paddingHorizontal: 12,
-                            paddingVertical: 8,
-                          })}
-                        >
-                          <Text style={{ color: theme.text, fontSize: 12, fontWeight: '700' }}>
-                            Previous page
-                          </Text>
-                        </Pressable>
-                        <Pressable
-                          accessibilityRole="button"
+                          size="compact"
+                          tone="neutral"
+                          variant="outline"
+                        />
+                        <AppButton
                           disabled={
                             payloadPageIndex >= payloadSummary.page_count - 1 ||
                             payloadPageQuery.isLoading ||
                             payloadIntegrityFailed
                           }
+                          label="Next page"
                           onPress={() =>
                             setPayloadPageIndex((current) =>
                               Math.min(payloadSummary.page_count - 1, current + 1),
                             )
                           }
-                          style={({ pressed }) => ({
-                            backgroundColor: theme.surface,
-                            borderColor: theme.border,
-                            borderRadius: 10,
-                            borderWidth: 1,
-                            opacity:
-                              payloadPageIndex >= payloadSummary.page_count - 1 ||
-                              payloadPageQuery.isLoading ||
-                              payloadIntegrityFailed
-                                ? 0.45
-                                : pressed
-                                  ? 0.7
-                                  : 1,
-                            paddingHorizontal: 12,
-                            paddingVertical: 8,
-                          })}
-                        >
-                          <Text style={{ color: theme.text, fontSize: 12, fontWeight: '700' }}>
-                            Next page
-                          </Text>
-                        </Pressable>
+                          size="compact"
+                          tone="neutral"
+                          variant="outline"
+                        />
                       </>
                     ) : null}
-                    <Pressable
-                      accessibilityRole="button"
+                    <AppButton
                       disabled={payloadIntegrityFailed}
+                      label={showFullPayload ? 'Return to preview' : 'Open exact payload pages'}
                       onPress={() => {
                         setShowFullPayload((current) => !current);
                         setPayloadPageIndex(0);
                       }}
-                      style={({ pressed }) => ({
-                        backgroundColor: theme.warningSoft,
-                        borderColor: theme.warning,
-                        borderRadius: 10,
-                        borderWidth: 1,
-                        opacity: payloadIntegrityFailed ? 0.45 : pressed ? 0.7 : 1,
-                        paddingHorizontal: 12,
-                        paddingVertical: 8,
-                      })}
-                    >
-                      <Text style={{ color: theme.warning, fontSize: 12, fontWeight: '700' }}>
-                        {showFullPayload ? 'Return to preview' : 'Open exact payload pages'}
-                      </Text>
-                    </Pressable>
+                      size="compact"
+                      tone="warning"
+                      variant="soft"
+                    />
                   </View>
                 </View>
               ) : null}
               <View style={{ flexDirection: 'row', gap: 8 }}>
-                <Pressable
-                  accessibilityRole="button"
+                <AppButton
+                  fullWidth
+                  label="Close"
                   onPress={closeReview}
-                  style={{
-                    alignItems: 'center',
-                    backgroundColor: theme.surface,
-                    borderColor: theme.border,
-                    borderRadius: 12,
-                    borderWidth: 1,
-                    flex: 1,
-                    padding: 11,
-                  }}
-                >
-                  <Text style={{ color: theme.textSecondary, fontSize: 13, fontWeight: '700' }}>
-                    Close
-                  </Text>
-                </Pressable>
-                <Pressable
-                  accessibilityRole="button"
+                  tone="neutral"
+                  variant="outline"
+                />
+                <AppButton
                   disabled={
                     !detail.data.action_digest || approval.isPending || payloadIntegrityFailed
                   }
+                  fullWidth
+                  label={approval.isPending ? 'Approving...' : 'Approve exact action'}
+                  loading={approval.isPending}
                   onPress={() => void approve(reviewTaskId)}
-                  style={{
-                    alignItems: 'center',
-                    backgroundColor: detail.data.action_digest ? theme.warning : theme.surfaceMuted,
-                    borderRadius: 12,
-                    flex: 1,
-                    opacity: approval.isPending ? 0.7 : 1,
-                    padding: 11,
-                  }}
-                >
-                  <Text style={{ color: theme.primaryContrast, fontSize: 13, fontWeight: '700' }}>
-                    {approval.isPending ? 'Approving…' : 'Approve exact action'}
-                  </Text>
-                </Pressable>
+                  tone="warning"
+                />
               </View>
             </>
           ) : null}
         </SurfaceCard>
       ) : null}
-
-      <SectionHeading detail="Durable local work with explicit approval gates" title="Activity" />
 
       {tasks.map((task) => {
         const progress = progressForStatus(task.status);
@@ -404,7 +331,7 @@ function ConnectedTasksScreen() {
               <StatusPill label={task.status.replaceAll('_', ' ')} tone={statusTone(task.status)} />
             }
           >
-            <Text selectable style={{ color: theme.textSecondary, fontSize: 13 }}>
+            <Text selectable style={{ color: theme.textSecondary, fontSize: 11 }}>
               Trace {task.trace_id.slice(0, 12)} · attempt {task.attempt_count}/{task.max_attempts}
             </Text>
             <View style={{ gap: 6 }}>
@@ -432,26 +359,14 @@ function ConnectedTasksScreen() {
               </Text>
             ) : null}
             {task.status === 'waiting_approval' ? (
-              <Pressable
-                accessibilityRole="button"
-                disabled={detail.isLoading && reviewTaskId === task.id}
+              <AppButton
+                fullWidth
+                label="Review protected action"
+                loading={detail.isLoading && reviewTaskId === task.id}
                 onPress={() => openReview(task.id)}
-                style={({ pressed }) => ({
-                  alignItems: 'center',
-                  backgroundColor: theme.warningSoft,
-                  borderColor: theme.warning,
-                  borderRadius: 12,
-                  borderWidth: 1,
-                  opacity: pressed || (detail.isLoading && reviewTaskId === task.id) ? 0.7 : 1,
-                  padding: 10,
-                })}
-              >
-                <Text style={{ color: theme.warning, fontSize: 13, fontWeight: '700' }}>
-                    {detail.isLoading && reviewTaskId === task.id
-                    ? 'Loading protected review…'
-                    : 'Review protected action'}
-                </Text>
-              </Pressable>
+                tone="warning"
+                variant="soft"
+              />
             ) : null}
           </SurfaceCard>
         );
@@ -459,9 +374,19 @@ function ConnectedTasksScreen() {
 
       {!query.isLoading && !tasks.length ? (
         <SurfaceCard title="No tasks in this view">
-          <Text selectable style={{ color: theme.textSecondary, fontSize: 14 }}>
-            Refresh the queue or choose another status filter.
-          </Text>
+          <View style={{ alignItems: 'center', flexDirection: 'row', gap: 14 }}>
+            <VisualAsset
+              accessibilityLabel="Protected approval visual"
+              name="cortexEmblem"
+              size={52}
+            />
+            <Text
+              selectable
+              style={{ color: theme.textSecondary, flex: 1, fontSize: 12, lineHeight: 17 }}
+            >
+              Refresh the queue or choose another status filter.
+            </Text>
+          </View>
         </SurfaceCard>
       ) : null}
     </ScreenScroll>
