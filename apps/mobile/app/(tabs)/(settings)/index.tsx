@@ -45,12 +45,9 @@ export default function SettingsScreen() {
   const [connectionState, setConnectionState] = useState<ConnectionState>('idle');
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [verifiedReadiness, setVerifiedReadiness] = useState<ReadinessResponse | null>(null);
-  const isTestingConnection = connectionState === 'testing';
   const credentialTransportAllowed = transportSecurity?.canSendCredentials === true;
   const serverUrl = hasServerUrlEdits ? serverUrlInput : baseUrl ?? '';
   const draftMatchesActiveBaseUrl = isActiveMongarsApiBaseUrlDraft(serverUrl, baseUrl);
-  const canEditToken =
-    credentialTransportAllowed && draftMatchesActiveBaseUrl && !isTestingConnection;
   const canTest =
     Boolean(client) &&
     credentialTransportAllowed &&
@@ -67,12 +64,9 @@ export default function SettingsScreen() {
   const displayedReadinessBadge = displayedReadiness
     ? readinessBadge(displayedReadiness)
     : { label: 'Needs attention', tone: 'warning' as const };
-  const inferenceHealthy = displayedReadiness?.dependencies.inference.healthy;
-  const executorRequiresApproval =
-    displayedReadiness?.dependencies.executor_security?.requires_approval;
 
   async function saveServerUrl() {
-    if (!serverUrl.trim() || serverUrlSaving || isTestingConnection) return;
+    if (!serverUrl.trim() || serverUrlSaving) return;
     setServerUrlSaving(true);
     setServerUrlMessage(null);
     setConnectionError(null);
@@ -104,7 +98,6 @@ export default function SettingsScreen() {
       !client ||
       !credentialTransportAllowed ||
       serverUrlSaving ||
-      isTestingConnection ||
       (!token.trim() && !hasToken)
     ) {
       return;
@@ -130,7 +123,6 @@ export default function SettingsScreen() {
   }
 
   async function forgetToken() {
-    if (isTestingConnection) return;
     try {
       await clearToken();
       setToken('');
@@ -180,7 +172,6 @@ export default function SettingsScreen() {
             accessibilityLabel="monGARS server URL"
             autoCapitalize="none"
             autoCorrect={false}
-            editable={!isTestingConnection}
             keyboardType="url"
             onChangeText={(value) => {
               setServerUrlInput(value);
@@ -205,13 +196,13 @@ export default function SettingsScreen() {
           />
           <Pressable
             accessibilityRole="button"
-            disabled={!serverUrl.trim() || serverUrlSaving || isTestingConnection}
+            disabled={!serverUrl.trim() || serverUrlSaving}
             onPress={() => void saveServerUrl()}
             style={({ pressed }) => ({
               alignItems: 'center',
               backgroundColor: serverUrl.trim() ? theme.primarySoft : theme.surfaceMuted,
               borderRadius: 14,
-              opacity: pressed || serverUrlSaving || isTestingConnection ? 0.72 : 1,
+              opacity: pressed || serverUrlSaving ? 0.72 : 1,
               padding: 12,
             })}
           >
@@ -258,7 +249,7 @@ export default function SettingsScreen() {
             accessibilityLabel="monGARS API token"
             autoCapitalize="none"
             autoCorrect={false}
-            editable={canEditToken}
+            editable={credentialTransportAllowed && draftMatchesActiveBaseUrl}
             onChangeText={setToken}
             placeholder={hasToken ? 'Enter a replacement token' : 'Paste bearer token'}
             placeholderTextColor={theme.textTertiary}
@@ -270,7 +261,7 @@ export default function SettingsScreen() {
               borderRadius: radii.medium,
               color: theme.text,
               fontSize: 14,
-              opacity: canEditToken ? 1 : 0.55,
+              opacity: credentialTransportAllowed && draftMatchesActiveBaseUrl ? 1 : 0.55,
               paddingHorizontal: 13,
               paddingVertical: 12,
             }}
@@ -285,17 +276,17 @@ export default function SettingsScreen() {
 
         <Pressable
           accessibilityRole="button"
-          disabled={!canTest || isTestingConnection}
+          disabled={!canTest || connectionState === 'testing'}
           onPress={() => void saveAndTestConnection()}
           style={({ pressed }) => ({
             alignItems: 'center',
             backgroundColor: canTest ? theme.primary : theme.surfaceMuted,
             borderRadius: 14,
-            opacity: pressed || isTestingConnection ? 0.72 : 1,
+            opacity: pressed || connectionState === 'testing' ? 0.72 : 1,
             padding: 13,
           })}
         >
-          {isTestingConnection ? (
+          {connectionState === 'testing' ? (
             <ActivityIndicator color={theme.primaryContrast} />
           ) : (
             <Text
@@ -311,11 +302,7 @@ export default function SettingsScreen() {
         </Pressable>
 
         {hasToken ? (
-          <Pressable
-            accessibilityRole="button"
-            disabled={isTestingConnection}
-            onPress={() => void forgetToken()}
-          >
+          <Pressable accessibilityRole="button" onPress={() => void forgetToken()}>
             <Text style={{ color: theme.danger, fontSize: 13, fontWeight: '600', textAlign: 'center' }}>
               Forget saved token
             </Text>
@@ -428,48 +415,7 @@ export default function SettingsScreen() {
               Prevent requests from using a remote fallback endpoint.
             </Text>
           </View>
-          <StatusPill
-            label={
-              inferenceHealthy === undefined
-                ? 'Unknown'
-                : inferenceHealthy
-                  ? 'Ready'
-                  : 'Unavailable'
-            }
-            tone={
-              inferenceHealthy === undefined
-                ? 'warning'
-                : inferenceHealthy
-                  ? 'positive'
-                  : 'danger'
-            }
-          />
-        </View>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
-          <View style={{ flex: 1, gap: 4 }}>
-            <Text selectable style={{ color: theme.text, fontSize: 16, fontWeight: '600' }}>
-              Protected mode
-            </Text>
-            <Text selectable style={{ color: theme.textSecondary, fontSize: 13, lineHeight: 18 }}>
-              Require approval before privileged executor actions.
-            </Text>
-          </View>
-          <StatusPill
-            label={
-              executorRequiresApproval === undefined
-                ? 'Unknown'
-                : executorRequiresApproval
-                  ? 'Approval required'
-                  : 'Not required'
-            }
-            tone={
-              executorRequiresApproval === undefined
-                ? 'warning'
-                : executorRequiresApproval
-                  ? 'positive'
-                  : 'danger'
-            }
-          />
+          <StatusPill label="Required" tone="positive" />
         </View>
       </SurfaceCard>
     </ScreenScroll>

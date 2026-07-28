@@ -1,6 +1,6 @@
 # monGARS Mobile
 
-Expo SDK 57 development-client app for the local monGARS control plane. It includes chat, memory,
+Expo SDK 54 development-client app for the local monGARS control plane. It includes chat, memory,
 task, document ingestion, and connection settings surfaces.
 
 > **Expo Go is not supported.** Install the pinned monGARS development client before opening a
@@ -23,7 +23,7 @@ The build-time URL is optional. If you use one for development, configure a trus
 EXPO_PUBLIC_MONGARS_API_URL=https://YOUR_MONGARS_HOSTNAME
 ```
 
-Create the pinned SDK 57 development client, install it from the EAS internal-distribution link, and
+Create the pinned SDK 54 development client, install it from the EAS internal-distribution link, and
 then start Metro:
 
 ```bash
@@ -121,12 +121,12 @@ npm run build:development:ios
 npm run start:dev-client:lan
 ```
 
-The development profile is reproducible: `expo-dev-client` is held on the Expo SDK 57-compatible
-57.0.x line, EAS CLI is pinned to 21.0.3, and the iOS builder uses the `sdk-57` image.
+The development profile is reproducible: `expo-dev-client` is held on the Expo SDK 54-compatible
+6.0.x line, EAS CLI is pinned to 21.0.3, and the iOS builder uses the `sdk-54` image.
 
 ## App Store Connect / TestFlight
 
-The production EAS profile uses the Expo SDK 57 Xcode 26 image, remote build-number management,
+The production EAS profile uses the Expo SDK 54 Xcode 26 image, remote build-number management,
 and store distribution. It intentionally ships without a fixed monGARS server URL; users select an
 HTTPS endpoint in Settings after installation.
 

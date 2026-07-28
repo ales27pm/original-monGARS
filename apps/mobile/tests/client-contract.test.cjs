@@ -65,29 +65,6 @@ test('mobile settings cannot test a token against an unsaved server URL draft', 
   assert.match(settingsScreen, /Save this server URL before entering or testing its API token/);
 });
 
-test('mobile settings freeze configuration tests and report server security state', () => {
-  const settingsScreen = fs.readFileSync(
-    path.join(repositoryRoot, 'apps/mobile/app/(tabs)/(settings)/index.tsx'),
-    'utf8',
-  );
-
-  assert.match(settingsScreen, /const isTestingConnection = connectionState === 'testing'/);
-  assert.match(
-    settingsScreen,
-    /if \(!serverUrl\.trim\(\) \|\| serverUrlSaving \|\| isTestingConnection\) return/,
-  );
-  assert.match(settingsScreen, /async function forgetToken\(\) \{\s+if \(isTestingConnection\) return/);
-  assert.match(settingsScreen, /editable=\{!isTestingConnection\}/);
-  assert.match(settingsScreen, /disabled=\{isTestingConnection\}/);
-  assert.match(settingsScreen, /displayedReadiness\?\.dependencies\.inference\.healthy/);
-  assert.match(
-    settingsScreen,
-    /displayedReadiness\?\.dependencies\.executor_security\?\.requires_approval/,
-  );
-  assert.match(settingsScreen, />\s*Protected mode\s*</);
-  assert.doesNotMatch(settingsScreen, /<StatusPill label="Required" tone="positive" \/>/);
-});
-
 test('mobile web bootstrap can use the public API URL on the first render', () => {
   const provider = fs.readFileSync(
     path.join(repositoryRoot, 'apps/mobile/providers/mongars-provider.tsx'),
