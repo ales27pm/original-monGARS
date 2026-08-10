@@ -10,20 +10,20 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 license = { text = "Proprietary" }
 dependencies = [
-  "alembic>=1.16,<2",
+  "alembic>=1.19.0,<2",
   "beautifulsoup4>=4.13,<5",
   "defusedxml>=0.7,<1",
-  "fastapi==0.139.2",
+  "fastapi==0.141.1",
   "httpx>=0.28.1,<1",
   "pgvector>=0.4.1,<1",
   "psycopg[binary,pool]>=3.2.9,<4",
   "pydantic==2.13.4",
-  "pydantic-settings>=2.12,<3",
+  "pydantic-settings>=2.15.0,<3",
   "python-multipart>=0.0.20,<1",
-  "pypdf>=6,<7",
+  "pypdf>=6.15.0,<7",
   "python-docx>=1.2,<2",
   "sqlalchemy[asyncio]==2.0.51",
-  "uvicorn[standard]==0.51.0",
+  "uvicorn[standard]==0.52.1",
 ]
 
 [project.optional-dependencies]
@@ -34,7 +34,7 @@ dev = [
   "pytest>=8.4,<10",
   "pytest-asyncio>=1.2,<2",
   "pytest-cov>=7,<8",
-  "ruff>=0.14,<1",
+  "ruff>=0.16.1,<1",
   "types-defusedxml>=0.7,<1",
 ]
 # Kept as a compatibility marker for existing deployment commands. Native
