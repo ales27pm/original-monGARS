@@ -381,7 +381,7 @@ services:
         max-file: "3"
 
   searxng:
-    image: ${MONGARS_SEARXNG_IMAGE:-docker.io/searxng/searxng@sha256:b8ca38ba06eea544d7555e88321e212ddc0d5c3c7de055419cfb2e5c6bf30812}
+    image: ${MONGARS_SEARXNG_IMAGE:-docker.io/searxng/searxng@sha256:b36af7984b87191b595bc5301418ed6432c047668a4547ab531a7439b816fac3}
     init: true
     profiles:
       - web-search
