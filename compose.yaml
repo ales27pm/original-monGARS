@@ -336,7 +336,7 @@ services:
         max-file: "1"
 
   ollama:
-    image: ${MONGARS_OLLAMA_IMAGE:-ollama/ollama@sha256:6345fbc18bd73a1e16404be681dbc6fd291a027cab43ed541abe78c4c81051b0}
+    image: ${MONGARS_OLLAMA_IMAGE:-ollama/ollama@sha256:32931b46719f673c05fdbaa81ccb26da18ea4a1c57590a754874ab28ba269eb2}
     x-ollama-image-overrides:
       arm64: ${MONGARS_OLLAMA_IMAGE_ARM64}
       jetson: ${MONGARS_OLLAMA_IMAGE_JETSON}
